@@ -4,3 +4,6 @@
 /macos/.build/
 /macos/.swiftpm/
 *.xcuserstate
+
+# Website assets kept locally, not in the repo
+/bg.mp4
