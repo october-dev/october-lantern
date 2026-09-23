@@ -9,7 +9,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::hooks::now_ms;
-use crate::model::Agent;
+use crate::launch;
+use crate::model::{Agent, Kind};
 use crate::scanner::Scanner;
 use crate::tmux;
 
@@ -22,6 +23,11 @@ enum Request {
     Refresh,
     #[serde(rename_all = "camelCase")]
     Reply { request_id: String, agent_id: String, text: String },
+    #[serde(rename_all = "camelCase")]
+    Launch { request_id: String, kind: Kind, cwd: String, prompt: Option<String>, background: bool },
+    /// Show an agent that runs in a detached tmux session in a Terminal window.
+    #[serde(rename_all = "camelCase")]
+    Attach { request_id: String, agent_id: String },
 }
 
 fn emit(v: &Value) {
@@ -48,6 +54,8 @@ pub fn run() -> Result<()> {
     });
 
     emit(&json!({"type": "hello", "protocol": 1, "version": env!("CARGO_PKG_VERSION")}));
+    // Checking installed agents runs a login shell, so do it off the main loop.
+    std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));
 
     let mut scanner = Scanner::new();
     let mut agents: Vec<Agent> = Vec::new();
@@ -85,6 +93,21 @@ pub fn run() -> Result<()> {
                         })),
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
+                }
+                Ok(Request::Launch { request_id, kind, cwd, prompt, background }) => {
+                    let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
+                    match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), mode) {
+                        Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
+                        Err(e) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")})),
+                    }
+                    next_scan = Instant::now() + Duration::from_millis(1500);
+                }
+                Ok(Request::Attach { request_id, agent_id }) => {
+                    let result = match agents.iter().find(|a| a.id == agent_id).and_then(|a| a.tmux.as_ref()) {
+                        Some(pane) => launch::attach_in_terminal(pane).map_err(|e| format!("{e:#}")),
+                        None => Err("agent is not in a tmux session".to_string()),
+                    };
+                    emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                 }
                 Err(e) => eprintln!("lantern-engine: bad request {line:?}: {e}"),
             },

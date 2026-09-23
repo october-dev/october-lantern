@@ -2,7 +2,10 @@ import AppKit
 import SwiftUI
 
 enum PanelMode: Equatable {
-    case inbox, agents
+    case inbox, agents, newSession, october
+
+    /// The inbox and agent list share tabs and the composer; the others are standalone.
+    var isList: Bool { self == .inbox || self == .agents }
 }
 
 @MainActor
@@ -15,6 +18,9 @@ final class AppModel: ObservableObject {
     @Published var toast: String?
     @Published var composeFocusToken = 0
     @Published private(set) var dismissed: Set<String>
+    @Published private(set) var installedKinds: [AgentKind] = []
+    @Published private(set) var tmuxAvailable = false
+    @Published private(set) var launching = false
     let dictation = Dictation()
 
     private let engine = EngineClient()
@@ -27,6 +33,20 @@ final class AppModel: ObservableObject {
         dismissed = Set(UserDefaults.standard.stringArray(forKey: "dismissedTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
         engine.onReplyResult = { [weak self] id, ok, message in self?.replyFinished(id, ok: ok, message: message) }
+        engine.onInstalled = { [weak self] installed in
+            self?.installedKinds = installed.kinds
+            self?.tmuxAvailable = installed.tmux
+        }
+        engine.onActionResult = { [weak self] ok, message in
+            guard let self else { return }
+            if self.launching {
+                self.launching = false
+                if ok { self.panel = .agents }
+                self.show(ok ? "Session started" : "Couldn't start the session: \(message ?? "unknown error")")
+            } else if !ok {
+                self.show(message ?? "Something went wrong")
+            }
+        }
         dictation.onText = { [weak self] text in self?.draft = text }
         dictation.onError = { [weak self] message in self?.show(message) }
     }
@@ -79,7 +99,7 @@ final class AppModel: ObservableObject {
 
     func compose(to agent: Agent?) {
         if let agent { targetId = agent.id }
-        if panel == nil { panel = .inbox }
+        if !(panel?.isList ?? false) { panel = .inbox }
         composeFocusToken += 1
     }
 
@@ -92,6 +112,12 @@ final class AppModel: ObservableObject {
     }
 
     func open(_ agent: Agent) {
+        // A tmux session nobody is attached to (e.g. one Lantern started in the background).
+        if agent.host == nil, agent.tmux != nil {
+            nextRequest += 1
+            engine.attach(requestId: "a\(nextRequest)", agentId: agent.id)
+            return
+        }
         guard let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) else {
             show("Can't find the app @\(agent.handle) is running in")
             return
@@ -116,6 +142,26 @@ final class AppModel: ObservableObject {
             show("Copied. Paste into @\(agent.handle) in \(agent.host?.app ?? "its terminal") with ⌘V")
             draft = ""
         }
+    }
+
+    // MARK: New sessions
+
+    /// Folders to offer for a new session: ones you've used before, then where agents are running.
+    var recentFolders: [String] {
+        let used = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
+        let running = ranked.compactMap(\.cwd)
+        var seen = Set<String>()
+        return (used + running).filter { seen.insert($0).inserted && $0 != NSHomeDirectory() }.prefix(8).map { $0 }
+    }
+
+    func launch(kind: AgentKind, folder: String, prompt: String, background: Bool) {
+        var used = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
+        used.removeAll { $0 == folder }
+        used.insert(folder, at: 0)
+        UserDefaults.standard.set(Array(used.prefix(8)), forKey: "recentFolders")
+        launching = true
+        nextRequest += 1
+        engine.launch(requestId: "l\(nextRequest)", kind: kind, cwd: folder, prompt: prompt, background: background)
     }
 
     func toggleDictation() {

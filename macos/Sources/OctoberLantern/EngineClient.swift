@@ -5,6 +5,9 @@ import Foundation
 final class EngineClient {
     var onAgents: (([Agent]) -> Void)?
     var onReplyResult: ((String, Bool, String?) -> Void)?
+    var onInstalled: ((EngineMessage.Installed) -> Void)?
+    /// Launch and attach results: (ok, message).
+    var onActionResult: ((Bool, String?) -> Void)?
 
     private var process: Process?
     private var stdin: FileHandle?
@@ -79,7 +82,15 @@ final class EngineClient {
         send(["type": "reply", "requestId": requestId, "agentId": agentId, "text": text])
     }
 
-    private func send(_ obj: [String: String]) {
+    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, background: Bool) {
+        send(["type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background])
+    }
+
+    func attach(requestId: String, agentId: String) {
+        send(["type": "attach", "requestId": requestId, "agentId": agentId])
+    }
+
+    private func send(_ obj: [String: Any]) {
         guard let stdin, var data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         data.append(0x0A)
         try? stdin.write(contentsOf: data)
@@ -96,6 +107,9 @@ final class EngineClient {
                 switch try JSONDecoder().decode(EngineMessage.self, from: line) {
                 case .snapshot(let agents): onAgents?(agents)
                 case .replyResult(let id, let ok, _, let message): onReplyResult?(id, ok, message)
+                case .installed(let installed): onInstalled?(installed)
+                case .launchResult(_, let ok, let message), .attachResult(_, let ok, let message):
+                    onActionResult?(ok, message)
                 case .hello, .other: break
                 }
             } catch {

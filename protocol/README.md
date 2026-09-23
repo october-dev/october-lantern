@@ -42,6 +42,18 @@ Sent when anything changes, and at least every 10 seconds.
 | `canReply` | bool | `true` when the engine can type a reply into the agent directly (tmux) |
 | `stateSource` | `"hook" \| "transcript" \| "none"` | Where the state came from |
 
+### `installed`
+Sent once, shortly after `hello`. Lists the agents installed on this machine, as found by the user's login shell.
+```json
+{"type":"installed","installed":{"kinds":["claude","codex","opencode"],"tmux":true}}
+```
+
+### `launchResult` / `attachResult`
+```json
+{"type":"launchResult","requestId":"l1","ok":true,"session":"codex-myproj-12345"}
+{"type":"attachResult","requestId":"a1","ok":false,"message":"agent is not in a tmux session"}
+```
+
 ### `replyResult`
 ```json
 {"type":"replyResult","requestId":"r1","ok":true}
@@ -54,6 +66,13 @@ Sent when anything changes, and at least every 10 seconds.
 {"type":"refresh"}
 {"type":"reply","requestId":"r1","agentId":"claude:83630","text":"Use Postgres"}
 ```
+
+```json
+{"type":"launch","requestId":"l1","kind":"codex","cwd":"/Users/me/proj","prompt":"write tests","background":false}
+{"type":"attach","requestId":"a1","agentId":"codex:4242"}
+```
+
+`launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument; other agents have it typed in about 4 seconds after they start. `attach` opens a Terminal window attached to an agent's tmux session.
 
 `reply` types the text into the agent's tmux pane, then presses Enter. For agents outside tmux it returns `not_reachable`, and the app falls back to copying the text and focusing the host app.
 

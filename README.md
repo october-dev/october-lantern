@@ -46,7 +46,8 @@ The result is either wasted agent time (an agent sat idle for 20 minutes waiting
 2. **Knows which ones are waiting on you.** For Claude Code and Codex, Lantern reads each agent's own session log to tell whether it's still working or has finished its turn and is waiting for you. It shows what the agent last said.
 3. **One place to look.** The lantern glows amber and shows a count when agents are waiting. Click it to see a "Waiting" list: each agent, its project, how long it's been waiting, and its last message.
 4. **Answer without switching windows.** Type or dictate a reply in Lantern. For agents running inside tmux, Lantern types the reply straight into the agent's session. For agents in other terminals, Lantern copies your reply and brings the right app to the front so you can paste it (see [What's true today](#whats-true-today)).
-5. **Stays out of your way.** Collapsed, Lantern is a single small lantern icon on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
+5. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern opens it in a new Terminal window (or runs it in the background). Sessions Lantern starts run inside tmux, so Lantern can always reply to them directly.
+6. **Stays out of your way.** Collapsed, Lantern is a single small lantern icon on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
 
 Lantern does **not** replace your terminals. Your agents keep running exactly where you started them, and you can keep using them there as usual. Lantern is an extra view and remote control on top.
 
@@ -57,12 +58,14 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Soft glow**: agents are working.
 - **Bright amber glow with a number badge**: that many agents are waiting on you.
 
-**Expanded.** Hover over the lantern and it grows downward into a glass capsule with five buttons: **Waiting** (inbox), **Agents** (everyone running), **Message** (compose), **Dictate** (microphone) and **More** (settings). Move the mouse away and it tucks back into the single lantern. Drag the lantern to move it; it snaps to the nearest screen edge.
+**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting** (inbox), **Agents** (everyone running), **New session**, **Message** (compose), **Dictate** (microphone) and **More** (settings), followed by the **October** logo. Move the mouse away and it tucks back into the single lantern. Drag the lantern to move it; it snaps to the nearest screen edge.
 
 **The panel.** Clicking Waiting or Agents opens a frosted-glass panel beside the lantern:
 - **Waiting**: one card per agent that's waiting on you, with the agent's logo, its handle (e.g. `@claude-2`), its project folder, the app it's running in, how long it's been waiting, the session title, and its last message. Each card has **Reply**, **Open** (bring its terminal to the front) and **Done** (clear it from the list) buttons.
 - **Agents**: every running agent, sorted with the ones that need you first, each with its logo, handle, folder, app, and a status of *Your turn*, *Working* or *Running*.
-- **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
+- **Composer** at the bottom of Waiting and Agents: "To @claude-2", a message field, a mic button and a send button.
+- **New session**: a grid of the agents installed on this Mac, each shown with its logo (only installed ones appear); a folder picker listing recent folders and the folders agents are running in, plus "Choose Folder…"; an optional first message; **Open in**, either *Terminal window* or *Background*; and a **Start** button.
+- **October**: the October logo and two rows, **Connect to October** (your October account) and **Connect to October Desktop**. Both are locked and marked "Soon".
 
 **Menu bar.** A small lantern icon in the menu bar with Waiting, Agents, Message an Agent, Show/Hide Lantern, Open at Login, agent hooks, and Quit.
 
@@ -79,7 +82,8 @@ Say you have six sessions running: two Claude Code, two Codex, one Pi and one Op
    - If `@codex-1` runs inside **tmux**, the reply is typed straight into its session, just as if you'd typed it in the terminal.
    - Otherwise, Lantern copies the reply and brings that terminal app to the front, and you paste with ⌘V.
 5. **Or reply the old way.** You can always switch to the terminal and answer there. Lantern updates by itself either way.
-6. **Pi and OpenCode.** These show up in Agents as **Running**, but Lantern can't yet tell whether they're waiting on you, so they don't appear in Waiting.
+6. **Start another one.** Click **+**, pick Codex, pick the folder, type "write tests for the parser", and choose *Background*. Codex starts out of sight and appears in Agents straight away. When it finishes, it lands in Waiting like the others, and replies go straight into it. **Open** shows it in a Terminal window.
+7. **Pi and OpenCode.** These show up in Agents as **Running**, but Lantern can't yet tell whether they're waiting on you, so they don't appear in Waiting.
 
 ## Supported agents
 
@@ -107,13 +111,15 @@ Lantern is in **early development (v0.1)**. Nothing has been publicly released y
 | Reply to agents running in tmux | ✅ Types the reply into the session |
 | Reply to agents in other terminals (Terminal, iTerm2, Ghostty, cmux...) | ⚠️ Copies the reply and focuses the app; you paste. Direct typing is planned. |
 | Jump to the exact terminal tab | ❌ Not yet. "Open" brings the right app forward, not the exact tab. |
+| Start a new session with any installed agent, in a Terminal window or in the background | ✅ Works (background needs tmux) |
+| Reply to sessions Lantern started | ✅ Always direct (they run in tmux) |
 | Dictation (speech to text), on-device | ✅ Works (Apple Speech) |
 | Global shortcut ⌃⌥Space to open the composer | ✅ Works |
 | Open at login | ✅ Works (menu bar menu) |
 | "Say it once and Lantern picks the right agent" (automatic routing) | ❌ Not yet. You choose the agent. |
 | Screenshot or screen context | ❌ Not yet |
 | Phone / remote control | ❌ Not yet |
-| Connects to October Desktop | ❌ Not yet (planned) |
+| Connect to October / October Desktop | ❌ Not yet. The October panel shows both, locked, marked "Soon". |
 | Windows or Linux | ❌ Not yet |
 | Pricing | Not decided. There is no account, sign-in or payment today. |
 
@@ -200,7 +206,7 @@ There's no pricing yet. Today it's a local app with no account.
   4. merges any hook events (written by `lantern-engine hook ...`) and uses whichever is newer;
   5. sends the app a snapshot whenever something changed.
 
-  Replies to tmux agents are delivered with `tmux send-keys`. The engine has no UI, so a Windows front end can reuse it unchanged.
+  Replies to tmux agents are delivered with `tmux send-keys`. New sessions start on Lantern's own tmux server (`tmux -L lantern`) through the user's login shell (`$SHELL -lic`), so agents get the same PATH and API keys as in a terminal. A Terminal window is opened with a temporary `.command` file, which needs no Automation permission. The engine has no UI, so a Windows front end can reuse it unchanged.
 - **App (`macos/`, Swift).** The lantern and the panel are borderless, non-activating `NSPanel`s, so clicking them never steals focus. They float above other windows, and appear on every Space and over full-screen apps. Surfaces use `NSGlassEffectView` (macOS 26) or `NSVisualEffectView`. Hover expansion works by polling the mouse position. Dictation uses `SFSpeechRecognizer` with on-device recognition. The ⌃⌥Space shortcut uses Carbon `RegisterEventHotKey`, which needs no Accessibility permission.
 
 ## Building from source
@@ -222,6 +228,7 @@ To run the engine on its own:
 cd engine
 cargo run -- agents           # print the agents Lantern can see, as JSON
 cargo run -- serve            # the stdio protocol the app uses
+cargo run -- installed        # which agents (and tmux) are installed
 cargo run -- hooks status     # show whether the optional hooks are installed
 cargo run -- hooks install    # add the hooks (backs up config files first)
 cargo run -- hooks uninstall  # remove them and restore previous settings

@@ -32,10 +32,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.start()
         windows.showPill()
 
-        // Development: `--open inbox|agents` opens the panel at launch.
+        // Development: `--open inbox|agents|new|october` opens that panel at launch.
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--open"), i + 1 < args.count {
-            let mode: PanelMode = args[i + 1] == "agents" ? .agents : .inbox
+            let mode: PanelMode = ["agents": .agents, "new": .newSession, "october": .october][args[i + 1]] ?? .inbox
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.model.panel = mode }
         }
     }

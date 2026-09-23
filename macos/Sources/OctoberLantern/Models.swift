@@ -94,9 +94,17 @@ enum EngineMessage: Decodable {
     case hello(version: String)
     case snapshot(agents: [Agent])
     case replyResult(requestId: String, ok: Bool, error: String?, message: String?)
+    case installed(Installed)
+    case launchResult(requestId: String, ok: Bool, message: String?)
+    case attachResult(requestId: String, ok: Bool, message: String?)
     case other
 
-    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message }
+    struct Installed: Decodable {
+        let kinds: [AgentKind]
+        let tmux: Bool
+    }
+
+    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message, installed }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -112,6 +120,15 @@ enum EngineMessage: Decodable {
                 error: try c.decodeIfPresent(String.self, forKey: .error),
                 message: try c.decodeIfPresent(String.self, forKey: .message)
             )
+        case "installed":
+            self = .installed(try c.decode(Installed.self, forKey: .installed))
+        case "launchResult", "attachResult":
+            let id = try c.decode(String.self, forKey: .requestId)
+            let ok = try c.decode(Bool.self, forKey: .ok)
+            let message = try c.decodeIfPresent(String.self, forKey: .message)
+            self = try c.decode(String.self, forKey: .type) == "launchResult"
+                ? .launchResult(requestId: id, ok: ok, message: message)
+                : .attachResult(requestId: id, ok: ok, message: message)
         default:
             self = .other
         }

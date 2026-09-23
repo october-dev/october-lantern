@@ -26,6 +26,9 @@ struct PillView: View {
                     PillIcon(symbol: "square.stack.3d.up", active: model.panel == .agents, help: "All agents") {
                         model.toggle(.agents)
                     }
+                    PillIcon(symbol: "plus", active: model.panel == .newSession, help: "New session") {
+                        model.toggle(.newSession)
+                    }
                     PillIcon(symbol: "text.bubble", help: "Message an agent  ⌃⌥Space") {
                         model.compose(to: nil)
                     }
@@ -41,6 +44,18 @@ struct PillView: View {
                         }
                     }
                     PillIcon(symbol: "ellipsis", help: "Settings") { onMenu() }
+                    Rectangle().fill(Theme.stroke).frame(width: 22, height: 1).padding(.vertical, 2)
+                    Button { model.toggle(.october) } label: {
+                        OctoberLogo(size: 26)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6.5, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(model.panel == .october ? 0.7 : 0), lineWidth: 1.5)
+                                    .padding(-3)
+                            )
+                            .frame(width: 32, height: 32)
+                    }
+                    .buttonStyle(.plain)
+                    .help("October")
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }

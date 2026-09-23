@@ -7,19 +7,25 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            ScrollView {
-                VStack(spacing: 8) {
-                    switch model.panel {
-                    case .agents: agentList
-                    default: inboxList
+            switch model.panel {
+            case .newSession:
+                PanelTitle(title: "New session", model: model)
+                NewSessionView(model: model)
+            case .october:
+                PanelTitle(title: "October", model: model)
+                OctoberView()
+            default:
+                header
+                ScrollView {
+                    VStack(spacing: 8) {
+                        if model.panel == .agents { agentList } else { inboxList }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
+                .frame(maxHeight: 440)
+                .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(maxHeight: 440)
-            .fixedSize(horizontal: false, vertical: true)
 
             if let toast = model.toast {
                 Text(toast)
@@ -31,7 +37,9 @@ struct PanelView: View {
                     .padding(.horizontal, 12).padding(.bottom, 6)
                     .transition(.opacity)
             }
-            Composer(model: model, dictation: dictation)
+            if model.panel?.isList ?? true {
+                Composer(model: model, dictation: dictation)
+            }
         }
         .frame(width: 380)
         .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous), cornerRadius: 22, tint: 0.35)

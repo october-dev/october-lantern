@@ -7,6 +7,7 @@
 //!   lantern-engine hooks install|uninstall|status
 
 mod hooks;
+mod launch;
 mod model;
 mod procs;
 mod scanner;
@@ -35,6 +36,10 @@ fn main() -> Result<()> {
             Some("status") | None => hooks::status(),
             Some(other) => bail!("unknown hooks command: {other}"),
         },
+        Some("installed") => {
+            println!("{}", serde_json::to_string(launch::installed())?);
+            Ok(())
+        }
         Some("--version") => {
             println!("{}", env!("CARGO_PKG_VERSION"));
             Ok(())
