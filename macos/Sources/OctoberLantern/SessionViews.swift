@@ -220,8 +220,8 @@ struct OctoberView: View {
                       detail: "Sign in with your October account.")
             LockedRow(symbol: "macwindow.on.rectangle", title: "Connect to October Desktop",
                       detail: "See every agent October runs, deliver messages reliably, and open agents on the canvas.")
-            LockedRow(symbol: "iphone", title: "Connect to October phone app",
-                      detail: "Check on your agents and reply to them from your phone.")
+            // Signed in = the app has started the phone host with an October token (see PhoneModel.start).
+            PhoneCard(signedIn: PhoneModel.shared.started, planAllowsPhone: nil)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 16)

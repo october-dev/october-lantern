@@ -36,6 +36,22 @@ enum Request {
     /// Show an agent that runs in a detached tmux session in a Terminal window.
     #[serde(rename_all = "camelCase")]
     Attach { request_id: String, agent_id: String },
+
+    // MARK: Phone (see engine/src/mobile)
+    /// Start acting as an October host for the phone app, with the user's October access token.
+    #[serde(rename = "phone.start", rename_all = "camelCase")]
+    PhoneStart { access_token: String },
+    /// A refreshed access token.
+    #[serde(rename = "phone.token", rename_all = "camelCase")]
+    PhoneToken { access_token: String },
+    #[serde(rename = "phone.pair")]
+    PhonePair,
+    #[serde(rename = "phone.decide")]
+    PhoneDecide { allow: bool },
+    #[serde(rename = "phone.revoke")]
+    PhoneRevoke { bind: String },
+    #[serde(rename = "phone.stop")]
+    PhoneStop,
 }
 
 fn emit(v: &Value) {
@@ -70,10 +86,14 @@ pub fn run() -> Result<()> {
     let mut agents: Vec<Agent> = Vec::new();
     let mut last_emit = Instant::now() - HEARTBEAT;
     let mut next_scan = Instant::now();
+    let mut phone: Option<crate::mobile::host::MobileHost> = None;
 
     loop {
         if Instant::now() >= next_scan {
             let fresh = scanner.scan();
+            if let Some(p) = &phone {
+                p.update_agents(&fresh);
+            }
             if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
                 agents = fresh;
                 emit(&json!({"type": "snapshot", "generatedAt": now_ms(), "agents": agents}));
@@ -142,6 +162,40 @@ pub fn run() -> Result<()> {
                         None => Err("agent is not in a tmux session".to_string()),
                     };
                     emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
+                }
+                // MARK: Phone
+                Ok(Request::PhoneStart { access_token }) => match &phone {
+                    Some(p) => p.send(crate::mobile::host::Cmd::Token(access_token)),
+                    None => {
+                        let p = crate::mobile::host::MobileHost::start(access_token, emit);
+                        p.update_agents(&agents);
+                        phone = Some(p);
+                    }
+                },
+                Ok(Request::PhoneToken { access_token }) => {
+                    if let Some(p) = &phone {
+                        p.send(crate::mobile::host::Cmd::Token(access_token));
+                    }
+                }
+                Ok(Request::PhonePair) => {
+                    if let Some(p) = &phone {
+                        p.send(crate::mobile::host::Cmd::Pair);
+                    }
+                }
+                Ok(Request::PhoneDecide { allow }) => {
+                    if let Some(p) = &phone {
+                        p.send(crate::mobile::host::Cmd::Decide(allow));
+                    }
+                }
+                Ok(Request::PhoneRevoke { bind }) => {
+                    if let Some(p) = &phone {
+                        p.send(crate::mobile::host::Cmd::Revoke(bind));
+                    }
+                }
+                Ok(Request::PhoneStop) => {
+                    if let Some(p) = phone.take() {
+                        p.send(crate::mobile::host::Cmd::Stop);
+                    }
                 }
                 Err(e) => eprintln!("lantern-engine: bad request {line:?}: {e}"),
             },

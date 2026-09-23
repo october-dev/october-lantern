@@ -58,6 +58,9 @@ final class AppModel: ObservableObject {
             self.chatSupported = supported
             if messages != self.chatMessages { self.chatMessages = messages }
         }
+        // Phone: the engine hosts the October phone app connection (see PhoneCard.swift).
+        engine.onPhone = { data in PhoneModel.shared.receive(data) }
+        PhoneModel.shared.send = { [weak engine] obj in engine?.phone(obj) }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
             self?.tmuxAvailable = installed.tmux

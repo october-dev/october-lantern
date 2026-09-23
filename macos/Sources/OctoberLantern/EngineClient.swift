@@ -99,6 +99,16 @@ final class EngineClient {
         send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
 
+    // MARK: Phone
+
+    /// Phone host state from the engine (`{"type":"phone",...}`), decoded by `PhoneModel`.
+    var onPhone: ((Data) -> Void)?
+
+    /// `phone.start` / `phone.token` / `phone.pair` / `phone.decide` / `phone.revoke` / `phone.stop`.
+    func phone(_ obj: [String: Any]) {
+        send(obj)
+    }
+
     private func send(_ obj: [String: Any]) {
         guard let stdin, var data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         data.append(0x0A)
@@ -112,6 +122,11 @@ final class EngineClient {
             let line = buffer[buffer.startIndex..<newline]
             buffer.removeSubrange(buffer.startIndex...newline)
             guard !line.isEmpty else { continue }
+            // MARK: Phone
+            if line.range(of: Data(#""type":"phone""#.utf8)) != nil {
+                onPhone?(Data(line))
+                continue
+            }
             do {
                 switch try JSONDecoder().decode(EngineMessage.self, from: line) {
                 case .snapshot(let agents): onAgents?(agents)

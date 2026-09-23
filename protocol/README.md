@@ -104,3 +104,44 @@ Hooks write one JSON file per session to `~/Library/Application Support/October 
 ```
 
 The engine matches a hook file to a running agent by `sessionId`, falling back to `ancestors`, which contains the process ids above the hook command.
+
+## Phone (October phone app)
+
+Lantern can act as an October host computer, so the October phone app pairs with it and reaches Lantern's agents through October's relay. The engine implements the same protocol as October Desktop:
+- signed control calls to October's Supabase `mobile-*` functions
+- relay tickets and the relay WebSocket (`wss://relay.afteroctober.xyz/v1/host/{hostId}`) with acknowledged outer frames
+- a Noise_XX_25519_ChaChaPoly_BLAKE2b responder, with the phone's key pinned to October's records
+- inner frames, and pairing with a 6-digit code
+
+See `engine/src/mobile/`.
+
+App → engine:
+```json
+{"type":"phone.start","accessToken":"<October Supabase access token>"}
+{"type":"phone.token","accessToken":"<refreshed token>"}
+{"type":"phone.pair"}
+{"type":"phone.decide","allow":true}
+{"type":"phone.revoke","bind":"<device bind uuid>"}
+{"type":"phone.stop"}
+```
+
+Engine → app: the whole phone state, sent whenever it changes.
+```json
+{"type":"phone","status":"offline|connecting|connected|plan-required|signed-out","message":null,
+ "hostId":"…","devices":[{"bind":"…","label":"Harsh's iPhone","platform":"ios","pairedAt":1790000000000}],
+ "pairing":{"qr":"https://october.dev/pair#…","expiresAt":1790000300000,"code":"123456","label":"Harsh's iPhone","finishing":false}}
+```
+
+On the phone, Lantern appears as one canvas whose nodes are Lantern's agents. Lantern supports these requests:
+- `core.handshake` (with the HMAC proof)
+- `core.status`
+- `bus.query` `listCanvases` / `currentSnapshot`
+- `facts.query` `listNotifications` / `listNodeWorkflows` / `listPrObservations`
+- `ui.list`, `terminal.list`, `agent.list`, `devServer.list`, `chat.history` (empty lists)
+- `bus.mutate userSend`, which types the reply into the agent's terminal
+
+It emits the `bus.changed`, `facts.changed`, `core.lifecycle`, `cursor.reset` and `cursor.heartbeat` events. Anything else returns `PERMISSION_DENIED`.
+
+Identity and paired phones are stored in `~/Library/Application Support/October Lantern/phone/`, with the folder at 0700 and the files at 0600:
+- `host.json` holds the hostId, the Ed25519 seed, the X25519 static key and the canvas id.
+- `devices.json` holds only a SHA-256 hash of each phone's credential.

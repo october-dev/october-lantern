@@ -10,6 +10,7 @@ mod deliver;
 mod history;
 mod hooks;
 mod launch;
+mod mobile;
 mod model;
 mod procs;
 mod readers;
