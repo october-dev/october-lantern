@@ -46,8 +46,7 @@ struct PillView: View {
             }
         }
         .padding(6)
-        .background(ZStack { Glass(); Color.black.opacity(0.35) }.clipShape(Capsule()))
-        .overlay(Capsule().stroke(Theme.stroke, lineWidth: 1))
+        .glassSurface(Capsule(), tint: 0.15)
         .environment(\.colorScheme, .dark)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: expanded)
         .fixedSize()

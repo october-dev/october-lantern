@@ -34,9 +34,7 @@ struct PanelView: View {
             Composer(model: model, dictation: dictation)
         }
         .frame(width: 380)
-        .background(ZStack { Glass(material: .hudWindow); Color.black.opacity(0.55) })
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(Theme.stroke, lineWidth: 1))
+        .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous), cornerRadius: 22, tint: 0.35)
         .environment(\.colorScheme, .dark)
         .animation(.easeOut(duration: 0.15), value: model.toast)
     }
@@ -184,6 +182,7 @@ struct InboxCard: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.faint))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(selected ? Theme.amber.opacity(0.5) : Color.clear, lineWidth: 1)

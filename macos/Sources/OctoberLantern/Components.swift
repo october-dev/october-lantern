@@ -7,7 +7,8 @@ enum Theme {
     static let red = Color(red: 0.93, green: 0.36, blue: 0.36)
     static let ink = Color.white
     static let muted = Color.white.opacity(0.55)
-    static let faint = Color.white.opacity(0.08)
+    static let faint = Color.white.opacity(0.07)
+    static let hairline = Color.white.opacity(0.10)
     static let stroke = Color.white.opacity(0.14)
 
     static func color(for state: AgentState) -> Color {
@@ -49,21 +50,77 @@ enum Assets {
     static func harness(_ kind: AgentKind) -> NSImage? { image("harness/\(kind.rawValue).png") }
 }
 
-/// Behind-window blur, the base of both panels.
+/// Frosted glass behind the pill and the panel. On macOS 26+ this is Apple's Liquid Glass
+/// (`NSGlassEffectView`); earlier versions get a behind-window blur. `tint` darkens the glass so
+/// white text stays readable over bright wallpapers.
 struct Glass: NSViewRepresentable {
-    var material: NSVisualEffectView.Material = .hudWindow
+    var cornerRadius: CGFloat? = nil  // nil = capsule (half the shorter side)
+    var tint: Double = 0.2
 
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let v = NSVisualEffectView()
-        v.material = material
-        v.blendingMode = .behindWindow
-        v.state = .active
-        v.appearance = NSAppearance(named: .darkAqua)
-        return v
+    func makeNSView(context: Context) -> NSView {
+        let view: NSView
+        if #available(macOS 26.0, *) {
+            let glass = CapsuleAwareGlassView()
+            glass.style = .regular
+            view = glass
+        } else {
+            let blur = NSVisualEffectView()
+            blur.material = .hudWindow
+            blur.blendingMode = .behindWindow
+            blur.state = .active
+            view = blur
+        }
+        view.appearance = NSAppearance(named: .darkAqua)
+        update(view)
+        return view
     }
 
-    func updateNSView(_ v: NSVisualEffectView, context: Context) {
-        v.material = material
+    func updateNSView(_ view: NSView, context: Context) { update(view) }
+
+    private func update(_ view: NSView) {
+        if #available(macOS 26.0, *), let glass = view as? CapsuleAwareGlassView {
+            glass.fixedRadius = cornerRadius
+            glass.tintColor = NSColor.black.withAlphaComponent(tint)
+            glass.needsLayout = true
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+final class CapsuleAwareGlassView: NSGlassEffectView {
+    var fixedRadius: CGFloat?
+
+    override func layout() {
+        super.layout()
+        cornerRadius = fixedRadius ?? min(bounds.width, bounds.height) / 2
+    }
+}
+
+/// The glassmorphism finish: a light rim that fades from top to bottom, and a soft sheen along
+/// the top edge, over the glass.
+struct GlassRim<S: InsettableShape>: View {
+    let shape: S
+
+    var body: some View {
+        ZStack {
+            shape.strokeBorder(
+                LinearGradient(colors: [.white.opacity(0.42), .white.opacity(0.10), .white.opacity(0.18)],
+                               startPoint: .top, endPoint: .bottom),
+                lineWidth: 1
+            )
+            shape.fill(
+                LinearGradient(colors: [.white.opacity(0.10), .clear], startPoint: .top, endPoint: .center)
+            )
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+extension View {
+    /// Glass background plus rim, clipped to `shape`.
+    func glassSurface<S: InsettableShape>(_ shape: S, cornerRadius: CGFloat? = nil, tint: Double = 0.2) -> some View {
+        background(Glass(cornerRadius: cornerRadius, tint: tint).clipShape(shape))
+            .overlay(GlassRim(shape: shape))
     }
 }
 
