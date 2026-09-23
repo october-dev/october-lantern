@@ -90,12 +90,9 @@ struct PanelView: View {
                 }
                 .padding(.horizontal, 4).padding(.top, model.newInbox.isEmpty ? 0 : 6)
                 ForEach(model.earlierInbox) { agent in
-                    AgentRow(agent: agent, selected: model.target?.id == agent.id)
+                    InboxCard(agent: agent, selected: model.target?.id == agent.id, model: model)
+                        .contentShape(Rectangle())
                         .onTapGesture { model.openChat(agent) }
-                        .contextMenu {
-                            Button("Done") { model.dismiss(agent) }
-                            Button("Open in \(agent.host?.app ?? "terminal")") { model.open(agent) }
-                        }
                 }
             }
         }
@@ -175,7 +172,15 @@ struct InboxCard: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    StateChip(state: agent.state)
+                    HStack(spacing: 6) {
+                        if isNew {
+                            Text("NEW").font(.system(size: 9, weight: .bold)).tracking(0.5)
+                                .foregroundStyle(.black.opacity(0.8))
+                                .padding(.horizontal, 5).padding(.vertical, 1)
+                                .background(Capsule().fill(Theme.amber))
+                        }
+                        StateChip(state: agent.state)
+                    }
                     Text(timeAgo(agent.since)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                 }
             }
