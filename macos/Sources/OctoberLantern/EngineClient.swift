@@ -7,6 +7,7 @@ final class EngineClient {
     var onReplyResult: ((String, Bool, String?) -> Void)?
     var onInstalled: ((EngineMessage.Installed) -> Void)?
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
+    var onOctober: ((OctoberLink) -> Void)?
     /// Launch and attach results: (ok, message).
     var onActionResult: ((Bool, String?) -> Void)?
 
@@ -95,6 +96,11 @@ final class EngineClient {
         send(["type": "keys", "requestId": requestId, "agentId": agentId, "keys": keys])
     }
 
+    /// "october.pair", "october.cancelPair" or "october.forget".
+    func october(_ type: String) {
+        send(["type": type])
+    }
+
     func focus(requestId: String, agentId: String) {
         send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
@@ -118,6 +124,7 @@ final class EngineClient {
                 case .replyResult(let id, let ok, _, let message): onReplyResult?(id, ok, message)
                 case .installed(let installed): onInstalled?(installed)
                 case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
+                case .october(let link): onOctober?(link)
                 case .launchResult(_, let ok, let message), .attachResult(_, let ok, let message):
                     onActionResult?(ok, message)
                 case .hello, .other: break

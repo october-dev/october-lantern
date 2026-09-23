@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var chatMessages: [ChatMessage] = []
     @Published private(set) var chatSupported = true
     @Published private(set) var chatLoading = false
+    @Published private(set) var octoberLink: OctoberLink?
     let dictation = Dictation()
 
     private let engine = EngineClient()
@@ -58,6 +59,7 @@ final class AppModel: ObservableObject {
             self.chatSupported = supported
             if messages != self.chatMessages { self.chatMessages = messages }
         }
+        engine.onOctober = { [weak self] link in self?.octoberLink = link }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
             self?.tmuxAvailable = installed.tmux
@@ -203,6 +205,8 @@ final class AppModel: ObservableObject {
             draft = ""
         }
     }
+
+    func october(_ action: String) { engine.october(action) }
 
     // MARK: New sessions
 

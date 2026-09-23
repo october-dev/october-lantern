@@ -46,6 +46,7 @@ pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(60));
             cmux(&["send-key", "--workspace", workspace, "--surface", surface, "enter"])
         }
+        Route::October { .. } => bail!("replies to October's agents go through October (handled by the serve loop)"),
         Route::Terminal { tty } => osascript(TERMINAL_SEND, &[tty, &line]),
         Route::Iterm { tty } => osascript(ITERM_SEND, &[tty, &line, "yes"]),
         Route::None => bail!("Lantern can't type into {} yet", host_name(agent)),
@@ -70,6 +71,7 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
         }
         (Route::Iterm { tty }, Key::Escape) => osascript(ITERM_SEND, &[tty, "\u{1b}", "no"]),
         (Route::Iterm { tty }, Key::Char(c)) => osascript(ITERM_SEND, &[tty, &c.to_string(), "no"]),
+        (Route::October { .. }, _) => bail!("single keys aren't supported for October's agents yet"),
         // Terminal's `do script` always adds Enter, which could confirm the wrong thing.
         (Route::Terminal { .. }, _) => bail!("single keys aren't supported in Terminal"),
         (Route::None, _) => bail!("Lantern can't type into {} yet", host_name(agent)),
@@ -89,6 +91,7 @@ pub fn focus(agent: &Agent) -> Result<()> {
             tmux::run(p, &["select-window", "-t", window])?;
             tmux::run(p, &["select-pane", "-t", &p.pane_id])
         }
+        Route::October { .. } => Ok(()),
         Route::Cmux { workspace, .. } => cmux(&["select-workspace", "--workspace", workspace]),
         Route::Terminal { tty } => osascript(TERMINAL_FOCUS, &[tty]),
         Route::Iterm { tty } => osascript(ITERM_FOCUS, &[tty]),

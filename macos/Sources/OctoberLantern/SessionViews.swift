@@ -206,20 +206,20 @@ struct Choice: View {
 /// October: where the connections to the October account and October Desktop will live. Both are
 /// locked for now.
 struct OctoberView: View {
+    @ObservedObject var model: AppModel
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 OctoberLogo(size: 40)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("October").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
-                    Text("Lantern works on its own. Connecting to October will add more.")
+                    Text("Lantern works on its own. Connecting to October adds more.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                 }
             }
-            LockedRow(symbol: "person.crop.circle", title: "Connect to October",
-                      detail: "Sign in with your October account.")
-            LockedRow(symbol: "macwindow.on.rectangle", title: "Connect to October Desktop",
-                      detail: "See every agent October runs, deliver messages reliably, and open agents on the canvas.")
+            AccountCard()
+            DesktopCard(model: model)
             LockedRow(symbol: "iphone", title: "Connect to October phone app",
                       detail: "Check on your agents and reply to them from your phone.")
         }

@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 
 use crate::hooks::now_ms;
 use crate::launch;
-use crate::model::{Agent, Kind};
+use crate::model::{Agent, Kind, Route, State};
+use crate::october_link::LinkState;
+use std::sync::{Arc, Mutex, mpsc::Sender};
 use crate::scanner::Scanner;
 use crate::deliver;
 
@@ -30,6 +32,13 @@ enum Request {
     /// Single keypresses, e.g. "1" or "Escape" to answer a permission prompt.
     #[serde(rename_all = "camelCase")]
     Keys { request_id: String, agent_id: String, keys: Vec<String> },
+    /// Ask October Desktop to allow Lantern (it shows a code to compare), cancel that, or forget it.
+    #[serde(rename = "october.pair")]
+    OctoberPair,
+    #[serde(rename = "october.cancelPair")]
+    OctoberCancelPair,
+    #[serde(rename = "october.forget")]
+    OctoberForget,
     /// Bring the agent's own tab (or tmux pane) to the front.
     #[serde(rename_all = "camelCase")]
     Focus { request_id: String, agent_id: String },
@@ -66,6 +75,8 @@ pub fn run() -> Result<()> {
     // Checking installed agents runs a login shell, so do it off the main loop.
     std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));
 
+    let (october, october_tx) = crate::october_link::start();
+    let mut last_october = String::new();
     let mut scanner = Scanner::new();
     let mut agents: Vec<Agent> = Vec::new();
     let mut last_emit = Instant::now() - HEARTBEAT;
@@ -73,7 +84,14 @@ pub fn run() -> Result<()> {
 
     loop {
         if Instant::now() >= next_scan {
-            let fresh = scanner.scan();
+            let mut fresh = scanner.scan();
+            let link = october.lock().map(|s| s.clone()).unwrap_or_default();
+            merge_october(&mut fresh, &link);
+            let summary = serde_json::to_string(&link).unwrap_or_default();
+            if summary != last_october {
+                emit(&json!({"type": "october", "october": link}));
+                last_october = summary;
+            }
             if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
                 agents = fresh;
                 emit(&json!({"type": "snapshot", "generatedAt": now_ms(), "agents": agents}));
@@ -90,6 +108,9 @@ pub fn run() -> Result<()> {
                     let result = match agents.iter().find(|a| a.id == agent_id) {
                         None => Err(("unknown_agent", format!("no agent {agent_id}"))),
                         Some(a) if !a.can_reply => Err(("not_reachable", "Lantern can't type into this terminal yet".to_string())),
+                        Some(a) if matches!(a.route, Route::October { .. }) => {
+                            send_via_october(&october, &october_tx, a, &text).map_err(|m| ("send_failed", m))
+                        }
                         Some(a) => deliver::send_text(a, &text).map_err(|e| ("send_failed", format!("{e:#}"))),
                     };
                     match result {
@@ -129,7 +150,13 @@ pub fn run() -> Result<()> {
                     emit(&json!({"type": "replyResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
+                Ok(Request::OctoberPair) => { let _ = october_tx.send(crate::october_link::Command::Pair); }
+                Ok(Request::OctoberCancelPair) => { let _ = october_tx.send(crate::october_link::Command::CancelPair); }
+                Ok(Request::OctoberForget) => { let _ = october_tx.send(crate::october_link::Command::Forget); }
                 Ok(Request::Focus { request_id, agent_id }) => {
+                    if let Some(oa) = agents.iter().find(|a| a.id == agent_id).and_then(|a| october_agent(&october, a)) {
+                        let _ = october_tx.send(crate::october_link::Command::Focus { agent: oa });
+                    }
                     let result = match agents.iter().find(|a| a.id == agent_id) {
                         None => Err(format!("no agent {agent_id}")),
                         Some(a) => deliver::focus(a).map_err(|e| format!("{e:#}")),
@@ -149,4 +176,58 @@ pub fn run() -> Result<()> {
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
+}
+
+/// October's view of a Lantern agent that runs inside October Desktop, matched by folder and
+/// harness (October's terminals are ordinary processes Lantern also sees).
+fn match_october<'a>(link: &'a LinkState, a: &Agent) -> Option<&'a crate::october_core::OctoberAgent> {
+    if a.host.as_ref().is_none_or(|h| h.app != "October") {
+        return None;
+    }
+    let cwd = a.cwd.as_deref()?;
+    let same_dir: Vec<_> = link.agents.iter().filter(|o| o.cwd.as_deref() == Some(cwd)).collect();
+    let by_harness: Vec<_> = same_dir
+        .iter()
+        .filter(|o| o.harness.as_deref().is_some_and(|h| h.contains(a.kind.as_str())))
+        .copied()
+        .collect();
+    match (by_harness.len(), same_dir.len()) {
+        (1, _) => Some(by_harness[0]),
+        (0, 1) => Some(same_dir[0]),
+        _ => None,
+    }
+}
+
+fn october_agent(link: &Arc<Mutex<LinkState>>, a: &Agent) -> Option<crate::october_core::OctoberAgent> {
+    let link = link.lock().ok()?;
+    match_october(&link, a).cloned()
+}
+
+/// When Lantern is paired with October, agents inside October get their October name and state,
+/// and replies go through October's safe delivery.
+fn merge_october(agents: &mut [Agent], link: &LinkState) {
+    if link.agents.is_empty() {
+        return;
+    }
+    for a in agents.iter_mut() {
+        let Some(o) = match_october(link, a).cloned() else { continue };
+        if a.title.is_none() {
+            a.title = o.name.clone();
+        }
+        if o.state == "needs-user" {
+            a.state = State::NeedsInput;
+            a.question = o.attention.clone().or(a.question.take());
+        }
+        if link.paired {
+            a.route = Route::October { canvas_id: o.canvas_id.clone(), node_id: o.node_id.clone() };
+            a.can_reply = true;
+        }
+    }
+}
+
+fn send_via_october(link: &Arc<Mutex<LinkState>>, tx: &Sender<crate::october_link::Command>, a: &Agent, text: &str) -> Result<(), String> {
+    let agent = october_agent(link, a).ok_or("October no longer lists this agent")?;
+    let (done, wait) = std::sync::mpsc::channel();
+    tx.send(crate::october_link::Command::Send { agent, text: text.to_string(), done }).map_err(|_| "October link stopped")?;
+    wait.recv_timeout(Duration::from_secs(15)).map_err(|_| "October didn't answer in time".to_string())?.map(|_| ())
 }

@@ -112,6 +112,17 @@ struct ChatMessage: Decodable, Hashable {
     let at: String?
 }
 
+/// The connection to October Desktop (see engine/src/october_link.rs).
+struct OctoberLink: Decodable, Equatable {
+    /// notInstalled | notRunning | readOnly | connected | pairing | error
+    let status: String
+    let coreVersion: String?
+    let paired: Bool
+    let pairingCode: String?
+    let message: String?
+    let agentCount: Int
+}
+
 enum EngineMessage: Decodable {
     case hello(version: String)
     case snapshot(agents: [Agent])
@@ -120,6 +131,7 @@ enum EngineMessage: Decodable {
     case launchResult(requestId: String, ok: Bool, message: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
     case history(agentId: String, supported: Bool, messages: [ChatMessage])
+    case october(OctoberLink)
     case other
 
     struct Installed: Decodable {
@@ -127,7 +139,7 @@ enum EngineMessage: Decodable {
         let tmux: Bool
     }
 
-    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message, installed, agentId, supported, messages }
+    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -143,6 +155,8 @@ enum EngineMessage: Decodable {
                 error: try c.decodeIfPresent(String.self, forKey: .error),
                 message: try c.decodeIfPresent(String.self, forKey: .message)
             )
+        case "october":
+            self = .october(try c.decode(OctoberLink.self, forKey: .october))
         case "historyResult":
             self = .history(
                 agentId: try c.decode(String.self, forKey: .agentId),

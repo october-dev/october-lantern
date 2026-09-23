@@ -118,8 +118,10 @@ pub struct TmuxPane {
 
 /// How Lantern can type into an agent. See `deliver.rs`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "via", rename_all = "lowercase")]
+#[serde(tag = "via", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Route {
+    /// Through October Desktop's own safe delivery (Lantern is paired with October).
+    October { canvas_id: String, node_id: String },
     Tmux,
     Cmux { workspace: String, surface: String },
     Terminal { tty: String },

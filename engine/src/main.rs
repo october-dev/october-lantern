@@ -11,6 +11,8 @@ mod history;
 mod hooks;
 mod launch;
 mod model;
+mod october_core;
+mod october_link;
 mod procs;
 mod readers;
 mod scanner;

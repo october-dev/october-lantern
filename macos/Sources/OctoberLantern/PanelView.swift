@@ -13,7 +13,7 @@ struct PanelView: View {
                 NewSessionView(model: model)
             case .october:
                 PanelTitle(title: "October", model: model)
-                OctoberView()
+                OctoberView(model: model)
             default:
                 if let agent = model.chatAgent {
                     ChatView(agent: agent, model: model)
