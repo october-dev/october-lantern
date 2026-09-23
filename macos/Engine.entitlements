@@ -2,9 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- Dictation: the hardened runtime blocks the microphone without this. -->
-  <key>com.apple.security.device.audio-input</key><true/>
-  <!-- Typing replies into Terminal and iTerm2 tabs (the user approves each app once). -->
+  <!-- The engine drives Terminal and iTerm2 through osascript to deliver replies. -->
   <key>com.apple.security.automation.apple-events</key><true/>
 </dict>
 </plist>

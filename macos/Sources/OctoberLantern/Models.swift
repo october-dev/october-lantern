@@ -19,6 +19,7 @@ struct AgentKind: RawRepresentable, Codable, Hashable {
             "claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode", "pi": "Pi", "gemini": "Gemini CLI",
             "grok": "Grok", "cursor": "Cursor", "qwen": "Qwen Code", "goose": "Goose", "aider": "Aider", "amp": "Amp",
             "copilot": "Copilot", "kimi": "Kimi", "droid": "Droid", "crush": "Crush", "auggie": "Auggie",
+            "october": "October",
         ][rawValue] ?? rawValue.capitalized
     }
 }
@@ -53,6 +54,14 @@ struct TmuxPane: Codable, Hashable {
     let paneId: String
 }
 
+/// How Lantern types into an agent: "tmux", "cmux", "terminal", "iterm" or "none".
+struct Route: Codable, Hashable {
+    let via: String
+
+    /// Whether single keys (e.g. "1" to allow a permission prompt) can be sent without Enter.
+    var sendsKeys: Bool { via == "tmux" || via == "cmux" || via == "iterm" }
+}
+
 struct Agent: Codable, Identifiable, Hashable {
     let id: String
     let kind: AgentKind
@@ -70,7 +79,13 @@ struct Agent: Codable, Identifiable, Hashable {
     let host: HostApp?
     let tmux: TmuxPane?
     let canReply: Bool
+    let route: Route?
     let stateSource: String
+
+    /// A Claude Code permission prompt ("Claude needs your permission to use Bash").
+    var isPermissionPrompt: Bool {
+        state == .needsInput && (question?.localizedCaseInsensitiveContains("permission") ?? false)
+    }
 
     /// Identifies one particular turn, so dismissing it doesn't hide the next one.
     var turnKey: String { "\(id)@\(Int(stateSince ?? 0))" }

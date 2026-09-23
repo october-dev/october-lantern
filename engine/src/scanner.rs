@@ -3,21 +3,27 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use sysinfo::System;
+use sysinfo::{Pid, System};
 
 use crate::hooks::{HookEvent, read_events};
-use crate::model::{Agent, HostApp, Kind, SessionStatus, State, StateSource};
-use crate::procs::{Proc, ProcTable, basename};
+use crate::model::{Agent, HostApp, Kind, Route, SessionStatus, State, StateSource};
+use crate::procs::{Proc, ProcCache, ProcTable, basename};
 use crate::tmux;
 use crate::transcripts::Transcripts;
 
 pub struct Scanner {
     sys: System,
+    proc_cache: ProcCache,
+    /// Agent pid → the child process that holds its session file open (Codex's native binary).
+    children: HashMap<u32, u32>,
     transcripts: Transcripts,
     /// Remember the transcript each Claude process was matched to, so guesses stay stable.
     claude_paths: HashMap<u32, PathBuf>,
     /// Handle numbers stay with an agent for its whole life; a new agent takes the lowest free one.
     handles: HashMap<u32, (Kind, usize)>,
+    opencode_cache: HashMap<u32, ((u64, u64), SessionStatus)>,
+    /// Working directory and start time per agent, for readers that match sessions by them.
+    started: HashMap<u32, (PathBuf, u64)>,
 }
 
 /// Arguments that mean the process is a helper or a headless run, not an interactive agent.
@@ -78,14 +84,18 @@ impl Scanner {
     pub fn new() -> Self {
         Scanner {
             sys: System::new(),
+            proc_cache: ProcCache::default(),
+            children: HashMap::new(),
             transcripts: Transcripts::default(),
             claude_paths: HashMap::new(),
             handles: HashMap::new(),
+            opencode_cache: HashMap::new(),
+            started: HashMap::new(),
         }
     }
 
     pub fn scan(&mut self) -> Vec<Agent> {
-        let table = ProcTable::capture(&mut self.sys);
+        let mut table = ProcTable::capture(&mut self.sys, &mut self.proc_cache);
 
         // Interactive agents only (they have a terminal), and only the outermost process of each
         // kind (the node wrapper, not the native binary it spawns).
@@ -95,19 +105,31 @@ impl Scanner {
             .filter(|p| p.tty.is_some())
             .filter_map(|p| classify(p).map(|k| (p.pid, k)))
             .collect();
-        let mut agents: Vec<(&Proc, Kind)> = candidates
+        let outermost: Vec<(u32, Kind)> = candidates
             .iter()
             .filter(|(pid, kind)| !table.ancestors(**pid).iter().any(|a| candidates.get(&a.pid) == Some(kind)))
-            .filter_map(|(pid, kind)| table.get(*pid).map(|p| (p, *kind)))
+            .map(|(pid, kind)| (*pid, *kind))
             .collect();
+        let agent_pids: Vec<u32> = outermost.iter().map(|(p, _)| *p).collect();
+        table.fill_cwds(&mut self.sys, &agent_pids);
+        let mut agents: Vec<(&Proc, Kind)> =
+            outermost.iter().filter_map(|(pid, kind)| table.get(*pid).map(|p| (p, *kind))).collect();
         agents.sort_by_key(|(p, k)| (*k, p.pid));
 
         let tmux = if agents.is_empty() { None } else { Some(tmux::discover(&table)) };
         let events = read_events();
         let live: Vec<u32> = agents.iter().map(|(p, _)| p.pid).collect();
-        self.transcripts.forget_pids(&live);
+        // Keep open-file lookups for agents and their children (Codex's file is held by the child).
+        let children: Vec<u32> = live.iter().filter_map(|pid| table.child_of(*pid)).collect();
+        self.transcripts.forget_pids(&[live.clone(), children].concat());
         self.claude_paths.retain(|pid, _| live.contains(pid));
         self.handles.retain(|pid, (kind, _)| agents.iter().any(|(p, k)| p.pid == *pid && k == kind));
+        self.opencode_cache.retain(|pid, _| live.contains(pid));
+        self.children = live.iter().filter_map(|pid| table.child_of(*pid).map(|c| (*pid, c))).collect();
+        self.started = agents
+            .iter()
+            .filter_map(|(p, _)| p.cwd.clone().map(|c| (p.pid, (c, p.start_time))))
+            .collect();
 
         let mut out = Vec::new();
         for (p, kind) in agents {
@@ -132,6 +154,7 @@ impl Scanner {
                 }
                 None => host_app(&table, p.pid),
             };
+            let route = self.route(p.pid, p.tty.as_deref(), tmux_pane.is_some(), host.as_ref());
             let cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
             out.push(Agent {
                 id: format!("{}:{}", kind.as_str(), p.pid),
@@ -147,13 +170,41 @@ impl Scanner {
                 state_since: status.since,
                 last_message: status.last_message,
                 question: status.question,
-                can_reply: tmux_pane.is_some(),
+                can_reply: route != Route::None,
+                route,
                 host,
                 tmux: tmux_pane,
                 state_source: source,
             });
         }
         out
+    }
+
+    /// How Lantern can type into this agent: tmux first (it's exact), then the terminal app's own
+    /// mechanism.
+    fn route(&self, pid: u32, tty: Option<&str>, in_tmux: bool, host: Option<&HostApp>) -> Route {
+        if in_tmux {
+            return Route::Tmux;
+        }
+        let app = host.map(|h| h.app.as_str()).unwrap_or("");
+        let env = |key: &str| -> Option<String> {
+            let prefix = format!("{key}=");
+            self.sys.process(Pid::from_u32(pid))?.environ().iter().find_map(|e| {
+                e.to_str().and_then(|e| e.strip_prefix(&prefix)).filter(|v| !v.is_empty()).map(String::from)
+            })
+        };
+        let dev_tty = tty.map(|t| format!("/dev/{t}"));
+        match app {
+            "cmux" if std::path::Path::new(crate::deliver::CMUX).exists() => {
+                match (env("CMUX_WORKSPACE_ID"), env("CMUX_SURFACE_ID")) {
+                    (Some(workspace), Some(surface)) => Route::Cmux { workspace, surface },
+                    _ => Route::None,
+                }
+            }
+            "Terminal" => dev_tty.map(|tty| Route::Terminal { tty }).unwrap_or(Route::None),
+            "iTerm" | "iTerm2" => dev_tty.map(|tty| Route::Iterm { tty }).unwrap_or(Route::None),
+            _ => Route::None,
+        }
     }
 
     /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions.
@@ -164,8 +215,20 @@ impl Scanner {
                 let path = self
                     .transcripts
                     .codex_path_for_pid(agent.pid)
-                    .or_else(|| self_child(agent.pid).and_then(|c| self.transcripts.codex_path_for_pid(c)));
+                    .or_else(|| self.children.get(&agent.pid).copied().and_then(|c| self.transcripts.codex_path_for_pid(c)));
                 Some(path.map(|p| crate::history::codex(&p)).unwrap_or_default())
+            }
+            Kind::Pi | Kind::October | Kind::Gemini | Kind::Opencode => {
+                let (cwd, start) = self.started.get(&agent.pid).cloned()?;
+                Some(match agent.kind {
+                    Kind::Opencode => crate::readers::opencode::history(&cwd, start),
+                    Kind::Gemini => crate::readers::gemini::session_file(&cwd, start)
+                        .map(|p| crate::readers::gemini::history(&p))
+                        .unwrap_or_default(),
+                    k => crate::readers::pi::session_file(&cwd, start, k == Kind::October)
+                        .map(|p| crate::readers::pi::history(&p))
+                        .unwrap_or_default(),
+                })
             }
             _ => None,
         }
@@ -204,22 +267,45 @@ impl Scanner {
                 self.transcripts.claude_status(&path)
             }
             Kind::Codex => {
-                let path = self.transcripts.codex_path_for_pid(p.pid).or_else(|| {
-                    // The node wrapper doesn't hold the file; its native child does.
-                    let child = self_child(p.pid)?;
-                    self.transcripts.codex_path_for_pid(child)
-                })?;
+                // The node wrapper doesn't hold the file; its native child does.
+                let child = self.children.get(&p.pid).copied();
+                let path = self
+                    .transcripts
+                    .codex_path_for_pid(p.pid)
+                    .or_else(|| child.and_then(|c| self.transcripts.codex_path_for_pid(c)))?;
                 self.transcripts.codex_status(&path)
+            }
+            // No session file since the process started means nothing has happened yet.
+            Kind::Pi | Kind::October => {
+                let cwd = p.cwd.as_deref()?;
+                match crate::readers::pi::session_file(cwd, p.start_time, kind == Kind::October) {
+                    Some(path) => self.transcripts.cached(&path, crate::readers::pi::parse),
+                    None => Some(idle()),
+                }
+            }
+            Kind::Gemini => match crate::readers::gemini::session_file(p.cwd.as_deref()?, p.start_time) {
+                Some(path) => self.transcripts.cached(&path, crate::readers::gemini::parse),
+                None => Some(idle()),
+            },
+            Kind::Opencode => {
+                // One database for every session: cache per (process, database change).
+                let stamp = crate::readers::opencode::stamp()?;
+                if let Some((s, status)) = self.opencode_cache.get(&p.pid) {
+                    if *s == stamp {
+                        return Some(status.clone());
+                    }
+                }
+                let status = crate::readers::opencode::status(p.cwd.as_deref()?, p.start_time).unwrap_or_else(idle);
+                self.opencode_cache.insert(p.pid, (stamp, status.clone()));
+                Some(status)
             }
             _ => None,
         }
     }
 }
 
-/// The native codex binary under a node wrapper. Looked up with `pgrep` to keep it simple.
-fn self_child(pid: u32) -> Option<u32> {
-    let out = std::process::Command::new("/usr/bin/pgrep").args(["-P", &pid.to_string()]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).lines().next()?.trim().parse().ok()
+fn idle() -> SessionStatus {
+    SessionStatus { state: Some(State::Idle), ..Default::default() }
 }
 
 /// A hook event is exact but only as fresh as the last event; the transcript may be newer.

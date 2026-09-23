@@ -23,7 +23,7 @@ use crate::tmux;
 
 pub const LANTERN_SOCKET: &str = "lantern";
 
-const ALL: [Kind; 16] = [
+const ALL: [Kind; 17] = [
     Kind::Claude,
     Kind::Codex,
     Kind::Opencode,
@@ -40,6 +40,7 @@ const ALL: [Kind; 16] = [
     Kind::Droid,
     Kind::Crush,
     Kind::Auggie,
+    Kind::October,
 ];
 
 pub fn program(kind: Kind) -> &'static str {

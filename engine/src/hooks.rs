@@ -165,14 +165,53 @@ pub fn read_events() -> Vec<HookEvent> {
 
 const CLAUDE_EVENTS: [&str; 4] = ["Notification", "Stop", "UserPromptSubmit", "PostToolUse"];
 
-/// A stable path for hook commands, so moving the app doesn't break them.
-fn stable_engine_path() -> Result<PathBuf> {
-    let link = support_dir().join("bin/lantern-engine");
-    fs::create_dir_all(link.parent().unwrap())?;
+fn hook_binary() -> PathBuf {
+    support_dir().join("bin/lantern-engine")
+}
+
+/// Hooks run Lantern's own copy of the engine, so moving, updating or deleting the app never
+/// leaves the agents calling a missing program.
+fn install_hook_binary() -> Result<PathBuf> {
+    let dest = hook_binary();
+    fs::create_dir_all(dest.parent().unwrap())?;
     let exe = std::env::current_exe()?.canonicalize()?;
-    let _ = fs::remove_file(&link);
-    std::os::unix::fs::symlink(&exe, &link)?;
-    Ok(link)
+    let tmp = dest.with_extension("new");
+    let _ = fs::remove_file(&tmp);
+    fs::copy(&exe, &tmp)?;
+    fs::rename(&tmp, &dest)?;
+    Ok(dest)
+}
+
+/// Keeps the hooks' copy of the engine in step with the app (called when the app starts).
+pub fn refresh_hook_binary() {
+    let dest = hook_binary();
+    if !dest.exists() {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) else { return };
+    if exe == dest {
+        return;
+    }
+    if fs::read(&exe).ok() != fs::read(&dest).ok() {
+        let _ = install_hook_binary();
+    }
+}
+
+/// The Claude Code hook command: does nothing (successfully) if Lantern has been removed.
+pub(crate) fn claude_hook_command(engine: &Path) -> String {
+    let q = shell_quote(engine);
+    format!("[ -x {q} ] && {q} hook claude; exit 0")
+}
+
+/// The Codex `notify` program. Codex appends the event JSON as the last argument, which becomes $1.
+pub(crate) fn codex_notify_command(engine: &Path) -> Vec<String> {
+    let q = shell_quote(engine);
+    vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        format!("[ -x {q} ] && exec {q} hook codex \"$1\"; exit 0"),
+        "lantern-engine-notify".into(),
+    ]
 }
 
 fn shell_quote(p: &Path) -> String {
@@ -241,7 +280,7 @@ fn codex_notify(doc: &toml_edit::DocumentMut) -> Option<Vec<String>> {
 }
 
 pub fn install() -> Result<()> {
-    let engine = stable_engine_path()?;
+    let engine = install_hook_binary()?;
 
     // Claude Code
     let path = claude_settings_path();
@@ -251,7 +290,7 @@ pub fn install() -> Result<()> {
     };
     backup(&path)?;
     remove_claude_hooks(&mut settings);
-    let command = format!("{} hook claude", shell_quote(&engine));
+    let command = claude_hook_command(&engine);
     let hooks = settings
         .as_object_mut()
         .context("settings.json is not an object")?
@@ -283,9 +322,9 @@ pub fn install() -> Result<()> {
     }
     backup(&path)?;
     let mut arr = toml_edit::Array::new();
-    arr.push(engine.to_string_lossy().as_ref());
-    arr.push("hook");
-    arr.push("codex");
+    for part in codex_notify_command(&engine) {
+        arr.push(part);
+    }
     doc.insert("notify", toml_edit::value(arr));
     fs::create_dir_all(path.parent().unwrap())?;
     fs::write(&path, doc.to_string())?;
@@ -332,6 +371,18 @@ pub fn uninstall() -> Result<()> {
         } else {
             println!("Codex: Lantern is not installed");
         }
+    }
+    Ok(())
+}
+
+/// Removes everything Lantern put on this machine outside the app: hooks (restoring previous
+/// settings), the hooks' engine copy, hook events and launch scripts.
+pub fn uninstall_everything() -> Result<()> {
+    uninstall()?;
+    let dir = support_dir();
+    if dir.exists() {
+        fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
+        println!("Removed {}", dir.display());
     }
     Ok(())
 }

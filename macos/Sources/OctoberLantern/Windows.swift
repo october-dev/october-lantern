@@ -43,7 +43,7 @@ final class WindowController {
 
     private var edge: Edge {
         get { Edge(rawValue: UserDefaults.standard.string(forKey: "pillEdge") ?? "") ?? .right }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "pillEdge") }
+        set { Preferences.shared.edge = newValue.rawValue }
     }
     /// Top of the pill as a fraction of the screen's visible height. The pill grows downward from
     /// here when it expands.
@@ -84,12 +84,23 @@ final class WindowController {
         hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.checkHover() }
         }
+        Preferences.shared.$edge
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in self?.layout() }
+            .store(in: &subscriptions)
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.layout() }
         }
     }
 
     var pillVisible: Bool { pill.isVisible }
+
+    /// Expands the pill for a few seconds so people can find it (after the welcome).
+    func flash() {
+        model.pillExpanded = true
+        outsideSince = Date().addingTimeInterval(3)
+    }
 
     func showPill() {
         layout()

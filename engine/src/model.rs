@@ -23,6 +23,8 @@ pub enum Kind {
     Droid,
     Crush,
     Auggie,
+    /// The October harness (`october`), a Pi fork.
+    October,
 }
 
 impl Kind {
@@ -44,6 +46,7 @@ impl Kind {
             Kind::Droid => "droid",
             Kind::Crush => "crush",
             Kind::Auggie => "auggie",
+            Kind::October => "october",
         }
     }
 
@@ -66,6 +69,7 @@ impl Kind {
             "droid" => Kind::Droid,
             "crush" => Kind::Crush,
             "auggie" => Kind::Auggie,
+            "october" => Kind::October,
             _ => return None,
         })
     }
@@ -112,6 +116,17 @@ pub struct TmuxPane {
     pub pane_id: String,
 }
 
+/// How Lantern can type into an agent. See `deliver.rs`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "via", rename_all = "lowercase")]
+pub enum Route {
+    Tmux,
+    Cmux { workspace: String, surface: String },
+    Terminal { tty: String },
+    Iterm { tty: String },
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
@@ -131,6 +146,7 @@ pub struct Agent {
     pub host: Option<HostApp>,
     pub tmux: Option<TmuxPane>,
     pub can_reply: bool,
+    pub route: Route,
     pub state_source: StateSource,
 }
 

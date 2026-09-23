@@ -75,10 +75,28 @@ struct PanelView: View {
                 detail: model.agents.isEmpty ? "No agents running." : "\(model.agents.count) agent\(model.agents.count == 1 ? "" : "s") running."
             )
         } else {
-            ForEach(model.inbox) { agent in
-                InboxCard(agent: agent, selected: model.target?.id == agent.id, model: model)
+            ForEach(model.newInbox) { agent in
+                InboxCard(agent: agent, selected: model.target?.id == agent.id, isNew: true, model: model)
                     .contentShape(Rectangle())
                     .onTapGesture { model.openChat(agent) }
+            }
+            if !model.earlierInbox.isEmpty {
+                HStack {
+                    Text("EARLIER").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.muted)
+                    Spacer()
+                    Button("Clear all") { model.dismiss(model.earlierInbox) }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                        .help("Mark all of these as done")
+                }
+                .padding(.horizontal, 4).padding(.top, model.newInbox.isEmpty ? 0 : 6)
+                ForEach(model.earlierInbox) { agent in
+                    AgentRow(agent: agent, selected: model.target?.id == agent.id)
+                        .onTapGesture { model.openChat(agent) }
+                        .contextMenu {
+                            Button("Done") { model.dismiss(agent) }
+                            Button("Open in \(agent.host?.app ?? "terminal")") { model.open(agent) }
+                        }
+                }
             }
         }
     }
@@ -142,6 +160,7 @@ struct EmptyState: View {
 struct InboxCard: View {
     let agent: Agent
     let selected: Bool
+    var isNew = false
     @ObservedObject var model: AppModel
     @State private var expanded = false
 
@@ -187,6 +206,10 @@ struct InboxCard: View {
                 }
             }
 
+            if agent.isPermissionPrompt {
+                PermissionButtons(agent: agent, model: model)
+            }
+
             HStack(spacing: 8) {
                 SmallButton(title: "Reply", symbol: "arrowshape.turn.up.left") { model.compose(to: agent) }
                 SmallButton(title: "Open", symbol: "arrow.up.forward.app") { model.open(agent) }
@@ -199,8 +222,38 @@ struct InboxCard: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.hairline, lineWidth: 1))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(selected ? Theme.amber.opacity(0.5) : Color.clear, lineWidth: 1)
+                .stroke(selected || isNew ? Theme.amber.opacity(selected ? 0.6 : 0.3) : Color.clear, lineWidth: 1)
         )
+    }
+}
+
+/// Allow / Deny for a Claude Code permission prompt, where Lantern can press keys in its terminal.
+struct PermissionButtons: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if agent.route?.sendsKeys ?? false {
+            HStack(spacing: 8) {
+                Button { model.answerPermission(agent, allow: true) } label: {
+                    Label("Allow", systemImage: "checkmark").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.amber))
+                }
+                .buttonStyle(.plain)
+                .help("Allow once (presses 1 in the agent's terminal)")
+                Button { model.answerPermission(agent, allow: false) } label: {
+                    Label("Deny", systemImage: "xmark").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.ink)
+                        .frame(maxWidth: .infinity).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.faint))
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.hairline))
+                }
+                .buttonStyle(.plain)
+                .help("Decline (presses Escape), then tell the agent what to do instead")
+            }
+        }
     }
 }
 

@@ -25,7 +25,7 @@ Sent when anything changes, and at least every 10 seconds.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Stable while the process lives: `"<kind>:<pid>"` |
-| `kind` | string | `claude`, `codex`, `opencode`, `pi`, `gemini`, `grok`, `cursor`, `qwen`, `goose`, `aider`, `amp`, `copilot`, `kimi`, `droid`, `crush`, `auggie`. Clients should accept unknown values. |
+| `kind` | string | `claude`, `codex`, `opencode`, `pi`, `october` (the October harness), `gemini`, `grok`, `cursor`, `qwen`, `goose`, `aider`, `amp`, `copilot`, `kimi`, `droid`, `crush`, `auggie`. Clients should accept unknown values. |
 | `handle` | string | Display handle, e.g. `"claude-2"`. Numbered per kind. A number stays with its agent for the agent's whole life, and a new agent takes the lowest free number. |
 | `pid` | number | |
 | `tty` | string? | e.g. `"ttys004"` |
@@ -39,8 +39,9 @@ Sent when anything changes, and at least every 10 seconds.
 | `question` | string? | For `needs_input`: what it's asking |
 | `host` | `{ "app": string, "pid": number, "bundlePath": string }?` | The GUI app the agent runs inside (Terminal, iTerm2, Ghostty, cmux, ...) |
 | `tmux` | `{ "socket": string?, "target": string, "paneId": string }?` | Present when the agent runs inside a tmux pane |
-| `canReply` | bool | `true` when the engine can type a reply into the agent directly (tmux) |
-| `stateSource` | `"hook" \| "transcript" \| "none"` | Where the state came from |
+| `canReply` | bool | `true` when the engine can type a reply into the agent (`route.via` isn't `none`) |
+| `route` | object | How replies reach the agent. `{"via":"tmux"}`, `{"via":"cmux","workspace":"…","surface":"…"}`, `{"via":"terminal","tty":"/dev/ttys004"}`, `{"via":"iterm","tty":"…"}` or `{"via":"none"}`. Single keys (`keys`) work for tmux, cmux and iterm. |
+| `stateSource` | `"hook" \| "transcript" \| "none"` | Where the state came from ("transcript" covers every session reader) |
 
 ### `installed`
 Sent once, shortly after `hello`. Lists the agents installed on this machine, as found by the user's login shell.
@@ -83,9 +84,16 @@ The recent conversation with an agent (up to 120 messages from the end of its se
 {"type":"history","requestId":"h1","agentId":"codex:4242"}
 ```
 
+```json
+{"type":"keys","requestId":"k1","agentId":"claude:4242","keys":["1"]}
+{"type":"focus","requestId":"f1","agentId":"claude:4242"}
+```
+
+`keys` presses single keys without Enter (`"1"`, `"Escape"`), e.g. to answer a permission prompt; the result comes back as `replyResult`. `focus` brings the agent's own tab or pane to the front (for a tmux session nobody is attached to, it opens a Terminal window attached to it); the result comes back as `attachResult`.
+
 `launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument; other agents have it typed in about 4 seconds after they start. `attach` opens a Terminal window attached to an agent's tmux session.
 
-`reply` types the text into the agent's tmux pane, then presses Enter. For agents outside tmux it returns `not_reachable`, and the app falls back to copying the text and focusing the host app.
+`reply` types the text into the agent's terminal (see `route`), then presses Enter. For agents with `route.via == "none"` it returns `not_reachable`, and the app falls back to copying the text and bringing the host app forward.
 
 ## Hook events (written by `lantern-engine hook <source>`)
 

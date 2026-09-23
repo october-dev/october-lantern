@@ -2,9 +2,13 @@
 
 **A small glowing lantern on the edge of your screen that watches every AI coding agent on your Mac and lights up when one of them needs you.**
 
-People now run several coding agents at once (Claude Code in one terminal, Codex in another, Pi or OpenCode in a third), and each one keeps stopping to say "done" or to ask something. The only way to find out is to click through every window. October Lantern sits on the edge of your screen, finds all of those agents by itself, shows which ones are waiting on you and what they said, and lets you answer without hunting for the right window.
+People now run several coding agents at once (Claude Code in one terminal, Codex in another, Pi or OpenCode in a third), and each one keeps stopping to say "done" or to ask something. The only way to find out is to click through every window. October Lantern sits on the edge of your screen, finds all of those agents by itself, shows which ones are waiting on you and what they said, and lets you answer them without hunting for the right window.
 
-Lantern is part of the **October** family. October Desktop is the flagship workspace for running teams of agents; `october-harness` and `october-bus` are its agent and messaging layers. Lantern is the small, free-standing entry point: a light download that's useful on its own, and gets more capable when October Desktop is installed (see [Roadmap](#roadmap)).
+Lantern is part of the **October** family. October Desktop is the flagship workspace for running teams of agents; `october-harness` and `october-bus` are its agent and messaging layers. Lantern is the small, free-standing entry point: a light download that's useful on its own, and will get more capable when October Desktop is installed (see [Roadmap](#roadmap)).
+
+- **Website:** <https://lantern.october.dev>
+- **Download (always the latest):** <https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern.dmg>
+- **Contact:** hey@october.dev
 
 > **For anyone writing about Lantern (website, launch posts, docs):** this README is the source of truth. The [What's true today](#whats-true-today) table says exactly what works now and what doesn't. Please don't claim anything marked "not yet".
 
@@ -17,14 +21,16 @@ Lantern is part of the **October** family. October Desktop is the flagship works
 - [What it looks like](#what-it-looks-like)
 - [A walkthrough](#a-walkthrough)
 - [Supported agents](#supported-agents)
+- [Supported terminals](#supported-terminals)
 - [What's true today](#whats-true-today)
 - [Privacy](#privacy)
 - [Requirements and permissions](#requirements-and-permissions)
+- [Installing, updating and uninstalling](#installing-updating-and-uninstalling)
 - [Roadmap](#roadmap)
 - [Brand and voice](#brand-and-voice)
 - [FAQ](#faq)
 - [How it works (technical)](#how-it-works-technical)
-- [Building from source](#building-from-source)
+- [Building and releasing](#building-and-releasing)
 - [Repository layout](#repository-layout)
 - [Glossary](#glossary)
 
@@ -42,129 +48,162 @@ The result is either wasted agent time (an agent sat idle for 20 minutes waiting
 
 ## What Lantern does
 
-1. **Finds every agent on your Mac, automatically.** No setup and no special way of launching them. If Claude Code, Codex, Pi, OpenCode or another supported agent is running in any terminal (Terminal, iTerm2, Ghostty, cmux, VS Code's terminal, tmux...), Lantern sees it.
-2. **Knows which ones are waiting on you.** For Claude Code and Codex, Lantern reads each agent's own session log to tell whether it's still working or has finished its turn and is waiting for you. It shows what the agent last said.
-3. **One place to look.** The lantern glows amber and shows a count when agents are waiting. Click it to see a "Waiting" list: each agent, its project, how long it's been waiting, and its last message.
-4. **Read the whole conversation.** Click any agent to open its chat inside the panel: what you asked, what it answered, and a one-line summary of each command or tool it ran (for Claude Code and Codex).
-5. **Answer without switching windows.** Type or dictate a reply in Lantern. For agents running inside tmux, Lantern types the reply straight into the agent's session. For agents in other terminals, Lantern copies your reply and brings the right app to the front so you can paste it (see [What's true today](#whats-true-today)).
-6. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern opens it in a new Terminal window (or runs it in the background). Sessions Lantern starts run inside tmux, so Lantern can always reply to them directly.
-7. **Stays out of your way.** Collapsed, Lantern is a single small lantern icon on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
+1. **Finds every agent on your Mac, automatically.** You don't set anything up or start agents differently. If Claude Code, Codex, OpenCode, Pi, Gemini CLI or another supported agent is running in any terminal, Lantern sees it.
+2. **Knows which ones are waiting on you.** Lantern reads each agent's own session log to tell whether it's still working or has finished and is waiting for you, and shows what it last said. With the optional hooks, it also knows the moment Claude Code needs permission.
+3. **One place to look.** The lantern glows amber with a count when agents finish or ask you something. Click it to see **Waiting**: each agent, its project, how long it's been waiting and its last message.
+4. **Read the whole conversation.** Click any agent to open its chat: what you asked, what it answered, and a one-line summary of each command or tool it ran.
+5. **Answer without switching windows.** Type or dictate a reply and Lantern types it into the agent's own terminal tab: in **cmux**, **Terminal**, **iTerm2** and **tmux**. For permission prompts, **Allow** and **Deny** buttons answer right from Lantern.
+6. **Notifies you.** An optional macOS notification when an agent finishes or needs you, even when the lantern is out of sight. Clicking it opens that agent's conversation.
+7. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern opens it in a new Terminal window or runs it in the background.
+8. **Stays out of your way.** Collapsed, Lantern is one small lantern on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
 
 Lantern does **not** replace your terminals. Your agents keep running exactly where you started them, and you can keep using them there as usual. Lantern is an extra view and remote control on top.
 
 ## What it looks like
 
 **The lantern (collapsed).** A small glass circle on the right (or left) edge of the screen containing the Lantern logo, a little orange lantern with eyes.
-- **Dim**: no agent needs anything.
-- **Soft glow**: agents are working.
-- **Bright amber glow with a number badge**: that many agents are waiting on you.
+- **Dim:** nothing needs you.
+- **Soft glow:** agents are working.
+- **Amber glow with a number:** that many agents have finished or are asking you something since you last looked.
+- **Amber glow, no number:** agents are still waiting, but you've already seen them.
 
-**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting** (inbox), **Agents** (everyone running), **New session**, **Message** (compose), **Dictate** (microphone) and **More** (settings), followed by the **October** logo. Move the mouse away and it tucks back into the single lantern. Drag the lantern to move it; it snaps to the nearest screen edge.
+**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting**, **Agents**, **New session (+)**, **Message**, **Dictate** and **More**, then the **October** logo. It tucks back in when the mouse leaves. Drag the lantern to move it; it snaps to the nearest screen edge.
 
-**The panel.** Clicking Waiting or Agents opens a frosted-glass panel beside the lantern:
-- **Waiting**: one card per agent that's waiting on you, with the agent's logo, its handle (e.g. `@claude-2`), its project folder, the app it's running in, how long it's been waiting, the session title, and its last message. Each card has **Reply**, **Open** (bring its terminal to the front) and **Done** (clear it from the list) buttons.
-- **Agents**: every running agent, sorted with the ones that need you first, each with its logo, handle, folder, app, and a status of *Your turn*, *Working* or *Running*.
-- **Chat**: click any card or agent to slide into its conversation. The header shows the agent, its status, a back arrow and **Open**. Below it, your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command or tool it ran as a small one-line entry ("Run · npm test", "Edit · src/app.ts"). It updates live while the agent works, and the composer below talks to that agent.
-- **Composer** at the bottom of Waiting, Agents and Chat: "To @claude-2", a message field, a mic button and a send button.
-- **New session**: a grid of the agents installed on this Mac, each shown with its logo (only installed ones appear); a folder picker listing recent folders and the folders agents are running in, plus "Choose Folder…"; an optional first message; **Open in**, either *Terminal window* or *Background*; and a **Start** button.
-- **October**: the October logo and three rows: **Connect to October** (your October account), **Connect to October Desktop**, and **Connect to October phone app** (check on and reply to agents from your phone). All three are locked and marked "Soon".
+**The panel** opens beside the lantern:
+- **Waiting:** a card for each agent that finished or needs you since you last looked, showing its logo, handle (e.g. `@claude-2`), project, the terminal it runs in, how long ago, the session title and its last message. Cards have **Reply**, **Open** (jumps to the agent's own tab) and **Done** buttons. A permission prompt ("Claude needs your permission to use Bash") gets **Allow** and **Deny** buttons. Below the cards, an **Earlier** list holds agents that are still waiting but that you've seen, with **Clear all**.
+- **Agents:** every running agent, the ones that need you first, with logo, handle, folder, terminal and status (*Needs you*, *Your turn*, *Working*, *Idle*, *Running*).
+- **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
+- **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
+- **New session:** a grid of the agents installed on this Mac, a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Open in** *Terminal window* or *Background*, and **Start**.
+- **October:** the October logo and three locked rows marked "Soon": **Connect to October**, **Connect to October Desktop** and **Connect to October phone app**.
 
-**Menu bar.** A small lantern icon in the menu bar with Waiting, Agents, Message an Agent, Show/Hide Lantern, Open at Login, agent hooks, and Quit.
+**Welcome.** The first launch shows a short, four-page welcome:
+1. What the lantern's states mean.
+2. The agents Lantern found.
+3. Optional setup: open at login, notifications, exact status (hooks) and the shortcut.
+4. Where to find everything.
 
-**Look and feel.** Dark, translucent glass (Apple's Liquid Glass on macOS 26, frosted blur on earlier versions) with a light rim along the edges. Amber means "needs you", green means "working" and grey means "idle". Each agent is shown with its official logo.
+**Settings** (from the menu bar lantern) has four tabs:
+- **General:** open at login, which screen edge, the shortcut, automatic updates and the hooks.
+- **Notifications:** on or off, and whether finished turns notify too.
+- **Agents:** which agents count toward Waiting and notifications.
+- **About:** version, check for updates, report a problem, the welcome guide, and uninstall.
+
+**Menu bar.** A small lantern icon: Waiting, Agents, New Session, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Welcome Guide, Quit.
+
+**Look and feel.** Dark, translucent glass (Apple's Liquid Glass on macOS 26, a frosted blur on earlier versions) with a light rim. Amber means "needs you", green means "working" and grey means "idle". Each agent is shown with its official logo.
 
 ## A walkthrough
 
-Say you have six sessions running: two Claude Code, two Codex, one Pi and one OpenCode, spread across a couple of terminal apps.
+Say you have six sessions running in cmux: two Claude Code, two Codex, one OpenCode and one Pi.
 
-1. **Open Lantern.** All six appear within a couple of seconds, each with its logo and a handle: `@claude-1`, `@claude-2`, `@codex-1`, `@codex-2`, `@pi-1`, `@opencode-1`. You didn't have to register or restart anything.
-2. **Keep working.** While the agents run, the lantern glows softly. Hover over it and open **Agents** to see each one's folder and status.
-3. **An agent finishes.** When `@codex-1` finishes its task, the lantern turns amber with a **1**. Click it: the Waiting card shows what Codex said, e.g. *"Tests pass. Want me to commit?"*
-4. **Read and reply.** Click the card to see the whole conversation with Codex, then type or dictate "yes, commit it", and press Enter.
-   - If `@codex-1` runs inside **tmux**, the reply is typed straight into its session, just as if you'd typed it in the terminal.
-   - Otherwise, Lantern copies the reply and brings that terminal app to the front, and you paste with ⌘V.
-5. **Or reply the old way.** You can always switch to the terminal and answer there. Lantern updates by itself either way.
-6. **Start another one.** Click **+**, pick Codex, pick the folder, type "write tests for the parser", and choose *Background*. Codex starts out of sight and appears in Agents straight away. When it finishes, it lands in Waiting like the others, and replies go straight into it. **Open** shows it in a Terminal window.
-7. **Pi and OpenCode.** These show up in Agents as **Running**, but Lantern can't yet tell whether they're waiting on you, so they don't appear in Waiting.
+1. **Open Lantern.** All six appear within a couple of seconds, each with its logo and a handle: `@claude-1`, `@claude-2`, `@codex-1`, `@codex-2`, `@opencode-1`, `@pi-1`. You don't register or restart anything.
+2. **Keep working.** While they run, the lantern glows softly.
+3. **An agent finishes.** When `@codex-1` finishes, the lantern turns amber with a **1**, and a notification says "@codex-1 finished · Tests pass. Want me to commit?".
+4. **Read and reply.** Click the lantern, then the card, to see the whole conversation. Type or dictate "yes, commit it" and press Enter. Lantern types it into `@codex-1`'s own cmux tab, just as if you'd typed it there.
+5. **A permission prompt** (with hooks on). `@claude-2` asks to run a command. Its card says "Claude needs your permission to use Bash" with **Allow** and **Deny**. Click **Allow** and it carries on.
+6. **Jump there.** **Open** brings `@opencode-1`'s own tab to the front if you'd rather work in the terminal.
+7. **Start another one.** Click **+**, pick Codex and a folder, type "write tests for the parser", and choose *Background*. It starts out of sight and shows up in Agents straight away.
 
 ## Supported agents
 
-| Agent | Detected | Knows "working" vs "your turn" | Shows last message | Notes |
+| Agent | Detected | Working / your turn | Last message and chat | Notes |
 |---|---|---|---|---|
-| Claude Code | ✅ | ✅ | ✅ | Optional hooks add "needs permission" alerts |
-| Codex CLI | ✅ | ✅ | ✅ | Optional `notify` hook for instant updates |
-| OpenCode | ✅ | — | — | Shows as Running |
-| Pi | ✅ | — | — | Shows as Running |
-| Gemini CLI, Grok, Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shows as Running |
+| Claude Code | ✅ | ✅ | ✅ | With hooks: instant updates, and "needs permission" with Allow/Deny |
+| Codex CLI | ✅ | ✅ | ✅ | With hooks: instant "finished" updates |
+| OpenCode | ✅ | ✅ | ✅ | Reads OpenCode's local database |
+| Pi | ✅ | ✅ | ✅ | |
+| October harness (`october`) | ✅ | ✅ | ✅ | October's own agent, built on Pi |
+| Gemini CLI | ✅ | ✅ | ✅ | |
+| Grok, Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shown as *Running*; you can still reply and jump to them |
 
-"Detected" means Lantern finds the running process and shows it with its logo, folder and host app. Agents running headless (for example `claude -p` or `codex exec` in a script) are deliberately ignored, because there's no one to answer them.
+Headless runs (for example `claude -p` or `codex exec` in a script) are ignored on purpose, because there's no one to answer them.
+
+## Supported terminals
+
+| Where the agent runs | Reply from Lantern | Allow / Deny | Open jumps to |
+|---|---|---|---|
+| cmux | ✅ Types into the agent's tab | ✅ | Its workspace |
+| Terminal | ✅ Types into the agent's tab (asks once for Automation permission) | — | Its tab |
+| iTerm2 | ✅ Types into the agent's session (asks once for Automation permission) | ✅ | Its session |
+| tmux (inside any terminal) | ✅ | ✅ | Its pane |
+| Sessions Lantern started | ✅ (they run in tmux) | ✅ | A Terminal window attached to it |
+| Ghostty, VS Code / Cursor terminal, Warp, others | Copies your reply and brings the app forward; you paste with ⌘V | — | The app |
 
 ## What's true today
 
-Lantern is in **early preview (v0.1.0)**. Download: <https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern.dmg>. That link always serves the newest release.
+Lantern is in **beta (v0.2.0)**.
 
 | Capability | Status |
 |---|---|
-| macOS app (macOS 14+, Apple silicon and Intel), signed and notarized | ✅ Works |
-| Finds agents automatically in any terminal app | ✅ Works |
-| Working / your-turn status and last message for Claude Code and Codex | ✅ Works |
-| Status for OpenCode, Pi and the others | ❌ Not yet (shown as "Running") |
-| "Needs permission" alerts | ✅ With the optional hooks (Claude Code) |
-| Chat view: the conversation with an agent, updating live | ✅ Claude Code and Codex. Other agents show "can't read yet". |
-| Reply to agents running in tmux | ✅ Types the reply into the session |
-| Reply to agents in other terminals (Terminal, iTerm2, Ghostty, cmux...) | ⚠️ Copies the reply and focuses the app; you paste. Direct typing is planned. |
-| Jump to the exact terminal tab | ❌ Not yet. "Open" brings the right app forward, not the exact tab. |
-| Start a new session with any installed agent, in a Terminal window or in the background | ✅ Works (background needs tmux) |
-| Reply to sessions Lantern started | ✅ Always direct (they run in tmux) |
-| Dictation (speech to text), on-device | ✅ Works (Apple Speech) |
-| Global shortcut ⌃⌥Space to open the composer | ✅ Works |
-| Open at login | ✅ Works (menu bar menu) |
-| "Say it once and Lantern picks the right agent" (automatic routing) | ❌ Not yet. You choose the agent. |
+| macOS app (macOS 14+, Apple silicon and Intel), signed and notarized | ✅ |
+| Automatic updates | ✅ |
+| Finds agents in any terminal | ✅ |
+| Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI |
+| Reply from Lantern | ✅ cmux, Terminal, iTerm2, tmux. Other terminals: copy and paste. |
+| Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2 and tmux |
+| Jump to the agent's exact tab | ✅ cmux, Terminal, iTerm2, tmux |
+| Notifications | ✅ Optional |
+| Start new sessions (Terminal window or background) | ✅ Background needs tmux |
+| Dictation, on-device | ✅ |
+| Global shortcut (default ⌃⌥Space, changeable) | ✅ |
+| Welcome guide, Settings, Report a Problem, Uninstall | ✅ |
+| Automatic routing ("send this to whichever agent it's for") | ❌ Not yet. You choose the agent. |
 | Screenshot or screen context | ❌ Not yet |
-| Phone / remote control | ❌ Not yet (planned through the October phone app) |
-| Connect to October account / October Desktop / October phone app | ❌ Not yet. The October panel shows all three, locked, marked "Soon". |
+| Connect to October account, October Desktop, October phone app | ❌ Not yet. Shown as locked, "Soon". |
 | Windows or Linux | ❌ Not yet |
-| Pricing | Not decided. There is no account, sign-in or payment today. |
+| Pricing | Free during the beta. No account or sign-in. |
 
 ## Privacy
 
-- **Everything stays on your Mac.** Lantern has no server and no account, and sends nothing over the network.
-- **Dictation is on-device** where the Mac supports it (Apple's speech recognizer). Lantern only listens while the mic button is on.
-- **No screen recording.** Lantern doesn't take screenshots or read other apps' windows.
-- **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`). It never modifies them.
-- **One opt-in exception: hooks.** If you turn on "Exact Status with Agent Hooks", Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`) and Codex's `notify` setting (`~/.codex/config.toml`). It backs up both files first, keeps any existing Codex notify program working, and can remove itself again from the same menu.
+- **Everything stays on your Mac.** Lantern has no server and no account, and sends nothing over the network. The only network request is the daily update check, which downloads a public list of versions from GitHub.
+- **Dictation is on-device** where the Mac supports it (Apple's speech recognizer), and Lantern listens only while the mic button is on.
+- **No screen recording.** Lantern doesn't take screenshots.
+- **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`), and never modifies them.
+- **Typing replies.** When you send a reply, Lantern types it into that agent's terminal: through cmux's command-line tool, tmux, or macOS Automation for Terminal and iTerm2. macOS asks you once per app before Automation is allowed.
+- **Optional hooks.** If you turn on exact status, Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`) and Codex's `notify` setting (`~/.codex/config.toml`). It backs up both files first, keeps any existing Codex notify program working, and restores everything when you turn hooks off or uninstall. If Lantern is deleted without uninstalling, the hooks quietly do nothing.
+- **Problem and crash reports are only ever sent by you**, as an email you see before sending. They contain versions and a summary of which agents and terminals are running, never conversations, folders or code.
 
 ## Requirements and permissions
 
-- macOS 14 Sonoma or later (Liquid Glass look on macOS 26 Tahoe)
+- macOS 14 Sonoma or later (the Liquid Glass look needs macOS 26 Tahoe)
 - At least one supported agent
 
 | Permission | Why | When it's asked |
 |---|---|---|
-| Microphone | Dictating a reply | The first time you press the mic button |
-| Speech Recognition | Turning speech into text, on-device | Same |
+| Automation (Terminal, iTerm2) | Typing replies into the agent's tab | The first time you reply to an agent in that app |
+| Notifications | Telling you when an agent finishes or needs you | In the welcome, or when you turn them on |
+| Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button |
 
-Lantern needs no Accessibility, Screen Recording or Full Disk Access permission today.
+Lantern doesn't need Accessibility, Screen Recording or Full Disk Access.
+
+## Installing, updating and uninstalling
+
+- **Install:** open the DMG and drag **October Lantern** to Applications. Open it; the welcome guide starts.
+- **Update:** Lantern checks for updates once a day and asks before installing. *Check for Updates…* is in the menu bar lantern and in Settings › About.
+- **Uninstall:** Settings › About › **Uninstall October Lantern…**. It removes the hooks (restoring your agents' settings), Lantern's support files in `~/Library/Application Support/October Lantern`, the login item and its settings, then moves the app to the Trash. Your agents and any sessions Lantern started keep running.
 
 ## Roadmap
 
-In rough order:
-
-1. **Direct replies everywhere.** Type into agents in any terminal, not only tmux (through each terminal's own tools where they exist, or Accessibility).
-2. **Status for more agents.** Session-file readers or hooks for OpenCode, Pi, Gemini and others, so they show "your turn" too.
-3. **Jump to the exact tab or pane** of an agent.
-4. **Connect to October Desktop.** When October is running, Lantern will connect to it (after a one-time approval in October) and gain October's full agent list (30+ agents), reliable message delivery, and "Open on canvas". Lantern keeps working on its own without October.
+1. **Replies in more terminals:** Ghostty, VS Code and Warp.
+2. **Status for more agents:** Grok, Cursor, Qwen, Goose and others.
+3. **Connect to October Desktop.** When October is running, Lantern will connect to it (after a one-time approval in October) and gain October's full agent list (30+ agents), reliable message delivery and "Open on canvas". Lantern will keep working on its own without October.
+4. **October account and phone app.**
 5. **Automatic routing.** Say "tell the backend agent to use Postgres" and Lantern picks the agent.
 6. **Windows.**
 
 ## Brand and voice
 
-- **Name:** October Lantern. "Lantern" for short. The app's menu bar item and window titles say "October Lantern".
+- **Name:** October Lantern, or "Lantern" for short.
 - **Logo:** `logo.png`, a glossy orange paper-lantern character with a handle and two eyes, glowing warm from inside. The app icon puts it on a dark rounded tile (`macos/Resources/AppIcon.icns`).
-- **Idea behind the name:** a lantern is a small light you keep nearby that shows you where to look. It lights up when something needs you.
-- **Colours used in the app:** amber `#FAB845` means needs you or your turn; green `#5CCC82` means working; red `#ED5C5C` means recording; the surfaces are dark translucent glass with white text.
-- **Tone:** calm, plain and honest. Lantern exists to *reduce* noise, so the product and its copy should never feel shouty.
-- **One-line descriptions** (suggestions):
+- **The idea:** a lantern is a small light you keep nearby that shows you where to look. It lights up when something needs you.
+- **Colours in the app:**
+  - amber `#FAB845`: needs you, or your turn
+  - green `#5CCC82`: working
+  - red `#ED5C5C`: recording
+  - surfaces: dark translucent glass with white text
+- **Tone:** calm, plain and honest. Lantern exists to *reduce* noise.
+- **One-liners** (suggestions):
   - "Every coding agent on your Mac, in one small light."
   - "Know when your agents need you, and answer without switching windows."
   - "A lantern for your agents: it lights up when one needs you."
@@ -175,19 +214,25 @@ In rough order:
 No. Lantern finds agents however you started them, in whatever terminal.
 
 **Does it replace my terminal or October Desktop?**
-No. Your agents keep running where they are, and you can keep using them there. Lantern is a lightweight view and remote on top. October Desktop is the full workspace for building with teams of agents.
+No. Your agents keep running where they are. Lantern is a lightweight view and remote on top. October Desktop is the full workspace for building with teams of agents.
 
 **Does it send my code or conversations anywhere?**
-No. Everything runs locally and nothing is uploaded.
+No. Everything runs locally. The only network request is the update check.
 
 **Can it answer permission prompts ("Allow this command?")?**
-It can *tell* you about them (with hooks on, for Claude Code). Answering them from Lantern works for agents in tmux, where your reply is typed into the session. Elsewhere, click **Open** and answer in the terminal.
+Yes, for Claude Code with hooks turned on, when the agent runs in cmux, iTerm2 or tmux. Elsewhere, click **Open** to jump to it.
 
 **Why does an agent say "Running" instead of "Your turn"?**
-Lantern can only read the status of Claude Code and Codex so far. The others will follow.
+Lantern can't read that agent's session files yet (see [Supported agents](#supported-agents)).
+
+**Why did macOS ask whether Lantern can control Terminal?**
+That's how Lantern types your reply into the right Terminal or iTerm2 tab. It asks once per app, and you can change it in System Settings › Privacy & Security › Automation.
+
+**How do I uninstall it?**
+Settings › About › Uninstall October Lantern. See [Installing, updating and uninstalling](#installing-updating-and-uninstalling).
 
 **Is it free?**
-There's no pricing yet. Today it's a local app with no account.
+Yes, during the beta. There's no account.
 
 ---
 
@@ -196,68 +241,74 @@ There's no pricing yet. Today it's a local app with no account.
 ```
 ┌──────────────────────────┐   JSON lines on stdin/stdout   ┌───────────────────────────┐
 │  macos/  OctoberLantern  │ ◄────────────────────────────► │  engine/  lantern-engine  │
-│  Swift/AppKit/SwiftUI:   │  snapshots of agents, replies  │  Rust: find agents, read  │
-│  lantern, panels, voice, │                                │  session files and hooks, │
-│  hotkey, menu bar        │                                │  deliver replies (tmux)   │
+│  Swift/AppKit/SwiftUI:   │  snapshots, history, replies   │  Rust: find agents, read  │
+│  lantern, panels, voice, │                                │  sessions and hooks, type │
+│  notifications, updates  │                                │  into terminals, launch   │
 └──────────────────────────┘                                └───────────────────────────┘
 ```
 
 - **Engine (`engine/`, Rust).** A small helper the app starts and talks to over stdin/stdout ([protocol](protocol/README.md)). About every 1.5 seconds it:
-  1. reads the process table (`ps` plus `sysinfo`) and picks out agent processes by their executable name (including `node`/`bun`/`python` wrappers), keeping only interactive ones with a terminal;
-  2. walks up each process's parents to find the app it runs in (e.g. cmux, Terminal), and matches its terminal against every running tmux server's panes;
-  3. reads the tail of each agent's session file (a Claude Code transcript found by session id or folder; a Codex rollout file found through the process's open files) to decide *working* vs *your turn* and extract the last message and session title;
-  4. merges any hook events (written by `lantern-engine hook ...`) and uses whichever is newer;
-  5. sends the app a snapshot whenever something changed.
+  1. reads the process table and picks out interactive agent processes by executable name (including `node`/`bun`/`python` wrappers);
+  2. finds the app each one runs in by walking up its parent processes, and matches its terminal against tmux panes;
+  3. works out how to type into it: tmux, cmux (from the `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID` in the agent's environment), or Terminal / iTerm2 (AppleScript, matching the tab's tty);
+  4. reads each agent's session to decide *working* vs *your turn* and get the last message and title. It uses Claude Code transcripts, Codex rollout files (found through the process's open files), OpenCode's SQLite database (read-only), Pi and October harness JSONL, and Gemini CLI JSONL; the last three are matched by folder and start time;
+  5. merges hook events (from `lantern-engine hook ...`), using whichever is newer;
+  6. sends the app a snapshot whenever something changed.
 
-  Replies to tmux agents are delivered with `tmux send-keys`. New sessions start on Lantern's own tmux server (`tmux -L lantern`) through the user's login shell (`$SHELL -lic`), so agents get the same PATH and API keys as in a terminal. A Terminal window is opened with a temporary `.command` file, which needs no Automation permission. The engine has no UI, so a Windows front end can reuse it unchanged.
-- **App (`macos/`, Swift).** The lantern and the panel are borderless, non-activating `NSPanel`s, so clicking them never steals focus. They float above other windows, and appear on every Space and over full-screen apps. Surfaces use `NSGlassEffectView` (macOS 26) or `NSVisualEffectView`. Hover expansion works by polling the mouse position. Dictation uses `SFSpeechRecognizer` with on-device recognition. The ⌃⌥Space shortcut uses Carbon `RegisterEventHotKey`, which needs no Accessibility permission.
+  It also serves conversation history, sends single keys for Allow/Deny, focuses tabs, and starts new sessions on Lantern's own tmux server (`tmux -L lantern`) through the user's login shell. It has no UI, so a Windows front end could reuse it.
+- **App (`macos/`, Swift).**
+  - **Windows:** the lantern and the panel are borderless, non-activating `NSPanel`s inside an `NSGlassEffectView` (macOS 26) or `NSVisualEffectView` container.
+  - **Hover:** expansion works by polling the mouse position.
+  - **Dictation:** `SFSpeechRecognizer`, on-device.
+  - **Shortcut:** Carbon `RegisterEventHotKey`, which needs no Accessibility permission.
+  - **Notifications:** `UserNotifications`.
+  - **Updates:** Sparkle 2, with EdDSA-signed updates from an appcast in the releases repo.
 
-## Building from source
+## Building and releasing
 
-Requires Xcode 16+ (Xcode 26 for the Liquid Glass look) and Rust (`brew install rustup && rustup default stable`).
+Requires Xcode 16+ (Xcode 26 for the Liquid Glass look) and Rust (`brew install rustup && rustup default stable && rustup target add x86_64-apple-darwin`).
 
 ```sh
-scripts/build-app.sh          # builds engine + app → build/October Lantern.app
+scripts/build-app.sh          # engine + app → build/October Lantern.app (ad-hoc signed)
 open "build/October Lantern.app"
+(cd engine && cargo test)     # engine tests
 ```
 
-- `scripts/build-app.sh --debug` makes a debug build.
-- `swift scripts/make-icon.swift` regenerates the app icon from `logo.png`.
-- `"build/October Lantern.app/Contents/MacOS/OctoberLantern" --open inbox` (or `agents`) launches with the panel open (for development).
+Development flags:
+- `--open inbox|agents|new|october|chat|welcome:N|settings:N` opens a panel or window at launch.
+- `--snapshot <dir>` draws the welcome pages and settings tabs offscreen into PNGs, then quits.
 
-To run the engine on its own:
+Engine commands:
+- `cargo run -- agents`
+- `cargo run -- history <agent-id>`
+- `cargo run -- probe opencode|pi|october|gemini <folder>`
+- `cargo run -- hooks status|install|uninstall|remove-all`
 
-```sh
-cd engine
-cargo run -- agents           # print the agents Lantern can see, as JSON
-cargo run -- serve            # the stdio protocol the app uses
-cargo run -- installed        # which agents (and tmux) are installed
-cargo run -- hooks status     # show whether the optional hooks are installed
-cargo run -- hooks install    # add the hooks (backs up config files first)
-cargo run -- hooks uninstall  # remove them and restore previous settings
-```
-
-## Releasing
+**Releasing** (from the Mac that holds the signing keys):
 
 ```sh
-# once per machine: store the Apple ID app-specific password in the Keychain
+# once per machine: the notarization password, kept in the Keychain
 xcrun notarytool store-credentials lantern-notary --apple-id <apple-id> --team-id 75D25SJRM5 --password <app-specific-password>
 
-scripts/release.sh            # universal build → Developer ID signing → notarize + staple app → DMG → notarize + staple DMG
-gh release create vX.Y.Z build/October-Lantern.dmg --repo harshsaver/october-lantern-releases --title "October Lantern X.Y.Z" --notes "..."
+# 1. bump `version` in engine/Cargo.toml (the app's version comes from it)
+# 2. build, sign, notarize and staple the app and DMG, then sign the update and write the appcast
+scripts/release.sh
+# 3. publish: uploads the DMG to a GitHub release and pushes the new appcast.xml
+scripts/publish.sh "Release notes in one paragraph"
 ```
 
-Bump `version` in `engine/Cargo.toml` first; the app's version comes from it. Always upload the DMG as `October-Lantern.dmg` so the `latest/download/October-Lantern.dmg` link keeps working. Downloads are published at [harshsaver/october-lantern-releases](https://github.com/harshsaver/october-lantern-releases), a public repo holding only release files. This source repo stays private.
+- **Keys:** the Developer ID certificate, the `lantern-notary` Keychain profile and the Sparkle private key (`generate_keys --account october-lantern`) all live in the release Mac's Keychain. Back up the Sparkle key (`generate_keys --account october-lantern -x <file>`): without it, existing installs can't receive updates.
+- **Where downloads live:** [harshsaver/october-lantern-releases](https://github.com/harshsaver/october-lantern-releases), a public repo holding only release files and `appcast.xml`. This source repo stays private. Always upload the DMG as `October-Lantern.dmg` so the `latest/download` link keeps working.
 
 ## Repository layout
 
 | Path | What |
 |---|---|
-| `engine/` | Rust engine: agent detection, session-file readers, hooks, tmux delivery |
-| `macos/` | Swift package for the macOS app. `Resources/` holds the app icon and harness logos. |
+| `engine/` | Rust engine: agent detection, session readers, hooks, delivery, launching |
+| `macos/` | Swift package for the macOS app. `Resources/` holds the app icon and logos. |
 | `protocol/` | The message protocol between the app and the engine |
-| `scripts/` | Build, packaging and icon scripts |
-| `logo.png` | The Lantern logo (source for the app, menu bar and app icons) |
+| `scripts/` | Build, release, publish and icon scripts |
+| `logo.png` | The Lantern logo |
 
 Harness logos come from October Desktop. Some come from Agent Orchestrator under Apache-2.0; see `macos/Resources/harness/NOTICE.md`. All names and logos are trademarks of their owners.
 
@@ -265,11 +316,11 @@ Harness logos come from October Desktop. Some come from Agent Orchestrator under
 
 | Term | Meaning |
 |---|---|
-| **Agent** | An AI coding tool running in a terminal: Claude Code, Codex, Pi, OpenCode and so on |
+| **Agent** | An AI coding tool running in a terminal: Claude Code, Codex, OpenCode, Pi and so on |
 | **Harness** | The October family's word for an agent's program (Claude Code is a harness) |
 | **Session** | One running agent conversation in one terminal |
 | **Handle** | Lantern's short name for a session, e.g. `@claude-2`. It stays the same while the session runs. |
 | **Your turn / waiting** | The agent finished and is waiting for you |
 | **Needs you** | The agent is blocked on a question or permission prompt (known with hooks) |
 | **Hooks** | An optional setting that makes Claude Code and Codex notify Lantern directly |
-| **tmux** | A terminal multiplexer; agents inside it can receive replies directly from Lantern |
+| **Waiting / Earlier** | New turns since you last looked / turns still waiting that you've already seen |

@@ -1,5 +1,39 @@
 import Carbon.HIToolbox
 
+/// The shortcuts offered in Settings for opening the composer.
+enum HotKeyPreset: String, CaseIterable, Identifiable {
+    case controlOptionSpace, optionSpace, commandShiftSpace, controlOptionL, none
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .controlOptionSpace: "⌃⌥Space"
+        case .optionSpace: "⌥Space"
+        case .commandShiftSpace: "⇧⌘Space"
+        case .controlOptionL: "⌃⌥L"
+        case .none: "None"
+        }
+    }
+
+    var keyCode: UInt32? {
+        switch self {
+        case .controlOptionL: UInt32(kVK_ANSI_L)
+        case .none: nil
+        default: UInt32(kVK_Space)
+        }
+    }
+
+    var modifiers: UInt32 {
+        switch self {
+        case .controlOptionSpace, .controlOptionL: UInt32(controlKey | optionKey)
+        case .optionSpace: UInt32(optionKey)
+        case .commandShiftSpace: UInt32(cmdKey | shiftKey)
+        case .none: 0
+        }
+    }
+}
+
 /// A global hotkey through Carbon's RegisterEventHotKey, which needs no Accessibility permission.
 final class HotKey {
     private var ref: EventHotKeyRef?

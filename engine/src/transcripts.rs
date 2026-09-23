@@ -57,7 +57,7 @@ pub struct Transcripts {
 }
 
 impl Transcripts {
-    fn cached(&mut self, path: &Path, parse: fn(&Path, u64) -> SessionStatus) -> Option<SessionStatus> {
+    pub fn cached(&mut self, path: &Path, parse: fn(&Path, u64) -> SessionStatus) -> Option<SessionStatus> {
         let stamp = file_stamp(path)?;
         if let Some((s, status)) = self.parsed.get(path) {
             if *s == stamp {
@@ -157,7 +157,7 @@ fn has_block(content: &Value, kind: &str) -> bool {
     content.as_array().is_some_and(|b| b.iter().any(|b| b["type"] == kind))
 }
 
-fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
+pub(crate) fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
     let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
     let Some(text) = read_range(path, true, TAIL_BYTES) else { return status };
 
@@ -220,7 +220,7 @@ fn codex_open_rollout(pid: u32) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
-fn parse_codex(path: &Path, mtime: u64) -> SessionStatus {
+pub(crate) fn parse_codex(path: &Path, mtime: u64) -> SessionStatus {
     let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
 
     if let Some(head) = read_range(path, false, HEAD_BYTES) {

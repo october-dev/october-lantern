@@ -13,7 +13,7 @@ struct PillView: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            LanternButton(count: model.badgeCount, working: model.anyWorking, onTap: {
+            LanternButton(count: model.badgeCount, waiting: !model.inbox.isEmpty, working: model.anyWorking, onTap: {
                 model.toggle(.inbox)
             }, onDrag: onDrag, onDragEnd: onDragEnd)
 
@@ -72,25 +72,26 @@ struct PillView: View {
 /// and dimmed when nothing is happening. Tap to open the inbox; drag to move.
 struct LanternButton: View {
     let count: Int
+    /// Something is waiting that you've already seen: a softer amber glow, no number.
+    let waiting: Bool
     let working: Bool
     let onTap: () -> Void
     let onDrag: () -> Void
     let onDragEnd: () -> Void
-    @State private var breathe = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
             ZStack {
-                if count > 0 || working {
+                if count > 0 || waiting || working {
                     Circle()
-                        .fill((count > 0 ? Theme.amber : Color.orange).opacity(count > 0 ? 0.55 : 0.25))
+                        .fill((count > 0 || waiting ? Theme.amber : Color.orange).opacity(count > 0 ? 0.55 : 0.25))
                         .blur(radius: 9)
-                        .scaleEffect(breathe ? 1.1 : 0.85)
+                        .scaleEffect(count > 0 ? 1.05 : 0.9)
                 }
                 if let logo = Assets.logo {
                     Image(nsImage: logo).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                        .saturation(count > 0 || working ? 1 : 0.55)
-                        .opacity(count > 0 || working ? 1 : 0.8)
+                        .saturation(count > 0 || waiting || working ? 1 : 0.55)
+                        .opacity(count > 0 || waiting || working ? 1 : 0.8)
                 } else {
                     Image(systemName: "flame.fill").font(.system(size: 20)).foregroundStyle(Theme.amber)
                 }
@@ -111,16 +112,16 @@ struct LanternButton: View {
             }
         }
         .contentShape(Circle())
-        .help(count > 0 ? "\(count) waiting on you" : "October Lantern")
+        .help(count > 0 ? "\(count) new, waiting on you" : waiting ? "Agents are waiting on you" : "October Lantern")
         .gesture(
             DragGesture(minimumDistance: 4)
                 .onChanged { _ in onDrag() }
                 .onEnded { _ in onDragEnd() }
         )
         .onTapGesture { onTap() }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { breathe = true }
-        }
+        // No continuous animation: redrawing a blur inside the glass every frame costs ~15% of a
+        // CPU core. The glow changes only when the state does.
+        .animation(.easeOut(duration: 0.3), value: count)
     }
 }
 

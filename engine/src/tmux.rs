@@ -107,6 +107,20 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
     info
 }
 
+/// Runs a tmux command against the pane's server.
+pub fn run(pane: &TmuxPane, args: &[&str]) -> Result<()> {
+    let status = base_command(&pane.socket).args(args).status().context("running tmux")?;
+    if !status.success() {
+        bail!("tmux {} failed", args.first().unwrap_or(&""));
+    }
+    Ok(())
+}
+
+/// Presses one key (a tmux key name such as `Escape`, or a single character).
+pub fn send_key(pane: &TmuxPane, key: &str) -> Result<()> {
+    run(pane, &["send-keys", "-t", &pane.pane_id, key])
+}
+
 /// Type `text` into the pane and press Enter.
 pub fn send(pane: &TmuxPane, text: &str) -> Result<()> {
     // A newline would submit early in most agent TUIs, so send one line.

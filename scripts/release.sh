@@ -45,3 +45,33 @@ xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$DMG"
 spctl --assess --type open --context context:primary-signature -v "$DMG"
 echo "==> $DMG"
+
+echo "==> sparkle signature and appcast"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/engine/Cargo.toml" | head -1)"
+SIGN_UPDATE="$ROOT/macos/.build/artifacts/sparkle/Sparkle/bin/sign_update"
+# The update-signing key: an exported copy if present (no Keychain prompt), else the Keychain.
+KEY_FILE="$HOME/Library/Application Support/October Lantern Release/sparkle_private_key"
+if [[ -f "$KEY_FILE" ]]; then
+  SIGNATURE="$("$SIGN_UPDATE" --ed-key-file "$KEY_FILE" "$DMG")"   # sparkle:edSignature="…" length="…"
+else
+  SIGNATURE="$("$SIGN_UPDATE" --account october-lantern "$DMG")"
+fi
+cat > "$ROOT/build/appcast.xml" <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>October Lantern</title>
+    <link>https://lantern.october.dev</link>
+    <item>
+      <title>October Lantern $VERSION</title>
+      <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+      <sparkle:version>$VERSION</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/harshsaver/october-lantern-releases/releases/tag/v$VERSION</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/harshsaver/october-lantern-releases/releases/download/v$VERSION/October-Lantern.dmg" type="application/octet-stream" $SIGNATURE />
+    </item>
+  </channel>
+</rss>
+XML
+echo "==> build/appcast.xml for $VERSION"

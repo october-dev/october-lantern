@@ -13,7 +13,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var agents: [Agent] = []
     /// Changing panels (or closing it) also leaves any open conversation.
     @Published var panel: PanelMode? {
-        didSet { if oldValue != panel { closeChat() } }
+        didSet {
+            guard oldValue != panel else { return }
+            closeChat()
+            // Leaving Waiting means you've seen what was in it.
+            if oldValue == .inbox { markInboxSeen() }
+        }
     }
     @Published var pillExpanded = false
     @Published var targetId: String?
@@ -21,6 +26,8 @@ final class AppModel: ObservableObject {
     @Published var toast: String?
     @Published var composeFocusToken = 0
     @Published private(set) var dismissed: Set<String>
+    /// Turns you've already seen in Waiting. They stay listed (under Earlier) but don't count.
+    @Published private(set) var seen: Set<String>
     @Published private(set) var installedKinds: [AgentKind] = []
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var launching = false
@@ -35,10 +42,14 @@ final class AppModel: ObservableObject {
     private var pending: [String: String] = [:]  // requestId → agentId
     private var nextRequest = 0
     private var toastTask: Task<Void, Never>?
-    private let launchedAt = Date()
+    private var firstSnapshot = true
+    private var knownTurns: Set<String> = []
+    private let prefs = Preferences.shared
+    var onNotify: ((Agent) -> Void)?
 
     init() {
         dismissed = Set(UserDefaults.standard.stringArray(forKey: "dismissedTurns") ?? [])
+        seen = Set(UserDefaults.standard.stringArray(forKey: "seenTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
         engine.onReplyResult = { [weak self] id, ok, message in self?.replyFinished(id, ok: ok, message: message) }
         engine.onHistory = { [weak self] agentId, supported, messages in
@@ -70,18 +81,18 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived state
 
-    /// Agents waiting on you, newest first. A turn that ended before Lantern launched and more
-    /// than 30 minutes ago counts as already seen, so a fresh launch isn't a wall of badges.
+    /// Agents waiting on you (in harnesses you haven't muted), newest first.
     var inbox: [Agent] {
         agents
-            .filter { $0.state.wantsYou && !dismissed.contains($0.turnKey) }
+            .filter { $0.state.wantsYou && !dismissed.contains($0.turnKey) && prefs.counts($0.kind) }
             .sorted { ($0.stateSince ?? 0) > ($1.stateSince ?? 0) }
     }
 
-    var badgeCount: Int {
-        let staleBefore = launchedAt.addingTimeInterval(-30 * 60)
-        return inbox.filter { $0.state == .needsInput || ($0.since ?? .distantPast) > staleBefore }.count
-    }
+    /// Waiting turns you haven't looked at yet. A question for you always counts.
+    var newInbox: [Agent] { inbox.filter { $0.state == .needsInput || !seen.contains($0.turnKey) } }
+    var earlierInbox: [Agent] { inbox.filter { $0.state != .needsInput && seen.contains($0.turnKey) } }
+
+    var badgeCount: Int { newInbox.count }
 
     /// Agents in the order the pill shows them: needs you, then your turn, then working, then the rest.
     var ranked: [Agent] {
@@ -137,26 +148,41 @@ final class AppModel: ObservableObject {
         chatMessages = []
     }
 
-    func dismiss(_ agent: Agent) {
-        dismissed.insert(agent.turnKey)
-        // Keep only keys for agents that still exist.
+    func dismiss(_ agent: Agent) { dismiss([agent]) }
+
+    /// "Done": removes turns from Waiting until the agent's state changes again.
+    func dismiss(_ list: [Agent]) {
+        dismissed.formUnion(list.map(\.turnKey))
+        // Keep only keys for turns that still exist.
         let live = Set(agents.map(\.turnKey))
         dismissed = dismissed.filter { live.contains($0) }
         UserDefaults.standard.set(Array(dismissed), forKey: "dismissedTurns")
     }
 
+    /// Marks everything currently in Waiting as seen (called while the Waiting list is on screen).
+    func markInboxSeen() {
+        let keys = Set(inbox.map(\.turnKey))
+        guard !keys.isSubset(of: seen) else { return }
+        let live = Set(agents.map(\.turnKey))
+        seen = seen.union(keys).filter { live.contains($0) }
+        UserDefaults.standard.set(Array(seen), forKey: "seenTurns")
+    }
+
+    /// Brings the agent's own tab to the front (or opens a Terminal for a background session).
     func open(_ agent: Agent) {
-        // A tmux session nobody is attached to (e.g. one Lantern started in the background).
-        if agent.host == nil, agent.tmux != nil {
-            nextRequest += 1
-            engine.attach(requestId: "a\(nextRequest)", agentId: agent.id)
-            return
+        nextRequest += 1
+        engine.focus(requestId: "f\(nextRequest)", agentId: agent.id)
+        if let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) {
+            app.activate()
         }
-        guard let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) else {
-            show("Can't find the app @\(agent.handle) is running in")
-            return
-        }
-        app.activate()
+    }
+
+    /// Answers a permission prompt: "1" allows once, Escape declines.
+    func answerPermission(_ agent: Agent, allow: Bool) {
+        nextRequest += 1
+        let id = "k\(nextRequest)"
+        pending[id] = agent.id
+        engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"])
     }
 
     func send() {
@@ -169,7 +195,7 @@ final class AppModel: ObservableObject {
             pending[id] = agent.id
             engine.reply(requestId: id, agentId: agent.id, text: text)
         } else {
-            // v1 can only type into tmux panes. Anywhere else: copy, and bring the agent's app forward.
+            // Terminals Lantern can't type into (Ghostty, VS Code, Warp...): copy, and bring it forward.
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             open(agent)
@@ -220,11 +246,34 @@ final class AppModel: ObservableObject {
 
     private func update(_ fresh: [Agent]) {
         agents = fresh
+        noticeNewTurns()
         if let targetId, !fresh.contains(where: { $0.id == targetId }) { self.targetId = nil }
         // Keep an open conversation current.
         if let chatAgentId {
             if fresh.contains(where: { $0.id == chatAgentId }) { engine.history(agentId: chatAgentId) } else { closeChat() }
         }
+    }
+
+    /// Works out which turns are new since the last snapshot, for notifications. On the very first
+    /// snapshot after launch, anything that's been waiting over two hours counts as already seen, so
+    /// opening Lantern isn't a wall of old sessions.
+    private func noticeNewTurns() {
+        let waiting = agents.filter { $0.state.wantsYou && prefs.counts($0.kind) }
+        if firstSnapshot {
+            firstSnapshot = false
+            let stale = Date().addingTimeInterval(-2 * 3600)
+            let old = waiting.filter { ($0.since ?? .distantPast) < stale && $0.state != .needsInput }
+            if !old.isEmpty {
+                seen.formUnion(old.map(\.turnKey))
+                UserDefaults.standard.set(Array(seen), forKey: "seenTurns")
+            }
+            knownTurns = Set(waiting.map(\.turnKey))
+            return
+        }
+        for agent in waiting where !knownTurns.contains(agent.turnKey) && !seen.contains(agent.turnKey) {
+            onNotify?(agent)
+        }
+        knownTurns = Set(waiting.map(\.turnKey))
     }
 
     private func replyFinished(_ requestId: String, ok: Bool, message: String?) {

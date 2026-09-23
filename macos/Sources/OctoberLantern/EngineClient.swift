@@ -91,8 +91,12 @@ final class EngineClient {
         send(["type": "history", "requestId": "h-\(agentId)", "agentId": agentId])
     }
 
-    func attach(requestId: String, agentId: String) {
-        send(["type": "attach", "requestId": requestId, "agentId": agentId])
+    func keys(requestId: String, agentId: String, keys: [String]) {
+        send(["type": "keys", "requestId": requestId, "agentId": agentId, "keys": keys])
+    }
+
+    func focus(requestId: String, agentId: String) {
+        send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
 
     private func send(_ obj: [String: Any]) {

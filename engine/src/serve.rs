@@ -12,7 +12,7 @@ use crate::hooks::now_ms;
 use crate::launch;
 use crate::model::{Agent, Kind};
 use crate::scanner::Scanner;
-use crate::tmux;
+use crate::deliver;
 
 const SCAN_EVERY: Duration = Duration::from_millis(1500);
 const HEARTBEAT: Duration = Duration::from_secs(10);
@@ -27,6 +27,12 @@ enum Request {
     Launch { request_id: String, kind: Kind, cwd: String, prompt: Option<String>, background: bool },
     #[serde(rename_all = "camelCase")]
     History { request_id: String, agent_id: String },
+    /// Single keypresses, e.g. "1" or "Escape" to answer a permission prompt.
+    #[serde(rename_all = "camelCase")]
+    Keys { request_id: String, agent_id: String, keys: Vec<String> },
+    /// Bring the agent's own tab (or tmux pane) to the front.
+    #[serde(rename_all = "camelCase")]
+    Focus { request_id: String, agent_id: String },
     /// Show an agent that runs in a detached tmux session in a Terminal window.
     #[serde(rename_all = "camelCase")]
     Attach { request_id: String, agent_id: String },
@@ -56,6 +62,7 @@ pub fn run() -> Result<()> {
     });
 
     emit(&json!({"type": "hello", "protocol": 1, "version": env!("CARGO_PKG_VERSION")}));
+    crate::hooks::refresh_hook_binary();
     // Checking installed agents runs a login shell, so do it off the main loop.
     std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));
 
@@ -82,10 +89,8 @@ pub fn run() -> Result<()> {
                 Ok(Request::Reply { request_id, agent_id, text }) => {
                     let result = match agents.iter().find(|a| a.id == agent_id) {
                         None => Err(("unknown_agent", format!("no agent {agent_id}"))),
-                        Some(a) => match &a.tmux {
-                            None => Err(("not_reachable", "agent is not in a tmux pane".to_string())),
-                            Some(pane) => tmux::send(pane, &text).map_err(|e| ("send_failed", format!("{e:#}"))),
-                        },
+                        Some(a) if !a.can_reply => Err(("not_reachable", "Lantern can't type into this terminal yet".to_string())),
+                        Some(a) => deliver::send_text(a, &text).map_err(|e| ("send_failed", format!("{e:#}"))),
                     };
                     match result {
                         Ok(()) => emit(&json!({"type": "replyResult", "requestId": request_id, "ok": true})),
@@ -110,6 +115,26 @@ pub fn run() -> Result<()> {
                         "type": "historyResult", "requestId": request_id, "agentId": agent_id,
                         "supported": messages.is_some(), "messages": messages.unwrap_or_default()
                     }));
+                }
+                Ok(Request::Keys { request_id, agent_id, keys }) => {
+                    let result = match agents.iter().find(|a| a.id == agent_id) {
+                        None => Err(format!("no agent {agent_id}")),
+                        Some(a) => keys.iter().try_for_each(|k| {
+                            let key = deliver::Key::parse(k).ok_or_else(|| anyhow::anyhow!("unknown key {k}"))?;
+                            std::thread::sleep(Duration::from_millis(40));
+                            deliver::send_key(a, key)
+                        })
+                        .map_err(|e| format!("{e:#}")),
+                    };
+                    emit(&json!({"type": "replyResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
+                    next_scan = Instant::now() + Duration::from_millis(300);
+                }
+                Ok(Request::Focus { request_id, agent_id }) => {
+                    let result = match agents.iter().find(|a| a.id == agent_id) {
+                        None => Err(format!("no agent {agent_id}")),
+                        Some(a) => deliver::focus(a).map_err(|e| format!("{e:#}")),
+                    };
+                    emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                 }
                 Ok(Request::Attach { request_id, agent_id }) => {
                     let result = match agents.iter().find(|a| a.id == agent_id).and_then(|a| a.tmux.as_ref()) {

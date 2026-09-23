@@ -47,7 +47,7 @@ fn is_injected(text: &str) -> bool {
 }
 
 /// A short description of a tool call: its name plus the most telling argument.
-fn describe_tool(name: &str, input: &Value) -> String {
+pub(crate) fn describe_tool(name: &str, input: &Value) -> String {
     if let Value::String(s) = input {
         if serde_json::from_str::<Value>(s).is_err() {
             return describe_code_call(name, s);
@@ -73,7 +73,7 @@ fn describe_tool(name: &str, input: &Value) -> String {
 /// Newer Codex versions record tool calls as a small script, e.g.
 /// `text(await tools.exec_command({cmd:"npm test", ...}))`. Show the shell command, or else the
 /// tools it called.
-fn describe_code_call(name: &str, code: &str) -> String {
+pub(crate) fn describe_code_call(name: &str, code: &str) -> String {
     if let Some(start) = code.find("cmd:\"") {
         let rest = &code[start + 5..];
         let mut cmd = String::new();
