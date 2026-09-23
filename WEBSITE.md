@@ -31,5 +31,5 @@ What the website needs for the beta. Product facts come from [README.md](README.
 ## Don't claim
 
 - Automatic routing ("say it once and it picks the agent"), screen or screenshot context, or a phone app: none of these exist yet.
-- Connecting to October, October Desktop or the phone app: shown in the app as locked, "Soon".
+- October connections: describe them exactly as in the README's "What's true today" table. Full October Desktop support needs October 1.0.52+, and the phone connection hasn't been tested live yet.
 - Windows or Linux.

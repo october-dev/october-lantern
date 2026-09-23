@@ -75,7 +75,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
 - **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
 - **New session:** a grid of the agents installed on this Mac, a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Open in** *Terminal window* or *Background*, and **Start**.
-- **October:** the October logo and three locked rows marked "Soon": **Connect to October**, **Connect to October Desktop** and **Connect to October phone app**.
+- **October:** three cards. **Connect to October** signs in (Google, GitHub, Apple or email) and then shows the account and plan. **Connect to October Desktop** shows whether October is running, and once you click **Connect** and allow Lantern in October (matching a 6-digit code), it's fully connected. **October phone app** pairs a phone by QR after you sign in, then lists paired phones with Revoke.
 
 **Welcome.** The first launch shows a short, four-page welcome:
 1. What the lantern's states mean.
