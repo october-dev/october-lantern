@@ -44,17 +44,20 @@ final class WindowController {
         get { Edge(rawValue: UserDefaults.standard.string(forKey: "pillEdge") ?? "") ?? .right }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "pillEdge") }
     }
-    /// Vertical centre of the pill as a fraction of the screen's visible height.
-    private var yFraction: CGFloat {
-        get { UserDefaults.standard.object(forKey: "pillY") as? CGFloat ?? 0.5 }
-        set { UserDefaults.standard.set(newValue, forKey: "pillY") }
+    /// Top of the pill as a fraction of the screen's visible height. The pill grows downward from
+    /// here when it expands.
+    private var topFraction: CGFloat {
+        get { UserDefaults.standard.object(forKey: "pillTop") as? CGFloat ?? 0.72 }
+        set { UserDefaults.standard.set(newValue, forKey: "pillTop") }
     }
+    private var hoverTimer: Timer?
+    private var outsideSince: Date?
 
     init(model: AppModel) {
         self.model = model
         pillHost = FirstClickHostingView(rootView: PillView(
             model: model, dictation: model.dictation,
-            onDrag: { [weak self] _ in self?.dragMoved() },
+            onDrag: { [weak self] in self?.dragMoved() },
             onDragEnd: { [weak self] in self?.dragEnded() },
             onMenu: { [weak self] in
                 guard let self else { return }
@@ -75,6 +78,11 @@ final class WindowController {
             .receive(on: RunLoop.main)
             .sink { [weak self] mode in self?.setPanelVisible(mode != nil) }
             .store(in: &subscriptions)
+        // Expand while the mouse is over the pill; tuck back in shortly after it leaves.
+        // Polling the mouse position is reliable for non-activating panels, unlike tracking areas.
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.checkHover() }
+        }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.layout() }
         }
@@ -101,8 +109,8 @@ final class WindowController {
         let visible = screen.visibleFrame
         let size = pillHost.fittingSize
         let x = edge == .right ? visible.maxX - size.width - 10 : visible.minX + 10
-        let centerY = visible.minY + visible.height * yFraction
-        let y = min(max(centerY - size.height / 2, visible.minY + 8), visible.maxY - size.height - 8)
+        let top = visible.minY + visible.height * topFraction
+        let y = min(max(top - size.height, visible.minY + 8), visible.maxY - size.height - 8)
         pill.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
         layoutPanel()
     }
@@ -147,7 +155,22 @@ final class WindowController {
         }
     }
 
-    // MARK: Dragging (by the grip at the bottom of the pill)
+    private func checkHover() {
+        guard pill.isVisible, dragStart == nil else { return }
+        let inside = pill.frame.insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation)
+        if inside {
+            outsideSince = nil
+            if !model.pillExpanded { model.pillExpanded = true }
+        } else if model.pillExpanded {
+            if outsideSince == nil { outsideSince = Date() }
+            if let since = outsideSince, Date().timeIntervalSince(since) > 0.7 {
+                model.pillExpanded = false
+                outsideSince = nil
+            }
+        }
+    }
+
+    // MARK: Dragging (by the lantern)
 
     private func dragMoved() {
         let mouse = NSEvent.mouseLocation
@@ -161,7 +184,7 @@ final class WindowController {
         dragStart = nil
         let visible = screen.visibleFrame
         edge = pill.frame.midX < visible.midX ? .left : .right
-        yFraction = min(max((pill.frame.midY - visible.minY) / visible.height, 0.05), 0.95)
+        topFraction = min(max((pill.frame.maxY - visible.minY) / visible.height, 0.1), 1)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             self.layout()

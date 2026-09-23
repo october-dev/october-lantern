@@ -75,7 +75,7 @@ struct PanelView: View {
         if model.agents.isEmpty {
             EmptyState(title: "No agents running", detail: "Lantern looks for Claude Code, Codex, OpenCode and Pi.")
         } else {
-            ForEach(model.agents) { agent in
+            ForEach(model.ranked) { agent in
                 AgentRow(agent: agent, selected: model.target?.id == agent.id)
                     .onTapGesture { model.compose(to: agent) }
                     .contextMenu {

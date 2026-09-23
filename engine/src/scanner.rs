@@ -22,34 +22,35 @@ pub struct Scanner {
 
 /// Arguments that mean the process is a helper or a headless run, not an interactive agent.
 fn is_helper(kind: Kind, args: &[String]) -> bool {
-    let flags: &[&str] = match kind {
-        Kind::Claude => &["daemon", "--bg-pty-host", "--bg-spare", "--chrome-native-host", "mcp", "-p", "--print"],
-        Kind::Codex => &["exec", "mcp", "mcp-server", "app-server", "login", "logout", "proto", "e"],
-        Kind::Opencode => &["serve", "run", "mcp"],
-        Kind::Pi => &["-p", "--print"],
+    let (subcommands, flags): (&[&str], &[&str]) = match kind {
+        Kind::Claude => (&["daemon", "mcp"], &["--bg-pty-host", "--bg-spare", "--chrome-native-host", "-p", "--print"]),
+        Kind::Codex => (&["exec", "e", "mcp", "mcp-server", "app-server", "login", "logout", "proto"], &[]),
+        Kind::Opencode => (&["serve", "run", "mcp"], &[]),
+        _ => (&["mcp", "serve", "exec", "run", "login"], &["-p", "--print", "--prompt"]),
     };
-    // Subcommands only count in first position; flags anywhere.
-    args.first().is_some_and(|a| flags.contains(&a.as_str()))
-        || args.iter().any(|a| a.starts_with('-') && flags.contains(&a.as_str()))
+    args.first().is_some_and(|a| subcommands.contains(&a.as_str()))
+        || args.iter().any(|a| flags.contains(&a.as_str()))
 }
+
+const INTERPRETERS: [&str; 5] = ["node", "bun", "deno", "python", "uv"];
 
 /// Classifies a process from argv. `node /path/to/codex ...` counts as codex.
 pub fn classify(p: &Proc) -> Option<Kind> {
     let argv0 = p.cmd.first().map(|a| basename(a)).unwrap_or(p.name.as_str());
-    let (prog, rest) = if matches!(argv0, "node" | "bun" | "deno") || argv0.starts_with("node") {
+    let wrapped = INTERPRETERS.iter().any(|i| argv0.starts_with(i));
+    let (prog, rest) = if wrapped {
         (p.cmd.get(1).map(|a| basename(a))?, p.cmd.get(2..).unwrap_or(&[]))
     } else {
         (argv0, p.cmd.get(1..).unwrap_or(&[]))
     };
-    let kind = match prog {
-        "claude" => Kind::Claude,
-        "codex" => Kind::Codex,
-        "opencode" => Kind::Opencode,
-        "pi" => Kind::Pi,
-        _ if p.exe.as_ref().is_some_and(|e| e.to_string_lossy().contains("/.local/share/claude/versions/")) => {
+    let kind = match Kind::from_program(prog) {
+        // GitHub's Copilot CLI is a node program; a native `copilot` is AWS's deploy tool.
+        Some(Kind::Copilot) if !wrapped => return None,
+        Some(kind) => kind,
+        None if p.exe.as_ref().is_some_and(|e| e.to_string_lossy().contains("/.local/share/claude/versions/")) => {
             Kind::Claude
         }
-        _ => return None,
+        None => return None,
     };
     if is_helper(kind, rest) { None } else { Some(kind) }
 }
@@ -195,7 +196,7 @@ impl Scanner {
                 })?;
                 self.transcripts.codex_status(&path)
             }
-            Kind::Opencode | Kind::Pi => None,
+            _ => None,
         }
     }
 }

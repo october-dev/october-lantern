@@ -16,7 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "flame", accessibilityDescription: "October Lantern")
+        let icon = (Assets.logo?.copy() as? NSImage) ?? NSImage(systemSymbolName: "flame", accessibilityDescription: nil)
+        icon?.size = NSSize(width: 18, height: 18)
+        icon?.accessibilityDescription = "October Lantern"
+        statusItem.button?.image = icon
         statusItem.menu = menu()
 
         hotKey = HotKey { [weak self] in

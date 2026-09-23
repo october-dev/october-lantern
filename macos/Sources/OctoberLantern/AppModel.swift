@@ -9,6 +9,7 @@ enum PanelMode: Equatable {
 final class AppModel: ObservableObject {
     @Published private(set) var agents: [Agent] = []
     @Published var panel: PanelMode?
+    @Published var pillExpanded = false
     @Published var targetId: String?
     @Published var draft = ""
     @Published var toast: String?

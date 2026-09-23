@@ -25,15 +25,15 @@ Sent when anything changes, and at least every 10 seconds.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | string | Stable while the process lives: `"<kind>:<pid>"` |
-| `kind` | `"claude" \| "codex" \| "opencode" \| "pi"` | |
-| `handle` | string | Display handle, e.g. `"claude-2"`. Numbered per kind, lowest pid first |
+| `kind` | string | `claude`, `codex`, `opencode`, `pi`, `gemini`, `grok`, `cursor`, `qwen`, `goose`, `aider`, `amp`, `copilot`, `kimi`, `droid`, `crush`, `auggie`. Clients should accept unknown values. |
+| `handle` | string | Display handle, e.g. `"claude-2"`. Numbered per kind. A number stays with its agent for the agent's whole life, and a new agent takes the lowest free number. |
 | `pid` | number | |
 | `tty` | string? | e.g. `"ttys004"` |
 | `cwd` | string? | Current working directory |
 | `project` | string? | Last path component of `cwd` |
 | `title` | string? | Session title (Claude's `ai-title`, or the first prompt in a Codex session) |
 | `sessionId` | string? | |
-| `state` | `"working" \| "waiting" \| "needs_input" \| "unknown"` | `waiting` means the agent finished its turn and it's your turn. `needs_input` means it's blocked on a question or permission (known only from hooks). |
+| `state` | `"working" \| "waiting" \| "needs_input" \| "idle" \| "unknown"` | `waiting` means the agent finished its turn and it's your turn. `needs_input` means it's blocked on a question or permission (known only from hooks). |
 | `stateSince` | number? | Epoch ms of the last state change, if known |
 | `lastMessage` | string? | The agent's last message to you (truncated to 2,000 characters) |
 | `question` | string? | For `needs_input`: what it's asking |

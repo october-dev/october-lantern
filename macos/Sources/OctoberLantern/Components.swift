@@ -10,15 +10,6 @@ enum Theme {
     static let faint = Color.white.opacity(0.08)
     static let stroke = Color.white.opacity(0.14)
 
-    static func color(for kind: AgentKind) -> Color {
-        switch kind {
-        case .claude: Color(red: 0.85, green: 0.47, blue: 0.34)
-        case .codex: Color(red: 0.45, green: 0.66, blue: 0.98)
-        case .opencode: Color(red: 0.62, green: 0.66, blue: 0.72)
-        case .pi: Color(red: 0.70, green: 0.55, blue: 0.95)
-        }
-    }
-
     static func color(for state: AgentState) -> Color {
         switch state {
         case .needsInput, .waiting: amber
@@ -26,15 +17,36 @@ enum Theme {
         case .idle, .unknown: Color.white.opacity(0.35)
         }
     }
+}
 
-    static func glyph(for kind: AgentKind) -> String {
-        switch kind {
-        case .claude: "C"
-        case .codex: "X"
-        case .opencode: "O"
-        case .pi: "π"
+/// Images shipped in the app bundle (Contents/Resources), or found in the repo during development.
+enum Assets {
+    private static var cache: [String: NSImage] = [:]
+
+    private static func url(_ path: String) -> URL? {
+        if let res = Bundle.main.resourceURL?.appendingPathComponent(path), FileManager.default.fileExists(atPath: res.path) {
+            return res
         }
+        var dir = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        for _ in 0..<8 {
+            for candidate in [dir.appendingPathComponent("macos/Resources/\(path)"), dir.appendingPathComponent(path)] {
+                if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            }
+            dir.deleteLastPathComponent()
+        }
+        return nil
     }
+
+    static func image(_ path: String) -> NSImage? {
+        if let hit = cache[path] { return hit }
+        guard let url = url(path), let img = NSImage(contentsOf: url) else { return nil }
+        cache[path] = img
+        return img
+    }
+
+    static var logo: NSImage? { image("logo.png") }
+
+    static func harness(_ kind: AgentKind) -> NSImage? { image("harness/\(kind.rawValue).png") }
 }
 
 /// Behind-window blur, the base of both panels.
@@ -55,26 +67,34 @@ struct Glass: NSViewRepresentable {
     }
 }
 
-/// A round badge for an agent: its kind's colour and glyph, ringed by its state.
+/// An agent's harness logo, with a dot for its state.
 struct AgentBadge: View {
     let agent: Agent
     var size: CGFloat = 26
 
     var body: some View {
-        ZStack {
-            Circle().fill(Theme.color(for: agent.kind).opacity(0.9))
-            Text(Theme.glyph(for: agent.kind))
-                .font(.system(size: size * 0.46, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+        Group {
+            if let img = Assets.harness(agent.kind) {
+                Image(nsImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: size * 0.22, style: .continuous).fill(Theme.faint)
+                    .overlay(
+                        Text(agent.kind.displayName.prefix(1))
+                            .font(.system(size: size * 0.46, weight: .bold, design: .rounded))
+                            .foregroundStyle(Theme.ink)
+                    )
+            }
         }
         .frame(width: size, height: size)
         .overlay(alignment: .bottomTrailing) {
             Circle()
                 .fill(Theme.color(for: agent.state))
                 .frame(width: size * 0.34, height: size * 0.34)
-                .overlay(Circle().stroke(Color.black.opacity(0.6), lineWidth: 1.5))
-                .offset(x: 1, y: 1)
+                .overlay(Circle().stroke(Color.black.opacity(0.7), lineWidth: 1.5))
+                .offset(x: 2, y: 2)
         }
+        .help(agent.kind.displayName)
     }
 }
 

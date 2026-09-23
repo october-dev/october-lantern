@@ -24,6 +24,8 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/OctoberLantern" "$APP/Contents/MacOS/OctoberLantern"
 cp "$ROOT/engine/target/$PROFILE/lantern-engine" "$APP/Contents/MacOS/lantern-engine"
+cp -R "$ROOT/macos/Resources/." "$APP/Contents/Resources/"
+cp "$ROOT/logo.png" "$APP/Contents/Resources/logo.png"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -35,6 +37,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>dev.october.lantern</string>
   <key>CFBundleExecutable</key><string>OctoberLantern</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>

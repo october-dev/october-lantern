@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Every harness Lantern can detect. Only Claude Code and Codex have session-file readers so far;
+/// the rest show as running until they get readers or hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -9,6 +11,18 @@ pub enum Kind {
     Codex,
     Opencode,
     Pi,
+    Gemini,
+    Grok,
+    Cursor,
+    Qwen,
+    Goose,
+    Aider,
+    Amp,
+    Copilot,
+    Kimi,
+    Droid,
+    Crush,
+    Auggie,
 }
 
 impl Kind {
@@ -18,7 +32,42 @@ impl Kind {
             Kind::Codex => "codex",
             Kind::Opencode => "opencode",
             Kind::Pi => "pi",
+            Kind::Gemini => "gemini",
+            Kind::Grok => "grok",
+            Kind::Cursor => "cursor",
+            Kind::Qwen => "qwen",
+            Kind::Goose => "goose",
+            Kind::Aider => "aider",
+            Kind::Amp => "amp",
+            Kind::Copilot => "copilot",
+            Kind::Kimi => "kimi",
+            Kind::Droid => "droid",
+            Kind::Crush => "crush",
+            Kind::Auggie => "auggie",
         }
+    }
+
+    /// The executable name each harness runs as.
+    pub fn from_program(prog: &str) -> Option<Kind> {
+        Some(match prog {
+            "claude" => Kind::Claude,
+            "codex" => Kind::Codex,
+            "opencode" => Kind::Opencode,
+            "pi" => Kind::Pi,
+            "gemini" => Kind::Gemini,
+            "grok" => Kind::Grok,
+            "cursor-agent" => Kind::Cursor,
+            "qwen" => Kind::Qwen,
+            "goose" => Kind::Goose,
+            "aider" => Kind::Aider,
+            "amp" => Kind::Amp,
+            "copilot" => Kind::Copilot,
+            "kimi" => Kind::Kimi,
+            "droid" => Kind::Droid,
+            "crush" => Kind::Crush,
+            "auggie" => Kind::Auggie,
+            _ => return None,
+        })
     }
 }
 
