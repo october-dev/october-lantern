@@ -65,7 +65,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Agents**: every running agent, sorted with the ones that need you first, each with its logo, handle, folder, app, and a status of *Your turn*, *Working* or *Running*.
 - **Composer** at the bottom of Waiting and Agents: "To @claude-2", a message field, a mic button and a send button.
 - **New session**: a grid of the agents installed on this Mac, each shown with its logo (only installed ones appear); a folder picker listing recent folders and the folders agents are running in, plus "Choose Folder…"; an optional first message; **Open in**, either *Terminal window* or *Background*; and a **Start** button.
-- **October**: the October logo and two rows, **Connect to October** (your October account) and **Connect to October Desktop**. Both are locked and marked "Soon".
+- **October**: the October logo and three rows: **Connect to October** (your October account), **Connect to October Desktop**, and **Connect to October phone app** (check on and reply to agents from your phone). All three are locked and marked "Soon".
 
 **Menu bar.** A small lantern icon in the menu bar with Waiting, Agents, Message an Agent, Show/Hide Lantern, Open at Login, agent hooks, and Quit.
 
@@ -118,8 +118,8 @@ Lantern is in **early development (v0.1)**. Nothing has been publicly released y
 | Open at login | ✅ Works (menu bar menu) |
 | "Say it once and Lantern picks the right agent" (automatic routing) | ❌ Not yet. You choose the agent. |
 | Screenshot or screen context | ❌ Not yet |
-| Phone / remote control | ❌ Not yet |
-| Connect to October / October Desktop | ❌ Not yet. The October panel shows both, locked, marked "Soon". |
+| Phone / remote control | ❌ Not yet (planned through the October phone app) |
+| Connect to October account / October Desktop / October phone app | ❌ Not yet. The October panel shows all three, locked, marked "Soon". |
 | Windows or Linux | ❌ Not yet |
 | Pricing | Not decided. There is no account, sign-in or payment today. |
 

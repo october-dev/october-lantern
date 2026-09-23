@@ -15,7 +15,8 @@ final class FloatingPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         backgroundColor = .clear
         isOpaque = false
-        hasShadow = true
+        // The glass draws its own edge; a window shadow would outline the rectangular window.
+        hasShadow = false
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = !keyable
         isReleasedWhenClosed = false
@@ -64,9 +65,9 @@ final class WindowController {
                 self.onMenu?(self.pillHost)
             }
         ))
-        pill.contentView = pillHost
+        pill.contentView = GlassContainer(content: pillHost, cornerRadius: nil, tint: 0.15)
         panelHost = FirstClickHostingView(rootView: PanelView(model: model, dictation: model.dictation))
-        panel.contentView = panelHost
+        panel.contentView = GlassContainer(content: panelHost, cornerRadius: 22, tint: 0.35)
 
         // Re-lay out whenever the model changes (agent count changes the pill's height).
         model.objectWillChange

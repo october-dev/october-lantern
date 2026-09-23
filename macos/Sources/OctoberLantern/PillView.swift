@@ -61,7 +61,7 @@ struct PillView: View {
             }
         }
         .padding(6)
-        .glassSurface(Capsule(), tint: 0.15)
+        .glassSurface(Capsule())
         .environment(\.colorScheme, .dark)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: expanded)
         .fixedSize()
@@ -79,7 +79,7 @@ struct LanternButton: View {
     @State private var breathe = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack(alignment: .bottom) {
             ZStack {
                 if count > 0 || working {
                     Circle()
@@ -106,7 +106,8 @@ struct LanternButton: View {
                     .frame(minWidth: 17, minHeight: 17)
                     .background(Capsule().fill(Theme.amber))
                     .overlay(Capsule().stroke(Color.black.opacity(0.5), lineWidth: 1))
-                    .offset(x: 4, y: -3)
+                    // Inside the pill's circle, which clips anything poking out.
+                    .offset(y: 3)
             }
         }
         .contentShape(Circle())

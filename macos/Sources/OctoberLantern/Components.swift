@@ -50,49 +50,57 @@ enum Assets {
     static func harness(_ kind: AgentKind) -> NSImage? { image("harness/\(kind.rawValue).png") }
 }
 
-/// Frosted glass behind the pill and the panel. On macOS 26+ this is Apple's Liquid Glass
-/// (`NSGlassEffectView`); earlier versions get a behind-window blur. `tint` darkens the glass so
-/// white text stays readable over bright wallpapers.
-struct Glass: NSViewRepresentable {
-    var cornerRadius: CGFloat? = nil  // nil = capsule (half the shorter side)
-    var tint: Double = 0.2
+/// The window-level glass that the pill and the panel sit in. On macOS 26+ this is Apple's Liquid
+/// Glass (`NSGlassEffectView`); earlier versions get a behind-window blur. It's an AppKit container
+/// (rather than a SwiftUI background) because SwiftUI can't clip these views: shaped from SwiftUI,
+/// they leak a rectangle at the corners. `tint` darkens the glass so white text stays readable.
+final class GlassContainer: NSView {
+    private let radius: CGFloat?  // nil = capsule
+    private let glass: NSView
 
-    func makeNSView(context: Context) -> NSView {
-        let view: NSView
+    init(content: NSView, cornerRadius: CGFloat?, tint: Double) {
+        radius = cornerRadius
         if #available(macOS 26.0, *) {
-            let glass = CapsuleAwareGlassView()
-            glass.style = .regular
-            view = glass
+            let g = NSGlassEffectView()
+            g.style = .regular
+            g.tintColor = tint > 0 ? NSColor.black.withAlphaComponent(tint) : nil
+            g.contentView = content
+            glass = g
         } else {
             let blur = NSVisualEffectView()
             blur.material = .hudWindow
             blur.blendingMode = .behindWindow
             blur.state = .active
-            view = blur
+            blur.wantsLayer = true
+            blur.layer?.masksToBounds = true
+            blur.layer?.cornerCurve = .continuous
+            content.frame = blur.bounds
+            content.autoresizingMask = [.width, .height]
+            blur.addSubview(content)
+            glass = blur
         }
-        view.appearance = NSAppearance(named: .darkAqua)
-        update(view)
-        return view
+        super.init(frame: .zero)
+        glass.appearance = NSAppearance(named: .darkAqua)
+        glass.frame = bounds
+        glass.autoresizingMask = [.width, .height]
+        addSubview(glass)
     }
 
-    func updateNSView(_ view: NSView, context: Context) { update(view) }
-
-    private func update(_ view: NSView) {
-        if #available(macOS 26.0, *), let glass = view as? CapsuleAwareGlassView {
-            glass.fixedRadius = cornerRadius
-            glass.tintColor = NSColor.black.withAlphaComponent(tint)
-            glass.needsLayout = true
-        }
-    }
-}
-
-@available(macOS 26.0, *)
-final class CapsuleAwareGlassView: NSGlassEffectView {
-    var fixedRadius: CGFloat?
+    required init?(coder: NSCoder) { fatalError() }
 
     override func layout() {
         super.layout()
-        cornerRadius = fixedRadius ?? min(bounds.width, bounds.height) / 2
+        let r = radius ?? min(bounds.width, bounds.height) / 2
+        if #available(macOS 26.0, *), let g = glass as? NSGlassEffectView {
+            g.cornerRadius = r
+        } else {
+            glass.layer?.cornerRadius = r
+        }
+    }
+
+    override func setFrameSize(_ size: NSSize) {
+        super.setFrameSize(size)
+        needsLayout = true
     }
 }
 
@@ -117,10 +125,9 @@ struct GlassRim<S: InsettableShape>: View {
 }
 
 extension View {
-    /// Glass background plus rim, clipped to `shape`.
-    func glassSurface<S: InsettableShape>(_ shape: S, cornerRadius: CGFloat? = nil, tint: Double = 0.2) -> some View {
-        background(Glass(cornerRadius: cornerRadius, tint: tint).clipShape(shape))
-            .overlay(GlassRim(shape: shape))
+    /// The glass rim over the window's glass (see `GlassContainer`).
+    func glassSurface<S: InsettableShape>(_ shape: S) -> some View {
+        clipShape(shape).overlay(GlassRim(shape: shape))
     }
 }
 

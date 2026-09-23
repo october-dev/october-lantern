@@ -42,7 +42,7 @@ struct PanelView: View {
             }
         }
         .frame(width: 380)
-        .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous), cornerRadius: 22, tint: 0.35)
+        .glassSurface(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .environment(\.colorScheme, .dark)
         .animation(.easeOut(duration: 0.15), value: model.toast)
     }
