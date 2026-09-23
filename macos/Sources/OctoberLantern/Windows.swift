@@ -65,9 +65,9 @@ final class WindowController {
                 self.onMenu?(self.pillHost)
             }
         ))
-        pill.contentView = GlassContainer(content: pillHost, cornerRadius: nil, tint: 0.15)
+        pill.contentView = GlassContainer(content: pillHost, cornerRadius: nil, tint: 0.45)
         panelHost = FirstClickHostingView(rootView: PanelView(model: model, dictation: model.dictation))
-        panel.contentView = GlassContainer(content: panelHost, cornerRadius: 22, tint: 0.35)
+        panel.contentView = GlassContainer(content: panelHost, cornerRadius: 22, tint: 0.5)
 
         // Re-lay out whenever the model changes (agent count changes the pill's height).
         model.objectWillChange

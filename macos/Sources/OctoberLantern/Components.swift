@@ -125,9 +125,12 @@ struct GlassRim<S: InsettableShape>: View {
 }
 
 extension View {
-    /// The glass rim over the window's glass (see `GlassContainer`).
+    /// The glass rim over the window's glass (see `GlassContainer`), plus a dark layer so the
+    /// white icons and text stay readable when the glass sits over a white or light window.
     func glassSurface<S: InsettableShape>(_ shape: S) -> some View {
-        clipShape(shape).overlay(GlassRim(shape: shape))
+        background(shape.fill(Color.black.opacity(0.35)))
+            .clipShape(shape)
+            .overlay(GlassRim(shape: shape))
     }
 }
 
