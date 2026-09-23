@@ -25,6 +25,8 @@ enum Request {
     Reply { request_id: String, agent_id: String, text: String },
     #[serde(rename_all = "camelCase")]
     Launch { request_id: String, kind: Kind, cwd: String, prompt: Option<String>, background: bool },
+    #[serde(rename_all = "camelCase")]
+    History { request_id: String, agent_id: String },
     /// Show an agent that runs in a detached tmux session in a Terminal window.
     #[serde(rename_all = "camelCase")]
     Attach { request_id: String, agent_id: String },
@@ -101,6 +103,13 @@ pub fn run() -> Result<()> {
                         Err(e) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")})),
                     }
                     next_scan = Instant::now() + Duration::from_millis(1500);
+                }
+                Ok(Request::History { request_id, agent_id }) => {
+                    let messages = agents.iter().find(|a| a.id == agent_id).and_then(|a| scanner.history(a));
+                    emit(&json!({
+                        "type": "historyResult", "requestId": request_id, "agentId": agent_id,
+                        "supported": messages.is_some(), "messages": messages.unwrap_or_default()
+                    }));
                 }
                 Ok(Request::Attach { request_id, agent_id }) => {
                     let result = match agents.iter().find(|a| a.id == agent_id).and_then(|a| a.tmux.as_ref()) {

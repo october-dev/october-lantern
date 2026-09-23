@@ -6,6 +6,7 @@ final class EngineClient {
     var onAgents: (([Agent]) -> Void)?
     var onReplyResult: ((String, Bool, String?) -> Void)?
     var onInstalled: ((EngineMessage.Installed) -> Void)?
+    var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     /// Launch and attach results: (ok, message).
     var onActionResult: ((Bool, String?) -> Void)?
 
@@ -86,6 +87,10 @@ final class EngineClient {
         send(["type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background])
     }
 
+    func history(agentId: String) {
+        send(["type": "history", "requestId": "h-\(agentId)", "agentId": agentId])
+    }
+
     func attach(requestId: String, agentId: String) {
         send(["type": "attach", "requestId": requestId, "agentId": agentId])
     }
@@ -108,6 +113,7 @@ final class EngineClient {
                 case .snapshot(let agents): onAgents?(agents)
                 case .replyResult(let id, let ok, _, let message): onReplyResult?(id, ok, message)
                 case .installed(let installed): onInstalled?(installed)
+                case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
                 case .launchResult(_, let ok, let message), .attachResult(_, let ok, let message):
                     onActionResult?(ok, message)
                 case .hello, .other: break

@@ -15,6 +15,9 @@ struct PanelView: View {
                 PanelTitle(title: "October", model: model)
                 OctoberView()
             default:
+                if let agent = model.chatAgent {
+                    ChatView(agent: agent, model: model)
+                } else {
                 header
                 ScrollView {
                     VStack(spacing: 8) {
@@ -25,6 +28,7 @@ struct PanelView: View {
                 }
                 .frame(maxHeight: 440)
                 .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if let toast = model.toast {
@@ -73,6 +77,8 @@ struct PanelView: View {
         } else {
             ForEach(model.inbox) { agent in
                 InboxCard(agent: agent, selected: model.target?.id == agent.id, model: model)
+                    .contentShape(Rectangle())
+                    .onTapGesture { model.openChat(agent) }
             }
         }
     }
@@ -83,7 +89,7 @@ struct PanelView: View {
         } else {
             ForEach(model.ranked) { agent in
                 AgentRow(agent: agent, selected: model.target?.id == agent.id)
-                    .onTapGesture { model.compose(to: agent) }
+                    .onTapGesture { model.openChat(agent) }
                     .contextMenu {
                         Button("Message @\(agent.handle)") { model.compose(to: agent) }
                         Button("Open in \(agent.host?.app ?? "terminal")") { model.open(agent) }

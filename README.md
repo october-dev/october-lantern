@@ -45,9 +45,10 @@ The result is either wasted agent time (an agent sat idle for 20 minutes waiting
 1. **Finds every agent on your Mac, automatically.** No setup and no special way of launching them. If Claude Code, Codex, Pi, OpenCode or another supported agent is running in any terminal (Terminal, iTerm2, Ghostty, cmux, VS Code's terminal, tmux...), Lantern sees it.
 2. **Knows which ones are waiting on you.** For Claude Code and Codex, Lantern reads each agent's own session log to tell whether it's still working or has finished its turn and is waiting for you. It shows what the agent last said.
 3. **One place to look.** The lantern glows amber and shows a count when agents are waiting. Click it to see a "Waiting" list: each agent, its project, how long it's been waiting, and its last message.
-4. **Answer without switching windows.** Type or dictate a reply in Lantern. For agents running inside tmux, Lantern types the reply straight into the agent's session. For agents in other terminals, Lantern copies your reply and brings the right app to the front so you can paste it (see [What's true today](#whats-true-today)).
-5. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern opens it in a new Terminal window (or runs it in the background). Sessions Lantern starts run inside tmux, so Lantern can always reply to them directly.
-6. **Stays out of your way.** Collapsed, Lantern is a single small lantern icon on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
+4. **Read the whole conversation.** Click any agent to open its chat inside the panel: what you asked, what it answered, and a one-line summary of each command or tool it ran (for Claude Code and Codex).
+5. **Answer without switching windows.** Type or dictate a reply in Lantern. For agents running inside tmux, Lantern types the reply straight into the agent's session. For agents in other terminals, Lantern copies your reply and brings the right app to the front so you can paste it (see [What's true today](#whats-true-today)).
+6. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern opens it in a new Terminal window (or runs it in the background). Sessions Lantern starts run inside tmux, so Lantern can always reply to them directly.
+7. **Stays out of your way.** Collapsed, Lantern is a single small lantern icon on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
 
 Lantern does **not** replace your terminals. Your agents keep running exactly where you started them, and you can keep using them there as usual. Lantern is an extra view and remote control on top.
 
@@ -63,7 +64,8 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 **The panel.** Clicking Waiting or Agents opens a frosted-glass panel beside the lantern:
 - **Waiting**: one card per agent that's waiting on you, with the agent's logo, its handle (e.g. `@claude-2`), its project folder, the app it's running in, how long it's been waiting, the session title, and its last message. Each card has **Reply**, **Open** (bring its terminal to the front) and **Done** (clear it from the list) buttons.
 - **Agents**: every running agent, sorted with the ones that need you first, each with its logo, handle, folder, app, and a status of *Your turn*, *Working* or *Running*.
-- **Composer** at the bottom of Waiting and Agents: "To @claude-2", a message field, a mic button and a send button.
+- **Chat**: click any card or agent to slide into its conversation. The header shows the agent, its status, a back arrow and **Open**. Below it, your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command or tool it ran as a small one-line entry ("Run · npm test", "Edit · src/app.ts"). It updates live while the agent works, and the composer below talks to that agent.
+- **Composer** at the bottom of Waiting, Agents and Chat: "To @claude-2", a message field, a mic button and a send button.
 - **New session**: a grid of the agents installed on this Mac, each shown with its logo (only installed ones appear); a folder picker listing recent folders and the folders agents are running in, plus "Choose Folder…"; an optional first message; **Open in**, either *Terminal window* or *Background*; and a **Start** button.
 - **October**: the October logo and three rows: **Connect to October** (your October account), **Connect to October Desktop**, and **Connect to October phone app** (check on and reply to agents from your phone). All three are locked and marked "Soon".
 
@@ -78,7 +80,7 @@ Say you have six sessions running: two Claude Code, two Codex, one Pi and one Op
 1. **Open Lantern.** All six appear within a couple of seconds, each with its logo and a handle: `@claude-1`, `@claude-2`, `@codex-1`, `@codex-2`, `@pi-1`, `@opencode-1`. You didn't have to register or restart anything.
 2. **Keep working.** While the agents run, the lantern glows softly. Hover over it and open **Agents** to see each one's folder and status.
 3. **An agent finishes.** When `@codex-1` finishes its task, the lantern turns amber with a **1**. Click it: the Waiting card shows what Codex said, e.g. *"Tests pass. Want me to commit?"*
-4. **Reply.** Click **Reply**, type or dictate "yes, commit it", and press Enter.
+4. **Read and reply.** Click the card to see the whole conversation with Codex, then type or dictate "yes, commit it", and press Enter.
    - If `@codex-1` runs inside **tmux**, the reply is typed straight into its session, just as if you'd typed it in the terminal.
    - Otherwise, Lantern copies the reply and brings that terminal app to the front, and you paste with ⌘V.
 5. **Or reply the old way.** You can always switch to the terminal and answer there. Lantern updates by itself either way.
@@ -108,6 +110,7 @@ Lantern is in **early development (v0.1)**. Nothing has been publicly released y
 | Working / your-turn status and last message for Claude Code and Codex | ✅ Works |
 | Status for OpenCode, Pi and the others | ❌ Not yet (shown as "Running") |
 | "Needs permission" alerts | ✅ With the optional hooks (Claude Code) |
+| Chat view: the conversation with an agent, updating live | ✅ Claude Code and Codex. Other agents show "can't read yet". |
 | Reply to agents running in tmux | ✅ Types the reply into the session |
 | Reply to agents in other terminals (Terminal, iTerm2, Ghostty, cmux...) | ⚠️ Copies the reply and focuses the app; you paste. Direct typing is planned. |
 | Jump to the exact terminal tab | ❌ Not yet. "Open" brings the right app forward, not the exact tab. |

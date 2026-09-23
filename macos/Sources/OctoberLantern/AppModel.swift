@@ -11,7 +11,10 @@ enum PanelMode: Equatable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var agents: [Agent] = []
-    @Published var panel: PanelMode?
+    /// Changing panels (or closing it) also leaves any open conversation.
+    @Published var panel: PanelMode? {
+        didSet { if oldValue != panel { closeChat() } }
+    }
     @Published var pillExpanded = false
     @Published var targetId: String?
     @Published var draft = ""
@@ -21,6 +24,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var installedKinds: [AgentKind] = []
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var launching = false
+    /// The agent whose conversation is open in the panel, if any.
+    @Published private(set) var chatAgentId: String?
+    @Published private(set) var chatMessages: [ChatMessage] = []
+    @Published private(set) var chatSupported = true
+    @Published private(set) var chatLoading = false
     let dictation = Dictation()
 
     private let engine = EngineClient()
@@ -33,6 +41,12 @@ final class AppModel: ObservableObject {
         dismissed = Set(UserDefaults.standard.stringArray(forKey: "dismissedTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
         engine.onReplyResult = { [weak self] id, ok, message in self?.replyFinished(id, ok: ok, message: message) }
+        engine.onHistory = { [weak self] agentId, supported, messages in
+            guard let self, agentId == self.chatAgentId else { return }
+            self.chatLoading = false
+            self.chatSupported = supported
+            if messages != self.chatMessages { self.chatMessages = messages }
+        }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
             self?.tmuxAvailable = installed.tmux
@@ -101,6 +115,26 @@ final class AppModel: ObservableObject {
         if let agent { targetId = agent.id }
         if !(panel?.isList ?? false) { panel = .inbox }
         composeFocusToken += 1
+    }
+
+    var chatAgent: Agent? { chatAgentId.flatMap { id in agents.first { $0.id == id } } }
+
+    /// Opens the conversation with `agent` in the panel; the composer then talks to it.
+    func openChat(_ agent: Agent) {
+        if chatAgentId != agent.id {
+            chatMessages = []
+            chatLoading = true
+        }
+        if !(panel?.isList ?? false) { panel = .inbox }
+        chatAgentId = agent.id
+        targetId = agent.id
+        engine.history(agentId: agent.id)
+        composeFocusToken += 1
+    }
+
+    func closeChat() {
+        chatAgentId = nil
+        chatMessages = []
     }
 
     func dismiss(_ agent: Agent) {
@@ -187,6 +221,10 @@ final class AppModel: ObservableObject {
     private func update(_ fresh: [Agent]) {
         agents = fresh
         if let targetId, !fresh.contains(where: { $0.id == targetId }) { self.targetId = nil }
+        // Keep an open conversation current.
+        if let chatAgentId {
+            if fresh.contains(where: { $0.id == chatAgentId }) { engine.history(agentId: chatAgentId) } else { closeChat() }
+        }
     }
 
     private func replyFinished(_ requestId: String, ok: Bool, message: String?) {
@@ -195,6 +233,7 @@ final class AppModel: ObservableObject {
         if ok {
             draft = ""
             show("Sent to @\(handle)")
+            if let chatAgentId { engine.history(agentId: chatAgentId) }
         } else {
             show("Couldn't send to @\(handle): \(message ?? "unknown error")")
         }

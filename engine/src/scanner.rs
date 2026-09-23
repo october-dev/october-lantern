@@ -156,6 +156,21 @@ impl Scanner {
         out
     }
 
+    /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions.
+    pub fn history(&mut self, agent: &Agent) -> Option<Vec<crate::history::ChatMessage>> {
+        match agent.kind {
+            Kind::Claude => Some(self.claude_paths.get(&agent.pid).map(|p| crate::history::claude(p)).unwrap_or_default()),
+            Kind::Codex => {
+                let path = self
+                    .transcripts
+                    .codex_path_for_pid(agent.pid)
+                    .or_else(|| self_child(agent.pid).and_then(|c| self.transcripts.codex_path_for_pid(c)));
+                Some(path.map(|p| crate::history::codex(&p)).unwrap_or_default())
+            }
+            _ => None,
+        }
+    }
+
     fn handle_number(&mut self, pid: u32, kind: Kind) -> usize {
         if let Some((_, n)) = self.handles.get(&pid) {
             return *n;

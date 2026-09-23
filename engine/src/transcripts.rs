@@ -28,7 +28,7 @@ fn file_stamp(path: &Path) -> Option<(u64, u64)> {
     Some((mtime, meta.len()))
 }
 
-fn read_range(path: &Path, from_end: bool, bytes: u64) -> Option<String> {
+pub fn read_range(path: &Path, from_end: bool, bytes: u64) -> Option<String> {
     let mut f = File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     let mut buf = Vec::new();
@@ -44,7 +44,7 @@ fn read_range(path: &Path, from_end: bool, bytes: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-fn lines(text: &str) -> impl Iterator<Item = Value> + '_ {
+pub fn lines(text: &str) -> impl Iterator<Item = Value> + '_ {
     text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
 }
 

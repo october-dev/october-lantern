@@ -90,6 +90,13 @@ struct Agent: Codable, Identifiable, Hashable {
     }
 }
 
+struct ChatMessage: Decodable, Hashable {
+    enum Role: String, Decodable { case user, agent, tool }
+    let role: Role
+    let text: String
+    let at: String?
+}
+
 enum EngineMessage: Decodable {
     case hello(version: String)
     case snapshot(agents: [Agent])
@@ -97,6 +104,7 @@ enum EngineMessage: Decodable {
     case installed(Installed)
     case launchResult(requestId: String, ok: Bool, message: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
+    case history(agentId: String, supported: Bool, messages: [ChatMessage])
     case other
 
     struct Installed: Decodable {
@@ -104,7 +112,7 @@ enum EngineMessage: Decodable {
         let tmux: Bool
     }
 
-    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message, installed }
+    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message, installed, agentId, supported, messages }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -119,6 +127,12 @@ enum EngineMessage: Decodable {
                 ok: try c.decode(Bool.self, forKey: .ok),
                 error: try c.decodeIfPresent(String.self, forKey: .error),
                 message: try c.decodeIfPresent(String.self, forKey: .message)
+            )
+        case "historyResult":
+            self = .history(
+                agentId: try c.decode(String.self, forKey: .agentId),
+                supported: try c.decode(Bool.self, forKey: .supported),
+                messages: try c.decode([ChatMessage].self, forKey: .messages)
             )
         case "installed":
             self = .installed(try c.decode(Installed.self, forKey: .installed))

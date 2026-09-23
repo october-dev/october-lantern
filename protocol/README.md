@@ -54,6 +54,16 @@ Sent once, shortly after `hello`. Lists the agents installed on this machine, as
 {"type":"attachResult","requestId":"a1","ok":false,"message":"agent is not in a tmux session"}
 ```
 
+### `historyResult`
+The recent conversation with an agent (up to 120 messages from the end of its session file). `supported` is `false` for harnesses whose sessions Lantern can't read yet.
+```json
+{"type":"historyResult","requestId":"h1","agentId":"codex:4242","supported":true,
+ "messages":[{"role":"user","text":"fix the test","at":"2026-09-23T17:03:00Z"},
+             {"role":"tool","text":"Run · npm test"},
+             {"role":"agent","text":"Fixed. The test was racing the timer."}]}
+```
+`role` is `user`, `agent` or `tool` (a one-line summary of a command or tool call).
+
 ### `replyResult`
 ```json
 {"type":"replyResult","requestId":"r1","ok":true}
@@ -70,6 +80,7 @@ Sent once, shortly after `hello`. Lists the agents installed on this machine, as
 ```json
 {"type":"launch","requestId":"l1","kind":"codex","cwd":"/Users/me/proj","prompt":"write tests","background":false}
 {"type":"attach","requestId":"a1","agentId":"codex:4242"}
+{"type":"history","requestId":"h1","agentId":"codex:4242"}
 ```
 
 `launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument; other agents have it typed in about 4 seconds after they start. `attach` opens a Terminal window attached to an agent's tmux session.

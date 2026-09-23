@@ -6,6 +6,7 @@
 //!   lantern-engine hook claude|codex      hook entry point (called by the agents)
 //!   lantern-engine hooks install|uninstall|status
 
+mod history;
 mod hooks;
 mod launch;
 mod model;
@@ -36,6 +37,14 @@ fn main() -> Result<()> {
             Some("status") | None => hooks::status(),
             Some(other) => bail!("unknown hooks command: {other}"),
         },
+        Some("history") => {
+            let id = args.get(1).map(String::as_str).unwrap_or("");
+            let mut scanner = scanner::Scanner::new();
+            let agents = scanner.scan();
+            let agent = agents.iter().find(|a| a.id == id).ok_or_else(|| anyhow::anyhow!("no agent {id}"))?;
+            println!("{}", serde_json::to_string_pretty(&scanner.history(agent))?);
+            Ok(())
+        }
         Some("installed") => {
             println!("{}", serde_json::to_string(launch::installed())?);
             Ok(())
