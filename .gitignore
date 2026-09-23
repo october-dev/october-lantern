@@ -1,0 +1,6 @@
+.DS_Store
+/build/
+/engine/target/
+/macos/.build/
+/macos/.swiftpm/
+*.xcuserstate

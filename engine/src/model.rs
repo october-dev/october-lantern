@@ -1,0 +1,107 @@
+//! Types sent to the app. See `protocol/README.md`.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Claude,
+    Codex,
+    Opencode,
+    Pi,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::Claude => "claude",
+            Kind::Codex => "codex",
+            Kind::Opencode => "opencode",
+            Kind::Pi => "pi",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    /// The agent is doing something.
+    Working,
+    /// The agent finished its turn and has something for you.
+    Waiting,
+    /// The agent is blocked on a question or permission prompt.
+    NeedsInput,
+    /// The agent is open but nothing has happened yet.
+    Idle,
+    /// Lantern can't tell.
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StateSource {
+    Hook,
+    Transcript,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostApp {
+    pub app: String,
+    pub pid: u32,
+    pub bundle_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxPane {
+    /// `-L` socket name, or `-S` socket path when it starts with `/`. `None` is the default server.
+    pub socket: Option<String>,
+    /// `session:window.pane`, for display.
+    pub target: String,
+    pub pane_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Agent {
+    pub id: String,
+    pub kind: Kind,
+    pub handle: String,
+    pub pid: u32,
+    pub tty: Option<String>,
+    pub cwd: Option<String>,
+    pub project: Option<String>,
+    pub title: Option<String>,
+    pub session_id: Option<String>,
+    pub state: State,
+    pub state_since: Option<u64>,
+    pub last_message: Option<String>,
+    pub question: Option<String>,
+    pub host: Option<HostApp>,
+    pub tmux: Option<TmuxPane>,
+    pub can_reply: bool,
+    pub state_source: StateSource,
+}
+
+/// What a transcript reader or hook file says about a session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionStatus {
+    pub state: Option<State>,
+    pub since: Option<u64>,
+    pub last_message: Option<String>,
+    pub question: Option<String>,
+    pub title: Option<String>,
+    pub session_id: Option<String>,
+}
+
+pub fn truncate(s: &str, max_chars: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max_chars).collect();
+    out.push('…');
+    out
+}
