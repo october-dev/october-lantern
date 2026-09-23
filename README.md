@@ -101,11 +101,11 @@ Say you have six sessions running: two Claude Code, two Codex, one Pi and one Op
 
 ## What's true today
 
-Lantern is in **early development (v0.1)**. Nothing has been publicly released yet.
+Lantern is in **early preview (v0.1.0)**. Download: <https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern.dmg>. That link always serves the newest release.
 
 | Capability | Status |
 |---|---|
-| macOS app (macOS 14+, Apple silicon) | ✅ Works. Intel builds aren't set up yet. |
+| macOS app (macOS 14+, Apple silicon and Intel), signed and notarized | ✅ Works |
 | Finds agents automatically in any terminal app | ✅ Works |
 | Working / your-turn status and last message for Claude Code and Codex | ✅ Works |
 | Status for OpenCode, Pi and the others | ❌ Not yet (shown as "Running") |
@@ -236,6 +236,18 @@ cargo run -- hooks status     # show whether the optional hooks are installed
 cargo run -- hooks install    # add the hooks (backs up config files first)
 cargo run -- hooks uninstall  # remove them and restore previous settings
 ```
+
+## Releasing
+
+```sh
+# once per machine: store the Apple ID app-specific password in the Keychain
+xcrun notarytool store-credentials lantern-notary --apple-id <apple-id> --team-id 75D25SJRM5 --password <app-specific-password>
+
+scripts/release.sh            # universal build → Developer ID signing → notarize + staple app → DMG → notarize + staple DMG
+gh release create vX.Y.Z build/October-Lantern.dmg --repo harshsaver/october-lantern-releases --title "October Lantern X.Y.Z" --notes "..."
+```
+
+Bump `version` in `engine/Cargo.toml` first; the app's version comes from it. Always upload the DMG as `October-Lantern.dmg` so the `latest/download/October-Lantern.dmg` link keeps working. Downloads are published at [harshsaver/october-lantern-releases](https://github.com/harshsaver/october-lantern-releases), a public repo holding only release files. This source repo stays private.
 
 ## Repository layout
 

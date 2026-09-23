@@ -2,6 +2,9 @@
 # Builds the engine and the macOS app, then assembles build/October Lantern.app.
 #   scripts/build-app.sh            release build
 #   scripts/build-app.sh --debug    debug build
+# Environment:
+#   UNIVERSAL=1        build for Apple silicon and Intel
+#   SIGN_IDENTITY=...  sign with this Developer ID (hardened runtime) instead of ad-hoc
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -12,18 +15,34 @@ APP="$ROOT/build/October Lantern.app"
 
 if [[ -d /opt/homebrew/opt/rustup/bin ]]; then export PATH="/opt/homebrew/opt/rustup/bin:$PATH"; fi
 
-echo "==> engine ($PROFILE)"
-(cd "$ROOT/engine" && cargo build $([[ $PROFILE == release ]] && echo --release))
+CARGO_FLAGS=()
+[[ $PROFILE == release ]] && CARGO_FLAGS+=(--release)
+SWIFT_ARCHS=()
+if [[ "${UNIVERSAL:-}" == 1 ]]; then
+  echo "==> engine ($PROFILE, universal)"
+  for t in aarch64-apple-darwin x86_64-apple-darwin; do
+    (cd "$ROOT/engine" && cargo build "${CARGO_FLAGS[@]}" --target "$t")
+  done
+  ENGINE="$ROOT/engine/target/lantern-engine-universal"
+  lipo -create -output "$ENGINE" \
+    "$ROOT/engine/target/aarch64-apple-darwin/$PROFILE/lantern-engine" \
+    "$ROOT/engine/target/x86_64-apple-darwin/$PROFILE/lantern-engine"
+  SWIFT_ARCHS=(--arch arm64 --arch x86_64)
+else
+  echo "==> engine ($PROFILE)"
+  (cd "$ROOT/engine" && cargo build "${CARGO_FLAGS[@]}")
+  ENGINE="$ROOT/engine/target/$PROFILE/lantern-engine"
+fi
 
 echo "==> app ($PROFILE)"
-(cd "$ROOT/macos" && swift build -c "$PROFILE")
-BIN_DIR="$(cd "$ROOT/macos" && swift build -c "$PROFILE" --show-bin-path)"
+(cd "$ROOT/macos" && swift build -c "$PROFILE" ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"})
+BIN_DIR="$(cd "$ROOT/macos" && swift build -c "$PROFILE" ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"} --show-bin-path)"
 
 echo "==> bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_DIR/OctoberLantern" "$APP/Contents/MacOS/OctoberLantern"
-cp "$ROOT/engine/target/$PROFILE/lantern-engine" "$APP/Contents/MacOS/lantern-engine"
+cp "$ENGINE" "$APP/Contents/MacOS/lantern-engine"
 cp -R "$ROOT/macos/Resources/." "$APP/Contents/Resources/"
 cp "$ROOT/logo.png" "$APP/Contents/Resources/logo.png"
 
@@ -49,7 +68,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc signature for local runs. Release builds get a Developer ID signature and notarization.
-codesign --force --sign - "$APP/Contents/MacOS/lantern-engine"
-codesign --force --sign - "$APP"
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  # Hardened runtime (required for notarization). The app needs the audio-input entitlement for
+  # dictation; the engine needs none.
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/lantern-engine"
+  codesign --force --options runtime --timestamp --entitlements "$ROOT/macos/OctoberLantern.entitlements" \
+    --sign "$SIGN_IDENTITY" "$APP"
+else
+  # Ad-hoc signature for local runs.
+  codesign --force --sign - "$APP/Contents/MacOS/lantern-engine"
+  codesign --force --sign - "$APP"
+fi
 echo "==> $APP"
