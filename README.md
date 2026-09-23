@@ -150,13 +150,18 @@ Lantern is in **beta (v0.2.0)**.
 | Welcome guide, Settings, Report a Problem, Uninstall | ✅ |
 | Automatic routing ("send this to whichever agent it's for") | ❌ Not yet. You choose the agent. |
 | Screenshot or screen context | ❌ Not yet |
-| Connect to October account, October Desktop, October phone app | ❌ Not yet. Shown as locked, "Soon". |
+| Sign in with an October account (Google, GitHub, Apple, email) | ✅ |
+| Connect to October Desktop | ✅ Read-only with any October version that runs october-core (lists October's terminals). Full connection (October's agent names and questions, replies through October's safe delivery, Open on the canvas) needs October 1.0.52 or later, after the user clicks Connect and allows Lantern in October. |
+| October phone app | ✅ Built, not yet tested live: sign in, then pair the phone by QR. Needs a plan that includes mobile. Lantern appears as its own computer on the October account. |
 | Windows or Linux | ❌ Not yet |
 | Pricing | Free during the beta. No account or sign-in. |
 
 ## Privacy
 
-- **Everything stays on your Mac.** Lantern has no server and no account, and sends nothing over the network. The only network request is the daily update check, which downloads a public list of versions from GitHub.
+- **Everything stays on your Mac unless you connect to October.** Without an October account, the only network request is the daily update check (a public list of versions on GitHub).
+- **October account (optional).** Signing in talks to October's sign-in service (Supabase) and reads your plan from october.dev. The session is kept in the macOS Keychain.
+- **October Desktop (optional).** Lantern talks to October only on your Mac (127.0.0.1), and only after you allow it in October. You can disconnect it from either app.
+- **October phone app (optional).** Traffic goes through October's relay and is end-to-end encrypted (Noise), so the relay can't read it. Phones are paired by QR and can be revoked from Lantern.
 - **Dictation is on-device** where the Mac supports it (Apple's speech recognizer), and Lantern listens only while the mic button is on.
 - **No screen recording.** Lantern doesn't take screenshots.
 - **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`), and never modifies them.

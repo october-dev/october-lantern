@@ -1,16 +1,24 @@
 [package]
 name = "lantern-engine"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.23.1"
+blake2 = "0.11.0"
+ed25519-dalek = "3.0.0"
+getrandom = "0.4.3"
 hmac = "0.13.0"
 libc = "0.2.189"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+snow = "0.10.0"
 sysinfo = "0.39.6"
 toml_edit = "0.25.15"
-ureq = { version = "2", features = ["json"] }
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+ureq = { version = "3.4.2", features = ["json"] }
+# october_core.rs uses the 2.x API.
+ureq2 = { package = "ureq", version = "2", features = ["json"] }
+uuid = { version = "1.26.1", features = ["v4"] }

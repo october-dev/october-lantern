@@ -86,7 +86,7 @@ pub struct Principal {
 pub struct Client {
     pub run: RunFile,
     pub principal: Principal,
-    agent: ureq::Agent,
+    agent: ureq2::Agent,
     next: u64,
 }
 
@@ -97,7 +97,7 @@ impl Client {
             Some((id, credential)) => Principal { kind: "local-client", id, credential },
             None => Principal { kind: "cli", id: "october-lantern".into(), credential: run.cli_credential.clone() },
         };
-        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
+        let agent = ureq2::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
         Client { run, principal, agent, next: 0 }
     }
 
@@ -132,7 +132,7 @@ impl Client {
             .send_string(&env.to_string());
         let body: Value = match resp {
             Ok(r) => r.into_json()?,
-            Err(ureq::Error::Status(code, r)) => {
+            Err(ureq2::Error::Status(code, r)) => {
                 let v: Value = r.into_json().unwrap_or(json!({}));
                 let e = &v["error"];
                 if e["details"]["revoked"] == true || code == 401 {
@@ -193,8 +193,8 @@ impl Client {
     fn unauthenticated(&self, path: &str, body: Value) -> Result<Value> {
         match self.agent.post(&self.url(path)).set("Host", &self.run.address).set("Content-Type", "application/json").send_string(&body.to_string()) {
             Ok(r) => Ok(r.into_json()?),
-            Err(ureq::Error::Status(404, _)) => bail!("unsupported: this version of October can't pair with Lantern yet"),
-            Err(ureq::Error::Status(code, r)) => {
+            Err(ureq2::Error::Status(404, _)) => bail!("unsupported: this version of October can't pair with Lantern yet"),
+            Err(ureq2::Error::Status(code, r)) => {
                 let v: Value = r.into_json().unwrap_or(json!({}));
                 bail!("{} ({code})", v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("pairing failed"))
             }

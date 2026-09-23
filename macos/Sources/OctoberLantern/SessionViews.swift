@@ -207,6 +207,7 @@ struct Choice: View {
 /// locked for now.
 struct OctoberView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var account = OctoberAccount.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -220,8 +221,7 @@ struct OctoberView: View {
             }
             AccountCard()
             DesktopCard(model: model)
-            LockedRow(symbol: "iphone", title: "Connect to October phone app",
-                      detail: "Check on your agents and reply to them from your phone.")
+            PhoneCard(signedIn: account.signedIn, planAllowsPhone: account.plan?.features?.mobile?.enabled)
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 16)

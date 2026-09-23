@@ -141,6 +141,7 @@ final class OctoberAccount: ObservableObject {
         plan = nil
         refreshTask?.cancel()
         Keychain.delete()
+        PhoneModel.shared.stop()
         guard let token else { return }
         var req = URLRequest(url: Self.supabaseURL.appendingPathComponent("auth/v1/logout"))
         req.url = URL(string: req.url!.absoluteString + "?scope=local")
@@ -171,17 +172,23 @@ final class OctoberAccount: ObservableObject {
     private func adopt(_ s: Session) async {
         session = s
         Keychain.save(s)
+        PhoneModel.shared.start(accessToken: s.accessToken)
         scheduleRefresh()
         await loadPlan()
     }
 
     func refreshIfNeeded(force: Bool) async {
         guard let s = session else { return }
-        guard force || s.expiresAt.timeIntervalSinceNow < 120 else { scheduleRefresh(); return }
+        guard force || s.expiresAt.timeIntervalSinceNow < 120 else {
+            PhoneModel.shared.start(accessToken: s.accessToken)
+            scheduleRefresh()
+            return
+        }
         do {
             let fresh = try await token(grant: "refresh_token", body: ["refresh_token": s.refreshToken])
             session = fresh
             Keychain.save(fresh)
+            PhoneModel.shared.start(accessToken: fresh.accessToken)
             scheduleRefresh()
         } catch AuthError.rejected {
             // The refresh token is no longer valid: signed out elsewhere or expired.
