@@ -21,8 +21,14 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var pillExpanded = false
+    /// The agent the composer is addressed to. Once chosen (or once you start typing), it stays
+    /// chosen: a draft never quietly changes recipient because the agent list changed.
     @Published var targetId: String?
-    @Published var draft = ""
+    @Published var draft = "" {
+        didSet {
+            if !draft.isEmpty, targetId == nil, let t = target { targetId = t.id }
+        }
+    }
     @Published var toast: String?
     @Published var composeFocusToken = 0
     @Published private(set) var dismissed: Set<String>
@@ -37,10 +43,18 @@ final class AppModel: ObservableObject {
     @Published private(set) var chatSupported = true
     @Published private(set) var chatLoading = false
     @Published private(set) var octoberLink: OctoberLink?
+    /// Requests the engine hasn't answered yet, by request id.
+    @Published private(set) var pending: [String: Pending] = [:]
     let dictation = Dictation()
 
+    enum Pending {
+        case reply(agentId: String, text: String)
+        case keys(agentId: String)
+        case launch
+        case focus(agentId: String)
+    }
+
     private let engine = EngineClient()
-    private var pending: [String: String] = [:]  // requestId → agentId
     private var nextRequest = 0
     private var toastTask: Task<Void, Never>?
     private var firstSnapshot = true
@@ -53,6 +67,7 @@ final class AppModel: ObservableObject {
         seen = Set(UserDefaults.standard.stringArray(forKey: "seenTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
         engine.onReplyResult = { [weak self] id, ok, message in self?.replyFinished(id, ok: ok, message: message) }
+        engine.onActionResult = { [weak self] id, ok, message in self?.actionFinished(id, ok: ok, message: message) }
         engine.onHistory = { [weak self] agentId, supported, messages in
             guard let self, agentId == self.chatAgentId else { return }
             self.chatLoading = false
@@ -60,23 +75,14 @@ final class AppModel: ObservableObject {
             if messages != self.chatMessages { self.chatMessages = messages }
         }
         engine.onOctober = { [weak self] link in self?.octoberLink = link }
-        // Phone: the engine hosts the October phone app connection (see PhoneCard.swift).
-        engine.onPhone = { data in PhoneModel.shared.receive(data) }
-        PhoneModel.shared.send = { [weak engine] obj in engine?.phone(obj) }
+        engine.onPhone = { state in PhoneModel.shared.receive(state) }
+        PhoneModel.shared.engine = engine
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
             self?.tmuxAvailable = installed.tmux
         }
-        engine.onActionResult = { [weak self] ok, message in
-            guard let self else { return }
-            if self.launching {
-                self.launching = false
-                if ok { self.panel = .agents }
-                self.show(ok ? "Session started" : "Couldn't start the session: \(message ?? "unknown error")")
-            } else if !ok {
-                self.show(message ?? "Something went wrong")
-            }
-        }
+        engine.onReady = { OctoberAccount.shared.engineReady() }
+        engine.onStopped = { [weak self] message in self?.engineStopped(message) }
         dictation.onText = { [weak self] text in self?.draft = text }
         dictation.onError = { [weak self] message in self?.show(message) }
     }
@@ -116,9 +122,18 @@ final class AppModel: ObservableObject {
 
     var anyWorking: Bool { agents.contains { $0.state == .working } }
 
+    /// The composer's recipient. A chosen agent that has gone away is `nil` (and `targetMissing`),
+    /// never silently replaced by another agent.
     var target: Agent? {
-        if let targetId, let a = agents.first(where: { $0.id == targetId }) { return a }
+        if let targetId { return agents.first { $0.id == targetId } }
         return inbox.first ?? agents.first
+    }
+
+    var targetMissing: Bool { targetId != nil && target == nil }
+
+    /// A reply is on its way to the current target; Send waits for the answer.
+    var sending: Bool {
+        pending.values.contains { if case .reply(let agentId, _) = $0 { agentId == target?.id } else { false } }
     }
 
     // MARK: Actions
@@ -175,8 +190,9 @@ final class AppModel: ObservableObject {
 
     /// Brings the agent's own tab to the front (or opens a Terminal for a background session).
     func open(_ agent: Agent) {
-        nextRequest += 1
-        engine.focus(requestId: "f\(nextRequest)", agentId: agent.id)
+        let id = request("f")
+        pending[id] = .focus(agentId: agent.id)
+        engine.focus(requestId: id, agentId: agent.id)
         if let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) {
             app.activate()
         }
@@ -184,20 +200,18 @@ final class AppModel: ObservableObject {
 
     /// Answers a permission prompt: "1" allows once, Escape declines.
     func answerPermission(_ agent: Agent, allow: Bool) {
-        nextRequest += 1
-        let id = "k\(nextRequest)"
-        pending[id] = agent.id
+        let id = request("k")
+        pending[id] = .keys(agentId: agent.id)
         engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"])
     }
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let agent = target else { return }
+        guard !text.isEmpty, let agent = target, !sending else { return }
         if dictation.isRecording { dictation.stop() }
         if agent.canReply {
-            nextRequest += 1
-            let id = "r\(nextRequest)"
-            pending[id] = agent.id
+            let id = request("r")
+            pending[id] = .reply(agentId: agent.id, text: text)
             engine.reply(requestId: id, agentId: agent.id, text: text)
         } else {
             // Terminals Lantern can't type into (Ghostty, VS Code, Warp...): copy, and bring it forward.
@@ -227,8 +241,9 @@ final class AppModel: ObservableObject {
         used.insert(folder, at: 0)
         UserDefaults.standard.set(Array(used.prefix(8)), forKey: "recentFolders")
         launching = true
-        nextRequest += 1
-        engine.launch(requestId: "l\(nextRequest)", kind: kind, cwd: folder, prompt: prompt, background: background)
+        let id = request("l")
+        pending[id] = .launch
+        engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, background: background)
     }
 
     func toggleDictation() {
@@ -249,12 +264,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func request(_ prefix: String) -> String {
+        nextRequest += 1
+        return "\(prefix)\(nextRequest)"
+    }
+
+    private func handle(_ agentId: String?) -> String {
+        agents.first { $0.id == agentId }?.handle ?? "agent"
+    }
+
     // MARK: Engine events
 
     private func update(_ fresh: [Agent]) {
         agents = fresh
         noticeNewTurns()
-        if let targetId, !fresh.contains(where: { $0.id == targetId }) { self.targetId = nil }
         // Keep an open conversation current.
         if let chatAgentId {
             if fresh.contains(where: { $0.id == chatAgentId }) { engine.history(agentId: chatAgentId) } else { closeChat() }
@@ -284,14 +307,45 @@ final class AppModel: ObservableObject {
     }
 
     private func replyFinished(_ requestId: String, ok: Bool, message: String?) {
-        let agentId = pending.removeValue(forKey: requestId)
-        let handle = agents.first { $0.id == agentId }?.handle ?? "agent"
-        if ok {
-            draft = ""
-            show("Sent to @\(handle)")
-            if let chatAgentId { engine.history(agentId: chatAgentId) }
-        } else {
-            show("Couldn't send to @\(handle): \(message ?? "unknown error")")
+        guard let request = pending.removeValue(forKey: requestId) else { return }
+        switch request {
+        case .reply(let agentId, let text):
+            if ok {
+                // Only the text that was sent is cleared; anything typed since stays.
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+                show("Sent to @\(handle(agentId))")
+                if let chatAgentId { engine.history(agentId: chatAgentId) }
+            } else {
+                show("Couldn't send to @\(handle(agentId)): \(message ?? "unknown error")")
+            }
+        case .keys(let agentId):
+            show(ok ? "Sent to @\(handle(agentId))" : "Couldn't answer @\(handle(agentId)): \(message ?? "unknown error")")
+        case .launch, .focus:
+            break
         }
+    }
+
+    private func actionFinished(_ requestId: String, ok: Bool, message: String?) {
+        guard let request = pending.removeValue(forKey: requestId) else { return }
+        switch request {
+        case .launch:
+            launching = false
+            if ok { panel = .agents }
+            show(ok ? "Session started" : "Couldn't start the session: \(message ?? "unknown error")")
+        case .focus(let agentId):
+            if !ok { show("Couldn't open @\(handle(agentId)): \(message ?? "unknown error")") }
+        case .reply, .keys:
+            break
+        }
+    }
+
+    /// The engine is gone: nothing outstanding will be answered, and nothing it reported is current.
+    private func engineStopped(_ message: String) {
+        pending.removeAll()
+        launching = false
+        firstSnapshot = true
+        update([])
+        PhoneModel.shared.reset()
+        show(message)
     }
 }

@@ -6,11 +6,11 @@ What the website needs for the beta. Product facts come from [README.md](README.
 
 1. **Download button.** The site only has an early-access mailto today. Link to:
    `https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern.dmg`
-   This link always serves the newest release (currently 0.2.0, 5.7 MB). Show next to it: "macOS 14 or later · Apple silicon and Intel · Free during the beta".
+   This link always serves the newest release (0.3.0 is 10.5 MB). Show next to it: "macOS 14 or later · Apple silicon and Intel · Free during the beta".
 2. **Privacy page** (`/privacy`). Use the README's Privacy section, which covers:
-   - everything stays on the Mac, with no account and no server
-   - the only network request is the daily update check (a public file on GitHub)
-   - dictation is on-device
+   - everything stays on the Mac unless you choose to sign in to October; no account is needed
+   - without an October account, the only network request is the daily update check (a public file on GitHub)
+   - dictation is on-device only (Lantern refuses rather than sending audio to Apple)
    - there's no screen recording
    - session files are only read, never changed
    - Automation permission is used only to type replies into Terminal and iTerm2
@@ -30,6 +30,6 @@ What the website needs for the beta. Product facts come from [README.md](README.
 
 ## Don't claim
 
-- Automatic routing ("say it once and it picks the agent"), screen or screenshot context, or a phone app: none of these exist yet.
-- October connections: describe them exactly as in the README's "What's true today" table. Full October Desktop support needs October 1.0.52+, and the phone connection hasn't been tested live yet.
+- Automatic routing ("say it once and it picks the agent") or screen/screenshot context: neither exists yet.
+- October connections: describe them exactly as in the README's "What's true today" table. Full October Desktop support needs October 1.0.52+. The phone connection is built but has not been tested against the real phone app: don't advertise it until AUDIT.md records a live pairing and reply.
 - Windows or Linux.

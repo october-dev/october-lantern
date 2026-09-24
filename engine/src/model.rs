@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Every harness Lantern can detect. Only Claude Code and Codex have session-file readers so far;
-/// the rest show as running until they get readers or hooks.
+/// Every harness Lantern can detect. Claude Code, Codex, OpenCode, Pi, the October harness and
+/// Gemini CLI have session readers (state, last message, history); the rest show as running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
@@ -98,6 +98,16 @@ pub enum StateSource {
     None,
 }
 
+/// What kind of question an agent in `NeedsInput` is asking, when a hook says exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuestionKind {
+    /// A tool permission prompt: `1` allows once, Escape declines.
+    Permission,
+    /// Anything else (an MCP elicitation form, a question for you): answer it in the terminal.
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostApp {
@@ -121,21 +131,34 @@ pub struct TmuxPane {
 #[serde(tag = "via", rename_all = "lowercase", rename_all_fields = "camelCase")]
 pub enum Route {
     /// Through October Desktop's own safe delivery (Lantern is paired with October).
-    October { canvas_id: String, node_id: String },
+    October {
+        canvas_id: String,
+        node_id: String,
+    },
     Tmux,
-    Cmux { workspace: String, surface: String },
-    Terminal { tty: String },
-    Iterm { tty: String },
+    Cmux {
+        workspace: String,
+        surface: String,
+    },
+    Terminal {
+        tty: String,
+    },
+    Iterm {
+        tty: String,
+    },
     None,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Agent {
+    /// `<kind>:<pid>:<start time>`. The start time makes a reused pid a different agent.
     pub id: String,
     pub kind: Kind,
     pub handle: String,
     pub pid: u32,
+    /// Seconds since the epoch when the process started; delivery checks it before typing.
+    pub start_time: u64,
     pub tty: Option<String>,
     pub cwd: Option<String>,
     pub project: Option<String>,
@@ -145,6 +168,7 @@ pub struct Agent {
     pub state_since: Option<u64>,
     pub last_message: Option<String>,
     pub question: Option<String>,
+    pub question_kind: Option<QuestionKind>,
     pub host: Option<HostApp>,
     pub tmux: Option<TmuxPane>,
     pub can_reply: bool,
@@ -156,9 +180,12 @@ pub struct Agent {
 #[derive(Debug, Clone, Default)]
 pub struct SessionStatus {
     pub state: Option<State>,
+    /// Epoch ms of the event that put the session in `state` (the session file's own timestamp
+    /// when it has one, else the file's modification time).
     pub since: Option<u64>,
     pub last_message: Option<String>,
     pub question: Option<String>,
+    pub question_kind: Option<QuestionKind>,
     pub title: Option<String>,
     pub session_id: Option<String>,
 }
@@ -171,4 +198,21 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars).collect();
     out.push('…');
     out
+}
+
+/// Epoch milliseconds from an RFC 3339 timestamp such as `2026-09-23T16:51:06.609Z`.
+pub fn epoch_ms(iso: &str) -> Option<u64> {
+    let t = time::OffsetDateTime::parse(iso, &time::format_description::well_known::Rfc3339).ok()?;
+    u64::try_from(t.unix_timestamp_nanos() / 1_000_000).ok()
+}
+
+/// RFC 3339 in UTC with milliseconds, e.g. `2026-09-21T14:13:20.123Z` (what JavaScript's
+/// `toISOString()` writes, which is what October's servers and phone app expect).
+pub fn iso(ms: u64) -> String {
+    let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z")
+        .expect("valid format");
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+        .ok()
+        .and_then(|t| t.format(&format).ok())
+        .unwrap_or_default()
 }

@@ -1,7 +1,9 @@
 import AVFoundation
 import Speech
 
-/// Push-to-talk dictation with Apple's speech recognizer, on-device when the Mac supports it.
+/// Dictation with Apple's on-device speech recognizer. Audio never leaves the Mac: when the
+/// recognizer for the current language can't run on this Mac, dictation says so instead of
+/// falling back to Apple's servers.
 @MainActor
 final class Dictation: ObservableObject {
     @Published private(set) var isRecording = false
@@ -14,12 +16,17 @@ final class Dictation: ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var prefix = ""
+    /// Authorization is in progress: a second press waits for it rather than starting twice.
+    private var authorizing = false
 
     func start(prefix: String) {
-        guard !isRecording else { return }
+        guard !isRecording, !authorizing else { return }
         self.prefix = prefix.isEmpty || prefix.hasSuffix(" ") ? prefix : prefix + " "
+        authorizing = true
         Task {
-            guard await Self.authorize() else {
+            let allowed = await Self.authorize()
+            authorizing = false
+            guard allowed else {
                 onError?("Lantern needs Microphone and Speech Recognition access. Turn them on in System Settings › Privacy & Security.")
                 return
             }
@@ -32,6 +39,10 @@ final class Dictation: ObservableObject {
         audio.inputNode.removeTap(onBus: 0)
         audio.stop()
         request?.endAudio()
+        // A late result from this task must not touch the draft or stop a later recording.
+        task?.cancel()
+        task = nil
+        request = nil
         isRecording = false
         level = 0
     }
@@ -49,9 +60,14 @@ final class Dictation: ObservableObject {
             onError?("Speech recognition isn't available right now.")
             return
         }
+        guard recognizer.supportsOnDeviceRecognition else {
+            let language = Locale.current.localizedString(forIdentifier: recognizer.locale.identifier) ?? recognizer.locale.identifier
+            onError?("On-device dictation isn't available for \(language) on this Mac, and Lantern doesn't send audio to Apple.")
+            return
+        }
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+        request.requiresOnDeviceRecognition = true
         self.request = request
 
         let input = audio.inputNode
@@ -74,7 +90,7 @@ final class Dictation: ObservableObject {
             let text = result?.bestTranscription.formattedString
             let final = result?.isFinal ?? false
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.request === request else { return }
                 if let text { self.onText?(self.prefix + text) }
                 if final || error != nil { self.stop() }
             }

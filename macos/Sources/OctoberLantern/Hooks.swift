@@ -30,8 +30,10 @@ final class Hooks: ObservableObject {
         let out = Pipe()
         p.standardOutput = out
         p.standardError = out
-        try? p.run()
+        do { try p.run() } catch { return "Couldn't run Lantern's engine: \(error.localizedDescription)" }
+        // Read before waiting: a process that fills the pipe would otherwise never exit.
+        let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        return String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }

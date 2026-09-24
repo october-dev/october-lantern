@@ -12,11 +12,14 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::model::{SessionStatus, State, truncate};
+use crate::model::{SessionStatus, State, epoch_ms, truncate};
 
-const TAIL_BYTES: u64 = 512 * 1024;
+pub(crate) const TAIL_BYTES: u64 = 512 * 1024;
 const HEAD_BYTES: u64 = 128 * 1024;
-const MESSAGE_CHARS: usize = 2000;
+/// The inbox shows this much of the agent's last message.
+pub(crate) const MESSAGE_CHARS: usize = 2000;
+/// Parsed session files nobody has asked about for this long are dropped from the cache.
+const CACHE_IDLE: Duration = Duration::from_secs(600);
 
 pub fn home() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
@@ -51,7 +54,7 @@ pub fn lines(text: &str) -> impl Iterator<Item = Value> + '_ {
 /// Caches parsed session files by (mtime, size) so unchanged files aren't re-read every scan.
 #[derive(Default)]
 pub struct Transcripts {
-    parsed: HashMap<PathBuf, ((u64, u64), SessionStatus)>,
+    parsed: HashMap<PathBuf, ((u64, u64), SessionStatus, Instant)>,
     claude_index: HashMap<String, PathBuf>,
     codex_open: HashMap<u32, (Instant, Option<PathBuf>)>,
 }
@@ -59,24 +62,32 @@ pub struct Transcripts {
 impl Transcripts {
     pub fn cached(&mut self, path: &Path, parse: fn(&Path, u64) -> SessionStatus) -> Option<SessionStatus> {
         let stamp = file_stamp(path)?;
-        if let Some((s, status)) = self.parsed.get(path) {
-            if *s == stamp {
-                return Some(status.clone());
-            }
+        if let Some((s, status, used)) = self.parsed.get_mut(path)
+            && *s == stamp
+        {
+            *used = Instant::now();
+            return Some(status.clone());
         }
         let status = parse(path, stamp.0);
-        self.parsed.insert(path.to_path_buf(), (stamp, status.clone()));
+        self.parsed.insert(path.to_path_buf(), (stamp, status.clone(), Instant::now()));
         Some(status)
+    }
+
+    /// Forgets sessions that haven't been looked at for a while, so a long-running engine that
+    /// has seen many sessions doesn't keep them all.
+    pub fn prune_stale(&mut self) {
+        self.parsed.retain(|_, (_, _, used)| used.elapsed() < CACHE_IDLE);
+        self.claude_index.retain(|_, p| p.exists());
     }
 
     // ---------- Claude Code ----------
 
     /// Finds `<session>.jsonl` under any project directory.
     pub fn claude_path_for_session(&mut self, session_id: &str) -> Option<PathBuf> {
-        if let Some(p) = self.claude_index.get(session_id) {
-            if p.exists() {
-                return Some(p.clone());
-            }
+        if let Some(p) = self.claude_index.get(session_id)
+            && p.exists()
+        {
+            return Some(p.clone());
         }
         let projects = home().join(".claude/projects");
         let file = format!("{session_id}.jsonl");
@@ -93,11 +104,7 @@ impl Transcripts {
     /// Best guess when the session id is unknown: the newest transcript in the cwd's project folder
     /// that changed since the process started and isn't claimed by another agent.
     pub fn claude_guess_path(&self, cwd: &Path, started_secs: u64, claimed: &[PathBuf]) -> Option<PathBuf> {
-        let slug: String = cwd
-            .to_string_lossy()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
+        let slug: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let dir = home().join(".claude/projects").join(slug);
         let started_ms = started_secs.saturating_sub(60) * 1000;
         fs::read_dir(dir)
@@ -119,10 +126,10 @@ impl Transcripts {
 
     /// The rollout file a Codex process has open. `lsof` is slow-ish, so results are cached briefly.
     pub fn codex_path_for_pid(&mut self, pid: u32) -> Option<PathBuf> {
-        if let Some((at, path)) = self.codex_open.get(&pid) {
-            if at.elapsed() < Duration::from_secs(15) {
-                return path.clone();
-            }
+        if let Some((at, path)) = self.codex_open.get(&pid)
+            && at.elapsed() < Duration::from_secs(15)
+        {
+            return path.clone();
         }
         let path = codex_open_rollout(pid);
         self.codex_open.insert(pid, (Instant::now(), path.clone()));
@@ -142,11 +149,7 @@ fn text_blocks(content: &Value) -> Option<String> {
     match content {
         Value::String(s) => Some(s.clone()),
         Value::Array(blocks) => {
-            let texts: Vec<&str> = blocks
-                .iter()
-                .filter(|b| b["type"] == "text")
-                .filter_map(|b| b["text"].as_str())
-                .collect();
+            let texts: Vec<&str> = blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
             if texts.is_empty() { None } else { Some(texts.join("\n")) }
         }
         _ => None,
@@ -157,6 +160,10 @@ fn has_block(content: &Value, kind: &str) -> bool {
     content.as_array().is_some_and(|b| b.iter().any(|b| b["type"] == kind))
 }
 
+/// Claude Code writes one JSONL entry per content block of an API message (a `text` entry, then
+/// a `tool_use` entry, sharing `message.id`), and every entry carries the message's final
+/// `stop_reason`. So the last entry's `stop_reason` says whether the turn is over, whatever block
+/// that entry happens to hold.
 pub(crate) fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
     let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
     let Some(text) = read_range(path, true, TAIL_BYTES) else { return status };
@@ -180,10 +187,10 @@ pub(crate) fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
         if kind == "user" && !has_block(content, "tool_result") {
             reply_text = None;
         }
-        if kind == "assistant" {
-            if let Some(t) = text_blocks(content) {
-                reply_text = Some(t);
-            }
+        if kind == "assistant"
+            && let Some(t) = text_blocks(content)
+        {
+            reply_text = Some(t);
         }
         last = Some(entry);
     }
@@ -192,9 +199,12 @@ pub(crate) fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
         status.state = Some(State::Idle);
         return status;
     };
+    if let Some(at) = last["timestamp"].as_str().and_then(epoch_ms) {
+        status.since = Some(at);
+    }
     let content = &last["message"]["content"];
     status.state = Some(match last["type"].as_str() {
-        Some("assistant") if has_block(content, "tool_use") => State::Working,
+        Some("assistant") if last["message"]["stop_reason"] == "tool_use" || has_block(content, "tool_use") => State::Working,
         Some("assistant") => State::Waiting,
         _ if has_block(content, "tool_result") => State::Working,
         _ => {
@@ -220,6 +230,9 @@ fn codex_open_rollout(pid: u32) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Codex marks turns with `task_started` / `task_complete` events, each stamped with the turn's
+/// own times. When the tail doesn't reach back to the last such event the state is unknown: a
+/// long turn can write more than the tail between them.
 pub(crate) fn parse_codex(path: &Path, mtime: u64) -> SessionStatus {
     let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
 
@@ -230,16 +243,11 @@ pub(crate) fn parse_codex(path: &Path, mtime: u64) -> SessionStatus {
                 status.session_id = p["id"].as_str().map(String::from);
             }
             if entry["type"] == "response_item" && p["type"] == "message" && p["role"] == "user" {
-                let first = p["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|b| b["text"].as_str())
-                    .find(|t| {
-                        // Skip context Codex injects before the first real prompt.
-                        let t = t.trim_start();
-                        !t.starts_with('<') && !t.starts_with("# AGENTS.md")
-                    });
+                let first = p["content"].as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).find(|t| {
+                    // Skip context Codex injects before the first real prompt.
+                    let t = t.trim_start();
+                    !t.starts_with('<') && !t.starts_with("# AGENTS.md")
+                });
                 if let Some(t) = first {
                     status.title = Some(truncate(t.lines().next().unwrap_or(t), 80));
                     break;
@@ -248,23 +256,30 @@ pub(crate) fn parse_codex(path: &Path, mtime: u64) -> SessionStatus {
         }
     }
 
+    let whole_file = fs::metadata(path).is_ok_and(|m| m.len() <= TAIL_BYTES);
     let Some(tail) = read_range(path, true, TAIL_BYTES) else { return status };
-    let mut state = State::Idle;
+    let mut state = if whole_file { State::Idle } else { State::Unknown };
     for entry in lines(&tail) {
         if entry["type"] != "event_msg" {
             continue;
         }
         let p = &entry["payload"];
+        let at = |secs: &str| p[secs].as_u64().map(|s| s * 1000).or_else(|| entry["timestamp"].as_str().and_then(epoch_ms));
         match p["type"].as_str() {
             Some("task_started") => {
                 state = State::Working;
                 status.last_message = None;
+                status.since = at("started_at").or(status.since);
             }
             Some("task_complete") => {
                 state = State::Waiting;
                 status.last_message = p["last_agent_message"].as_str().map(|t| truncate(t, MESSAGE_CHARS));
+                status.since = at("completed_at").or(status.since);
             }
-            Some("turn_aborted") => state = State::Waiting,
+            Some("turn_aborted") => {
+                state = State::Waiting;
+                status.since = at("completed_at").or(status.since);
+            }
             _ => {}
         }
     }

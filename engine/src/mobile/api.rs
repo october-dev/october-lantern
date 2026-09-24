@@ -8,9 +8,8 @@ use hmac::{KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
-use crate::model::{Agent, State};
-
-use super::control::iso;
+use crate::hooks::now_ms;
+use crate::model::{Agent, State, iso};
 
 pub struct Context<'a> {
     pub agents: &'a [Agent],
@@ -21,11 +20,8 @@ pub struct Context<'a> {
     pub credential: &'a str,
 }
 
-/// What the host must do after answering (typing a reply runs outside the handler).
-pub enum Action {
-    None,
-    Deliver { agent_id: String, text: String },
-}
+/// Types a reply into an agent; `Err` carries the reason it didn't happen.
+pub type Deliver<'a> = &'a mut dyn FnMut(&Agent, &str) -> Result<(), String>;
 
 /// A stable UUID for an agent's node (the phone expects UUID-shaped ids).
 pub fn node_id(agent_id: &str) -> String {
@@ -33,9 +29,7 @@ pub fn node_id(agent_id: &str) -> String {
     let h = Sha256::digest(format!("lantern-node:{agent_id}").as_bytes());
     let mut b = [0u8; 16];
     b.copy_from_slice(&h[..16]);
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    uuid::Uuid::from_bytes(b).hyphenated().to_string()
+    uuid::Builder::from_random_bytes(b).into_uuid().hyphenated().to_string()
 }
 
 fn harness(agent: &Agent) -> &'static str {
@@ -59,7 +53,7 @@ fn exec_state(agent: &Agent) -> &'static str {
 }
 
 pub fn node(agent: &Agent, host_id: &str) -> Value {
-    let since = agent.state_since.unwrap_or_else(crate::hooks::now_ms);
+    let since = agent.state_since.unwrap_or_else(now_ms);
     let name = match &agent.title {
         Some(t) => format!("@{} · {t}", agent.handle),
         None => format!("@{}", agent.handle),
@@ -67,7 +61,7 @@ pub fn node(agent: &Agent, host_id: &str) -> Value {
     let mut n = json!({
         "id": node_id(&agent.id), "kind": "terminal", "displayName": name, "harness": harness(agent),
         "cwd": agent.cwd, "status": if agent.state == State::Working { "live" } else { "idle" },
-        "lastSeen": iso(crate::hooks::now_ms()), "createdAt": iso(since),
+        "lastSeen": iso(now_ms()), "createdAt": iso(since),
         "execution": {"ownerDeviceId": host_id, "revision": since, "state": exec_state(agent)},
     });
     if wants(agent) {
@@ -113,64 +107,76 @@ pub fn proof(credential: &str, challenge: &str, instance_id: &str, process_start
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
 
-/// Handles one request envelope. Returns (HTTP-like status, response envelope, follow-up).
-pub fn handle(ctx: &Context, request: &Value) -> (u16, Value, Action) {
+/// Handles one request envelope. Returns (HTTP-like status, response envelope). A `userSend` is
+/// delivered before it is answered, so the answer says what actually happened.
+pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) {
     let id = &request["requestId"];
     let payload = &request["payload"];
     let op = payload["operation"].as_str().unwrap_or("");
-    let with = |(s, v): (u16, Value)| (s, v, Action::None);
     if request["apiVersion"] != 2 {
-        return with(err(id, "INCOMPATIBLE_VERSION", "api version 2 is required"));
+        return err(id, "INCOMPATIBLE_VERSION", "api version 2 is required");
+    }
+    if request["deadlineAt"].as_u64().is_some_and(|d| d > 0 && d < now_ms()) {
+        return err(id, "DEADLINE_EXCEEDED", "the request expired before Lantern handled it");
     }
     match request["method"].as_str().unwrap_or("") {
         "core.handshake" => {
             let (min, max) = (payload["apiMin"].as_i64().unwrap_or(0), payload["apiMax"].as_i64().unwrap_or(0));
             if min > 2 || max < 2 {
-                return with(err(id, "INCOMPATIBLE_VERSION", "Lantern speaks api version 2"));
+                return err(id, "INCOMPATIBLE_VERSION", "Lantern speaks api version 2");
             }
             let challenge = payload["challenge"].as_str().unwrap_or("");
-            with(ok(id, json!({
-                "instanceId": ctx.instance_id, "processStart": ctx.process_start,
-                "coreVersion": format!("lantern-{}", env!("CARGO_PKG_VERSION")), "apiVersion": 2,
-                "generation": 1, "schemaVersion": 8,
-                "challengeProof": proof(ctx.credential, challenge, ctx.instance_id, ctx.process_start),
-            })))
+            ok(
+                id,
+                json!({
+                    "instanceId": ctx.instance_id, "processStart": ctx.process_start,
+                    "coreVersion": format!("lantern-{}", env!("CARGO_PKG_VERSION")), "apiVersion": 2,
+                    "generation": 1, "schemaVersion": 8,
+                    "challengeProof": proof(ctx.credential, challenge, ctx.instance_id, ctx.process_start),
+                }),
+            )
         }
         "core.status" => {
             let attention = ctx.agents.iter().filter(|a| wants(a)).count();
-            with(ok(id, json!({
-                "coreVersion": format!("lantern-{}", env!("CARGO_PKG_VERSION")), "apiVersion": 2, "ready": true,
-                "agentCount": ctx.agents.len(), "attentionCount": attention, "terminalCount": 0,
-                "remote": {"desktopVisible": true, "openCanvasId": ctx.canvas_id},
-            })))
+            ok(
+                id,
+                json!({
+                    "coreVersion": format!("lantern-{}", env!("CARGO_PKG_VERSION")), "apiVersion": 2, "ready": true,
+                    "agentCount": ctx.agents.len(), "attentionCount": attention, "terminalCount": 0,
+                    "remote": {"desktopVisible": true, "openCanvasId": ctx.canvas_id},
+                }),
+            )
         }
         "bus.query" => match op {
-            "listCanvases" => with(ok(id, json!([ctx.canvas_id]))),
-            "currentSnapshot" if payload["args"][0] == ctx.canvas_id => with(ok(id, snapshot(ctx))),
-            "currentSnapshot" => with(err(id, "NOT_FOUND", "unknown canvas")),
-            _ => with(err(id, "PERMISSION_DENIED", "not available in Lantern")),
+            "listCanvases" => ok(id, json!([ctx.canvas_id])),
+            "currentSnapshot" if payload["args"][0] == ctx.canvas_id => ok(id, snapshot(ctx)),
+            "currentSnapshot" => err(id, "NOT_FOUND", "unknown canvas"),
+            _ => err(id, "PERMISSION_DENIED", "not available in Lantern"),
         },
         "facts.query" => match op {
-            "listNotifications" => with(ok(id, notifications(ctx))),
-            "listNodeWorkflows" | "listPrObservations" => with(ok(id, json!([]))),
-            _ => with(err(id, "PERMISSION_DENIED", "not available in Lantern")),
+            "listNotifications" => ok(id, notifications(ctx)),
+            "listNodeWorkflows" | "listPrObservations" => ok(id, json!([])),
+            _ => err(id, "PERMISSION_DENIED", "not available in Lantern"),
         },
-        "facts.mutate" if op == "markNotificationSeen" => with(ok(id, json!({"ok": true}))),
-        "ui.list" | "terminal.list" | "agent.list" | "devServer.list" | "chat.history" => with(ok(id, json!([]))),
+        "facts.mutate" if op == "markNotificationSeen" => ok(id, json!({"ok": true})),
+        "ui.list" | "terminal.list" | "agent.list" | "devServer.list" | "chat.history" => ok(id, json!([])),
         "bus.mutate" if op == "userSend" => {
+            if payload["args"][0] != ctx.canvas_id {
+                return err(id, "NOT_FOUND", "unknown canvas");
+            }
             let node = payload["args"][1]["id"].as_str().unwrap_or("");
             let text = payload["args"][2].as_str().unwrap_or("").trim().to_string();
             match ctx.agents.iter().find(|a| node_id(&a.id) == node) {
-                None => with(err(id, "NOT_FOUND", "that agent isn't running any more")),
-                Some(_) if text.is_empty() || text.len() > 8000 => with(err(id, "INVALID_ARGUMENT", "message must be 1–8000 characters")),
-                Some(a) if !a.can_reply => with(ok(id, json!({"accepted": false, "reason": "Lantern can't type into this terminal yet"}))),
-                Some(a) => {
-                    let (s, v) = ok(id, json!({"accepted": true, "delivery": "delivered"}));
-                    (s, v, Action::Deliver { agent_id: a.id.clone(), text })
-                }
+                None => err(id, "NOT_FOUND", "that agent isn't running any more"),
+                Some(_) if text.is_empty() || text.len() > 8000 => err(id, "INVALID_ARGUMENT", "message must be 1–8000 characters"),
+                Some(a) if !a.can_reply => ok(id, json!({"accepted": false, "reason": "Lantern can't type into this terminal yet"})),
+                Some(a) => match deliver(a, &text) {
+                    Ok(()) => ok(id, json!({"accepted": true, "delivery": "delivered"})),
+                    Err(reason) => ok(id, json!({"accepted": false, "reason": reason})),
+                },
             }
         }
-        _ => with(err(id, "PERMISSION_DENIED", "not available in Lantern")),
+        _ => err(id, "PERMISSION_DENIED", "not available in Lantern"),
     }
 }
 
@@ -181,10 +187,26 @@ mod tests {
 
     fn agent(state: State) -> Agent {
         Agent {
-            id: "claude:42".into(), kind: Kind::Claude, handle: "claude-1".into(), pid: 42, tty: None,
-            cwd: Some("/x".into()), project: Some("x".into()), title: Some("Fix tests".into()), session_id: None,
-            state, state_since: Some(1_790_000_000_000), last_message: Some("Done.".into()), question: None,
-            host: None, tmux: None, can_reply: true, route: Route::Tmux, state_source: StateSource::Transcript,
+            id: "claude:42:1".into(),
+            kind: Kind::Claude,
+            handle: "claude-1".into(),
+            pid: 42,
+            start_time: 1,
+            tty: None,
+            cwd: Some("/x".into()),
+            project: Some("x".into()),
+            title: Some("Fix tests".into()),
+            session_id: None,
+            state,
+            state_since: Some(1_790_000_000_000),
+            last_message: Some("Done.".into()),
+            question: None,
+            question_kind: None,
+            host: None,
+            tmux: None,
+            can_reply: true,
+            route: Route::Tmux,
+            state_source: StateSource::Transcript,
         }
     }
 
@@ -196,22 +218,51 @@ mod tests {
     fn serves_the_phone_surface() {
         let agents = vec![agent(State::Waiting)];
         let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
-        let (s, v, _) = handle(&ctx, &req("core.handshake", json!({"challenge": "abc", "clientVersion": "0.1.0", "apiMin": 2, "apiMax": 2})));
+        let typed: std::cell::RefCell<Vec<(String, String)>> = Default::default();
+        let mut deliver = |a: &Agent, t: &str| {
+            typed.borrow_mut().push((a.id.clone(), t.to_string()));
+            Ok(())
+        };
+        let (s, v) = handle(
+            &ctx,
+            &req("core.handshake", json!({"challenge": "abc", "clientVersion": "0.1.0", "apiMin": 2, "apiMax": 2})),
+            &mut deliver,
+        );
         assert_eq!(s, 200);
         assert_eq!(v["result"]["challengeProof"], proof("cred", "abc", "i", "p"));
-        let (_, v, _) = handle(&ctx, &req("bus.query", json!({"operation": "listCanvases", "args": []})));
+        let (_, v) = handle(&ctx, &req("bus.query", json!({"operation": "listCanvases", "args": []})), &mut deliver);
         assert_eq!(v["result"], json!(["c"]));
-        let (_, v, _) = handle(&ctx, &req("bus.query", json!({"operation": "currentSnapshot", "args": ["c"]})));
-        let n = &v["result"]["nodes"][node_id("claude:42")];
+        let (_, v) = handle(&ctx, &req("bus.query", json!({"operation": "currentSnapshot", "args": ["c"]})), &mut deliver);
+        let n = &v["result"]["nodes"][node_id("claude:42:1")];
         assert_eq!((n["execution"]["state"].as_str(), n["attention"]["message"].as_str()), (Some("needs-user"), Some("Done.")));
-        let (_, v, _) = handle(&ctx, &req("facts.query", json!({"operation": "listNotifications", "args": [{}]})));
+        let (_, v) = handle(&ctx, &req("facts.query", json!({"operation": "listNotifications", "args": [{}]})), &mut deliver);
         assert_eq!(v["result"].as_array().unwrap().len(), 1);
-        let (_, v, action) = handle(&ctx, &req("bus.mutate", json!({"operation": "userSend", "args": ["c", {"id": node_id("claude:42"), "kind": "terminal"}, "yes"]})));
+        let send = |canvas: &str| {
+            req("bus.mutate", json!({"operation": "userSend", "args": [canvas, {"id": node_id("claude:42:1"), "kind": "terminal"}, "yes"]}))
+        };
+        let (_, v) = handle(&ctx, &send("c"), &mut deliver);
         assert_eq!(v["result"]["accepted"], true);
-        assert!(matches!(action, Action::Deliver { .. }));
-        let (s, v, _) = handle(&ctx, &req("terminal.kill", json!({})));
+        assert_eq!(*typed.borrow(), [("claude:42:1".to_string(), "yes".to_string())]);
+        let (_, v) = handle(&ctx, &send("other-canvas"), &mut deliver);
+        assert_eq!(v["error"]["code"], "NOT_FOUND");
+        let (s, v) = handle(&ctx, &req("terminal.kill", json!({})), &mut deliver);
         assert_eq!((s, v["error"]["code"].as_str()), (400, Some("PERMISSION_DENIED")));
-        let (_, v, _) = handle(&ctx, &req("core.handshake", json!({"challenge": "x", "apiMin": 3, "apiMax": 3})));
+        let (_, v) = handle(&ctx, &req("core.handshake", json!({"challenge": "x", "apiMin": 3, "apiMax": 3})), &mut deliver);
         assert_eq!(v["error"]["code"], "INCOMPATIBLE_VERSION");
+    }
+
+    #[test]
+    fn expired_requests_and_failed_delivery_are_reported() {
+        let agents = vec![agent(State::Waiting)];
+        let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
+        let mut failing = |_: &Agent, _: &str| Err("the agent has exited".to_string());
+        let mut expired = req("core.status", json!({}));
+        expired["deadlineAt"] = json!(now_ms() - 1);
+        let (_, v) = handle(&ctx, &expired, &mut failing);
+        assert_eq!(v["error"]["code"], "DEADLINE_EXCEEDED");
+        let send =
+            req("bus.mutate", json!({"operation": "userSend", "args": ["c", {"id": node_id("claude:42:1"), "kind": "terminal"}, "yes"]}));
+        let (_, v) = handle(&ctx, &send, &mut failing);
+        assert_eq!((v["result"]["accepted"].as_bool(), v["result"]["reason"].as_str()), (Some(false), Some("the agent has exited")));
     }
 }

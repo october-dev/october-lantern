@@ -58,12 +58,22 @@ final class OctoberAccount: ObservableObject {
 
     private var callback: CallbackListener?
     private var refreshTask: Task<Void, Never>?
+    private var refreshing: Task<Void, Never>?
+    /// Changes whenever the signed-in identity changes (sign-in, sign-out). Work that awaited a
+    /// network answer checks it before touching the session, so a refresh that finishes after a
+    /// sign-out can't sign the old account back in.
+    private var generation = 0
 
     private init() {
         session = Keychain.load()
         if session != nil {
             Task { await refreshIfNeeded(force: false); await loadPlan() }
         }
+    }
+
+    /// The engine (re)started: it needs the current token to host the phone connection.
+    func engineReady() {
+        if let s = session { PhoneModel.shared.token(s.accessToken) }
     }
 
     // MARK: Sign in
@@ -127,16 +137,20 @@ final class OctoberAccount: ObservableObject {
         error = nil
         signingIn = true
         defer { signingIn = false }
+        let g = generation
         do {
             let s = try await token(grant: "password", body: ["email": email, "password": password])
+            guard g == generation else { return }
             await adopt(s)
         } catch {
+            guard g == generation else { return }
             self.error = Self.describe(error)
         }
     }
 
     func signOut() {
         let token = session?.accessToken
+        generation += 1
         session = nil
         plan = nil
         refreshTask?.cancel()
@@ -161,40 +175,61 @@ final class OctoberAccount: ObservableObject {
 
     private func exchange(code: String, verifier: String) async {
         defer { signingIn = false }
+        let g = generation
         do {
             let s = try await token(grant: "pkce", body: ["auth_code": code, "code_verifier": verifier])
+            guard g == generation else { return }
             await adopt(s)
         } catch {
+            guard g == generation else { return }
             self.error = Self.describe(error)
         }
     }
 
+    /// A new identity: anything still waiting on the old one is dropped.
     private func adopt(_ s: Session) async {
+        generation += 1
         session = s
         Keychain.save(s)
-        PhoneModel.shared.start(accessToken: s.accessToken)
+        PhoneModel.shared.token(s.accessToken)
         scheduleRefresh()
         await loadPlan()
     }
 
+    /// Refreshes the token if it's about to expire. Concurrent callers share one refresh.
     func refreshIfNeeded(force: Bool) async {
+        if let refreshing {
+            await refreshing.value
+            return
+        }
+        let task = Task { await self.refresh(force: force) }
+        refreshing = task
+        await task.value
+        refreshing = nil
+    }
+
+    private func refresh(force: Bool) async {
         guard let s = session else { return }
         guard force || s.expiresAt.timeIntervalSinceNow < 120 else {
-            PhoneModel.shared.start(accessToken: s.accessToken)
+            PhoneModel.shared.token(s.accessToken)
             scheduleRefresh()
             return
         }
+        let g = generation
         do {
             let fresh = try await token(grant: "refresh_token", body: ["refresh_token": s.refreshToken])
+            guard g == generation else { return }
             session = fresh
             Keychain.save(fresh)
-            PhoneModel.shared.start(accessToken: fresh.accessToken)
+            PhoneModel.shared.token(fresh.accessToken)
             scheduleRefresh()
         } catch AuthError.rejected {
+            guard g == generation else { return }
             // The refresh token is no longer valid: signed out elsewhere or expired.
             signOut()
             error = "You were signed out. Sign in again to reconnect."
         } catch {
+            guard g == generation else { return }
             // Offline or October unreachable: keep the session and try again later.
             scheduleRefresh(in: 60)
         }
@@ -213,11 +248,12 @@ final class OctoberAccount: ObservableObject {
 
     func loadPlan() async {
         guard let token = session?.accessToken else { return }
+        let g = generation
         var req = URLRequest(url: Self.planURL)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         if let (data, resp) = try? await URLSession.shared.data(for: req),
-           (resp as? HTTPURLResponse)?.statusCode == 200 {
+           (resp as? HTTPURLResponse)?.statusCode == 200, g == generation {
             plan = try? JSONDecoder().decode(Plan.self, from: data)
         }
     }

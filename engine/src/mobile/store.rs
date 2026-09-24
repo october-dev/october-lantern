@@ -9,11 +9,12 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 fn dir() -> PathBuf {
     crate::hooks::support_dir().join("phone")
@@ -44,10 +45,16 @@ pub struct HostIdentity {
 }
 
 impl HostIdentity {
+    /// Loads the identity, refusing (rather than silently replacing) a corrupt one: October's
+    /// servers pin these keys, so a fresh identity would be a different host.
     pub fn load_or_create() -> Result<HostIdentity> {
         let path = dir().join("host.json");
         if let Ok(bytes) = fs::read(&path) {
-            return serde_json::from_slice(&bytes).context("phone/host.json is unreadable");
+            let id: HostIdentity = serde_json::from_slice(&bytes).context("phone/host.json is unreadable")?;
+            if decode_key(&id.sign_seed).is_none() || decode_key(&id.static_secret).is_none() {
+                bail!("phone/host.json holds invalid keys; move it aside to pair again as a new host");
+            }
+            return Ok(id);
         }
         let mut seed = [0u8; 32];
         getrandom::fill(&mut seed).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -69,9 +76,8 @@ impl HostIdentity {
     }
 
     pub fn signing_key(&self) -> ed25519_dalek::SigningKey {
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(&B64.decode(&self.sign_seed).unwrap_or_default()[..32]);
-        ed25519_dalek::SigningKey::from_bytes(&seed)
+        // Checked in `load_or_create`.
+        ed25519_dalek::SigningKey::from_bytes(&decode_key(&self.sign_seed).unwrap_or_default())
     }
 
     pub fn sign_public(&self) -> String {
@@ -79,9 +85,7 @@ impl HostIdentity {
     }
 
     pub fn static_secret(&self) -> [u8; 32] {
-        let mut s = [0u8; 32];
-        s.copy_from_slice(&B64.decode(&self.static_secret).unwrap_or_default()[..32]);
-        s
+        decode_key(&self.static_secret).unwrap_or_default()
     }
 }
 
@@ -134,16 +138,10 @@ pub fn remove_device(bind: &str) -> Result<()> {
 /// Constant-time check of a phone's credential against the stored hash.
 pub fn credential_ok(bind: &str, credential: &str) -> bool {
     let h = hash_credential(credential);
-    load_devices().iter().any(|d| {
-        d.bind == bind && d.credential_hash.len() == h.len() && d.credential_hash.bytes().zip(h.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0
-    })
+    load_devices().iter().any(|d| d.bind == bind && bool::from(d.credential_hash.as_bytes().ct_eq(h.as_bytes())))
 }
 
 pub fn decode_key(value: &str) -> Option<[u8; 32]> {
     let bytes = B64.decode(value.trim_end_matches('=')).ok()?;
-    (bytes.len() == 32).then(|| {
-        let mut k = [0u8; 32];
-        k.copy_from_slice(&bytes);
-        k
-    })
+    <[u8; 32]>::try_from(bytes).ok()
 }

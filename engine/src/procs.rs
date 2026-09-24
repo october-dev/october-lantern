@@ -65,7 +65,7 @@ impl ProcTable {
         cache.entries.retain(|pid, _| live.contains(pid));
         // sysinfo keeps every process it has seen; start over now and then so it doesn't grow.
         cache.captures += 1;
-        if cache.captures % 400 == 0 {
+        if cache.captures.is_multiple_of(400) {
             *sys = System::new();
         }
 
@@ -135,6 +135,41 @@ impl ProcTable {
     }
 }
 
+/// What the kernel says about one live process right now.
+pub struct Live {
+    /// Its process group, and the foreground process group of its terminal (0 when unknown).
+    pub pgid: u32,
+    pub tpgid: u32,
+    pub tty: Option<String>,
+    /// Seconds since the epoch.
+    pub start: u64,
+}
+
+/// `None` when the process is gone (or belongs to another user, which agents never do).
+pub fn live(pid: u32) -> Option<Live> {
+    let info = bsd_info(pid as i32)?;
+    Some(Live { pgid: info.pbi_pgid, tpgid: info.e_tpgid, tty: tty_name(info.e_tdev), start: info.pbi_start_tvsec })
+}
+
+/// Parent pid of `pid`, including root-owned processes; `None` when it's gone.
+pub fn parent_of(pid: u32) -> Option<u32> {
+    bsd_info(pid as i32).map(|i| i.pbi_ppid).or_else(|| short_info(pid as i32).map(|r| r.ppid))
+}
+
+/// Process ids above `pid`, nearest first, stopping at launchd.
+pub fn ancestors_of(pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut cur = parent_of(pid);
+    while let Some(p) = cur {
+        if p <= 1 || out.len() >= 8 {
+            break;
+        }
+        out.push(p);
+        cur = parent_of(p);
+    }
+    out
+}
+
 struct PsRow {
     pid: u32,
     ppid: u32,
@@ -142,6 +177,13 @@ struct PsRow {
     comm: String,
     /// Seconds since the epoch; 0 when unknown.
     start: u64,
+}
+
+fn bsd_info(pid: i32) -> Option<libc::proc_bsdinfo> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
+    let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    (got == size).then_some(info)
 }
 
 /// Parent, terminal and name for every process, straight from the kernel (what `ps` reads, without
@@ -157,14 +199,11 @@ fn ps_rows() -> Vec<PsRow> {
     pids.into_iter()
         .filter(|p| *p > 0)
         .filter_map(|pid| {
-            let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-            let size = std::mem::size_of::<libc::proc_bsdinfo>() as i32;
-            let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
-            if got != size {
+            let Some(info) = bsd_info(pid) else {
                 // Root-owned processes (e.g. /usr/bin/login between a terminal app and its shell)
                 // only answer the short query; that's enough to keep the parent chain intact.
                 return short_info(pid);
-            }
+            };
             let name = c_str(&info.pbi_name);
             let comm = if name.is_empty() { c_str(&info.pbi_comm) } else { name };
             Some(PsRow { pid: pid as u32, ppid: info.pbi_ppid, tty: tty_name(info.e_tdev), comm, start: info.pbi_start_tvsec })

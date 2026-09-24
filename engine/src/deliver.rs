@@ -6,6 +6,10 @@
 //!   the agent's environment
 //! - Terminal and iTerm2: their AppleScript, finding the tab by its tty (asks the user once for
 //!   Automation permission)
+//!
+//! Every send first checks that the agent is still the process Lantern saw, on the same terminal,
+//! and in that terminal's foreground: an agent that has exited leaves its shell behind, and typing
+//! an instruction plus Enter into a shell would run it.
 
 use std::process::Command;
 
@@ -13,6 +17,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::launch;
 use crate::model::{Agent, Route, TmuxPane};
+use crate::procs;
 use crate::tmux;
 
 pub const CMUX: &str = "/Applications/cmux.app/Contents/Resources/bin/cmux";
@@ -34,8 +39,25 @@ impl Key {
     }
 }
 
+/// Refuses to type unless the agent process is alive, is the same process (same start time), is
+/// still on the terminal Lantern would type into, and owns that terminal's foreground.
+pub fn verify(agent: &Agent) -> Result<()> {
+    let Some(live) = procs::live(agent.pid) else { bail!("@{} has exited", agent.handle) };
+    if live.start != agent.start_time {
+        bail!("@{} has exited and another process took its place", agent.handle);
+    }
+    if agent.tty.is_some() && live.tty != agent.tty {
+        bail!("@{} is no longer on the terminal Lantern saw it in", agent.handle);
+    }
+    if live.tpgid != 0 && live.tpgid != live.pgid {
+        bail!("@{} isn't in the foreground of its terminal (suspended, or something else is running there)", agent.handle);
+    }
+    Ok(())
+}
+
 /// One line of text, then Enter. Newlines would submit early in most agent UIs.
 pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
+    verify(agent)?;
     let line = text.replace(['\r', '\n'], " ");
     match &agent.route {
         Route::Tmux => tmux::send(pane(agent)?, &line),
@@ -46,7 +68,7 @@ pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(60));
             cmux(&["send-key", "--workspace", workspace, "--surface", surface, "enter"])
         }
-        Route::October { .. } => bail!("replies to October's agents go through October (handled by the serve loop)"),
+        Route::October { .. } => bail!("replies to October's agents go through October (see serve.rs)"),
         Route::Terminal { tty } => osascript(TERMINAL_SEND, &[tty, &line]),
         Route::Iterm { tty } => osascript(ITERM_SEND, &[tty, &line, "yes"]),
         Route::None => bail!("Lantern can't type into {} yet", host_name(agent)),
@@ -54,6 +76,7 @@ pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
 }
 
 pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
+    verify(agent)?;
     match (&agent.route, key) {
         (Route::Tmux, key) => {
             let p = pane(agent)?;
@@ -63,9 +86,7 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
             };
             tmux::send_key(p, &name)
         }
-        (Route::Cmux { workspace, surface }, Key::Escape) => {
-            cmux(&["send-key", "--workspace", workspace, "--surface", surface, "escape"])
-        }
+        (Route::Cmux { workspace, surface }, Key::Escape) => cmux(&["send-key", "--workspace", workspace, "--surface", surface, "escape"]),
         (Route::Cmux { workspace, surface }, Key::Char(c)) => {
             cmux(&["send", "--workspace", workspace, "--surface", surface, "--", &c.to_string()])
         }

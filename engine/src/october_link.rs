@@ -6,10 +6,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::hooks::support_dir;
+use crate::model::{Agent, Route, State};
 use crate::october_core::{self, Client, OctoberAgent};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -32,7 +32,84 @@ pub enum Command {
     CancelPair,
     Forget,
     Send { agent: OctoberAgent, text: String, done: Sender<Result<String, String>> },
-    Focus { agent: OctoberAgent },
+    Focus { agent: OctoberAgent, done: Sender<Result<(), String>> },
+}
+
+/// The serve loop's handle on the link: its latest state, and a way to send it commands.
+#[derive(Clone)]
+pub struct Link {
+    state: Arc<Mutex<LinkState>>,
+    tx: Sender<Command>,
+}
+
+impl Link {
+    pub fn snapshot(&self) -> LinkState {
+        self.state.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    pub fn send(&self, cmd: Command) {
+        let _ = self.tx.send(cmd);
+    }
+
+    /// October's view of a Lantern agent that runs inside October Desktop, matched by folder and
+    /// harness (October's terminals are ordinary processes Lantern also sees).
+    pub fn agent_for(&self, a: &Agent) -> Option<OctoberAgent> {
+        let state = self.state.lock().ok()?;
+        match_october(&state, a).cloned()
+    }
+
+    /// Types a reply through October's safe delivery.
+    pub fn send_text(&self, a: &Agent, text: &str) -> Result<(), String> {
+        let agent = self.agent_for(a).ok_or("October no longer lists this agent")?;
+        let (done, wait) = channel();
+        self.tx.send(Command::Send { agent, text: text.to_string(), done }).map_err(|_| "October link stopped")?;
+        wait.recv_timeout(Duration::from_secs(15)).map_err(|_| "October didn't answer in time".to_string())?.map(|_| ())
+    }
+
+    /// Shows the agent on October's canvas. `Ok(false)` when October doesn't list the agent.
+    pub fn focus(&self, a: &Agent) -> Result<bool, String> {
+        let Some(agent) = self.agent_for(a) else { return Ok(false) };
+        let (done, wait) = channel();
+        self.tx.send(Command::Focus { agent, done }).map_err(|_| "October link stopped")?;
+        wait.recv_timeout(Duration::from_secs(8)).map_err(|_| "October didn't answer in time".to_string())?.map(|_| true)
+    }
+}
+
+fn match_october<'a>(link: &'a LinkState, a: &Agent) -> Option<&'a OctoberAgent> {
+    if a.host.as_ref().is_none_or(|h| h.app != "October") {
+        return None;
+    }
+    let cwd = a.cwd.as_deref()?;
+    let same_dir: Vec<_> = link.agents.iter().filter(|o| o.cwd.as_deref() == Some(cwd)).collect();
+    let by_harness: Vec<_> =
+        same_dir.iter().filter(|o| o.harness.as_deref().is_some_and(|h| h.contains(a.kind.as_str()))).copied().collect();
+    match (by_harness.len(), same_dir.len()) {
+        (1, _) => Some(by_harness[0]),
+        (0, 1) => Some(same_dir[0]),
+        _ => None,
+    }
+}
+
+/// When Lantern is paired with October, agents inside October get their October name and state,
+/// and replies go through October's safe delivery.
+pub fn merge(agents: &mut [Agent], link: &LinkState) {
+    if link.agents.is_empty() {
+        return;
+    }
+    for a in agents.iter_mut() {
+        let Some(o) = match_october(link, a).cloned() else { continue };
+        if a.title.is_none() {
+            a.title = o.name.clone();
+        }
+        if o.state == "needs-user" {
+            a.state = State::NeedsInput;
+            a.question = o.attention.clone().or(a.question.take());
+        }
+        if link.paired {
+            a.route = Route::October { canvas_id: o.canvas_id.clone(), node_id: o.node_id.clone() };
+            a.can_reply = true;
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,22 +137,15 @@ fn save(s: &Saved) {
 }
 
 fn client_id() -> String {
-    load_saved().map(|s| s.client_id).unwrap_or_else(|| {
-        let mut b = [0u8; 16];
-        unsafe { libc::arc4random_buf(b.as_mut_ptr().cast(), 16) };
-        b[6] = (b[6] & 0x0f) | 0x40;
-        b[8] = (b[8] & 0x3f) | 0x80;
-        let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-        format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
-    })
+    load_saved().map(|s| s.client_id).unwrap_or_else(|| uuid::Uuid::new_v4().hyphenated().to_string())
 }
 
-pub fn start() -> (Arc<Mutex<LinkState>>, Sender<Command>) {
+pub fn start() -> Link {
     let state = Arc::new(Mutex::new(LinkState { status: "notRunning".into(), ..Default::default() }));
     let (tx, rx) = channel();
     let s = state.clone();
     std::thread::spawn(move || run(s, rx));
-    (state, tx)
+    Link { state, tx }
 }
 
 fn run(state: Arc<Mutex<LinkState>>, rx: Receiver<Command>) {
@@ -119,10 +189,12 @@ fn run(state: Arc<Mutex<LinkState>>, rx: Receiver<Command>) {
                     };
                     let _ = done.send(r);
                 }
-                Command::Focus { agent } => {
-                    if let Some(c) = client.as_mut() {
-                        let _ = c.focus(&agent);
-                    }
+                Command::Focus { agent, done } => {
+                    let r = match client.as_mut() {
+                        Some(c) => c.focus(&agent).map_err(|e| format!("{e:#}")),
+                        None => Err("October isn't running".into()),
+                    };
+                    let _ = done.send(r);
                 }
             }
         }
@@ -144,7 +216,11 @@ fn run(state: Arc<Mutex<LinkState>>, rx: Receiver<Command>) {
                     pairing = None;
                     update(&state, |s| {
                         s.pairing_code = None;
-                        s.message = Some(if st == "denied" { "October declined the connection.".into() } else { "The request expired. Try again.".into() });
+                        s.message = Some(if st == "denied" {
+                            "October declined the connection.".into()
+                        } else {
+                            "The request expired. Try again.".into()
+                        });
                     });
                 }
                 Err(e) if started.elapsed() > Duration::from_secs(150) => {
@@ -172,6 +248,7 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
         let status = if october_core::installed() { "notRunning" } else { "notInstalled" };
         update(state, |s| {
             s.status = status.into();
+            s.paired = false;
             s.agents.clear();
             s.agent_count = 0;
             s.core_version = None;
@@ -197,6 +274,9 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
             *client = None;
             update(state, |s| {
                 s.status = "error".into();
+                s.paired = false;
+                s.agents.clear();
+                s.agent_count = 0;
                 s.message = Some(format!("{e:#}"));
             });
             return;
@@ -209,7 +289,13 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
             let paired = c.paired();
             let version = c.run.core_version.clone();
             update(state, |s| {
-                s.status = if pairing { "pairing".into() } else if paired { "connected".into() } else { "readOnly".into() };
+                s.status = if pairing {
+                    "pairing".into()
+                } else if paired {
+                    "connected".into()
+                } else {
+                    "readOnly".into()
+                };
                 s.paired = paired;
                 s.core_version = Some(version);
                 s.agent_count = agents.len();
@@ -217,11 +303,18 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
             });
         }
         Err(e) => {
+            // Without a fresh list nothing may route through October: a stale node id could
+            // deliver to the wrong agent.
             let msg = format!("{e:#}");
             if msg.contains("revoked") {
                 *client = None;
             }
-            update(state, |s| s.message = Some(msg));
+            update(state, |s| {
+                s.status = "error".into();
+                s.agents.clear();
+                s.agent_count = 0;
+                s.message = Some(msg);
+            });
         }
     }
 }

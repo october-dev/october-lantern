@@ -48,6 +48,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onNotify = { agent in Notifier.shared.post(for: agent) }
 
         _ = Updater.shared
+        // Restore a saved October sign-in now, not when the October panel is first opened.
+        _ = OctoberAccount.shared
         model.start()
         windows.showPill()
 

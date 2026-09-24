@@ -21,7 +21,7 @@ SWIFT_ARCHS=()
 if [[ "${UNIVERSAL:-}" == 1 ]]; then
   echo "==> engine ($PROFILE, universal)"
   for t in aarch64-apple-darwin x86_64-apple-darwin; do
-    (cd "$ROOT/engine" && cargo build ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} --target "$t")
+    (cd "$ROOT/engine" && cargo build --locked ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"} --target "$t")
   done
   ENGINE="$ROOT/engine/target/lantern-engine-universal"
   lipo -create -output "$ENGINE" \
@@ -30,7 +30,7 @@ if [[ "${UNIVERSAL:-}" == 1 ]]; then
   SWIFT_ARCHS=(--arch arm64 --arch x86_64)
 else
   echo "==> engine ($PROFILE)"
-  (cd "$ROOT/engine" && cargo build ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"})
+  (cd "$ROOT/engine" && cargo build --locked ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"})
   ENGINE="$ROOT/engine/target/$PROFILE/lantern-engine"
 fi
 
@@ -63,8 +63,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Lantern listens only while you hold the mic, so you can talk to your agents.</string>
-  <key>NSSpeechRecognitionUsageDescription</key><string>Lantern turns what you say into text for your agents, on your Mac.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Lantern listens only while the mic button is on, so you can dictate a reply to an agent.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Lantern turns what you say into text on this Mac. Audio is never sent to Apple.</string>
   <key>NSAppleEventsUsageDescription</key><string>Lantern types your replies into the terminal tab where each agent is running.</string>
   <key>SUFeedURL</key><string>https://raw.githubusercontent.com/harshsaver/october-lantern-releases/main/appcast.xml</string>
   <key>SUPublicEDKey</key><string>TcvtDFVfXw92Ot6tGT+5OKMmGYPg6kcNmRWXsfw0/IQ=</string>

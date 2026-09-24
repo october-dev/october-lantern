@@ -1,12 +1,13 @@
-//! Tests for the parts that touch other programs' files: session parsing and hook installation.
+//! Tests for the parts that touch other programs' files and processes: session parsing, hook
+//! installation, and the checks made before typing into a terminal.
 
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::model::State;
+use crate::model::{Agent, Kind, QuestionKind, Route, State, StateSource};
 use crate::procs::Proc;
-use crate::{history, hooks, scanner, transcripts};
+use crate::{deliver, history, hooks, scanner, transcripts};
 
 fn temp_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("lantern-test-{name}-{}", std::process::id()));
@@ -30,7 +31,6 @@ fn proc(cmd: &[&str]) -> Proc {
 
 #[test]
 fn classifies_agents_and_skips_helpers() {
-    use crate::model::Kind;
     assert_eq!(scanner::classify(&proc(&["/Users/x/.local/bin/claude", "--session-id", "abc"])), Some(Kind::Claude));
     assert_eq!(scanner::classify(&proc(&["node", "/opt/homebrew/bin/codex", "resume", "x"])), Some(Kind::Codex));
     assert_eq!(scanner::classify(&proc(&["/opt/homebrew/bin/opencode"])), Some(Kind::Opencode));
@@ -49,25 +49,32 @@ fn classifies_agents_and_skips_helpers() {
 fn claude_transcript_states() {
     let dir = temp_dir("claude");
     let path = dir.join("s.jsonl");
-    let user = r#"{"type":"user","message":{"role":"user","content":"fix it"}}"#;
-    let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}}"#;
-    let result = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
-    let done = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"All fixed."}]}}"#;
+    let user = r#"{"type":"user","timestamp":"2026-09-23T16:51:00.000Z","message":{"role":"user","content":"fix it"}}"#;
+    // One API message, written as two entries that share its final stop_reason.
+    let text_part = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:05.000Z","message":{"id":"m1","stop_reason":"tool_use","content":[{"type":"text","text":"Running the tests."}]}}"#;
+    let tool = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:05.100Z","message":{"id":"m1","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}}"#;
+    let result = r#"{"type":"user","timestamp":"2026-09-23T16:51:06.000Z","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+    let done = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:09.000Z","message":{"id":"m2","stop_reason":"end_turn","content":[{"type":"text","text":"All fixed."}]}}"#;
     let title = r#"{"type":"ai-title","aiTitle":"Fix the test","sessionId":"s1"}"#;
 
-    fs::write(&path, format!("{user}\n{tool}\n")).unwrap();
+    // A text-only entry of a message that goes on to use tools is not the end of the turn.
+    fs::write(&path, format!("{user}\n{text_part}\n")).unwrap();
+    assert_eq!(transcripts::parse_claude(&path, 0).state, Some(State::Working));
+    fs::write(&path, format!("{user}\n{text_part}\n{tool}\n")).unwrap();
     assert_eq!(transcripts::parse_claude(&path, 0).state, Some(State::Working));
 
-    fs::write(&path, format!("{user}\n{tool}\n{result}\n{done}\n{title}\n")).unwrap();
-    let s = transcripts::parse_claude(&path, 0);
+    fs::write(&path, format!("{user}\n{text_part}\n{tool}\n{result}\n{done}\n{title}\n")).unwrap();
+    let s = transcripts::parse_claude(&path, 99);
     assert_eq!(s.state, Some(State::Waiting));
     assert_eq!(s.last_message.as_deref(), Some("All fixed."));
     assert_eq!(s.title.as_deref(), Some("Fix the test"));
+    // `since` is the entry's own time, so a title written later doesn't start a new turn.
+    assert_eq!(s.since, Some(1_790_182_269_000));
 
     let chat = history::claude(&path);
     let roles: Vec<String> = chat.iter().map(|m| format!("{:?}", m.role)).collect();
-    assert_eq!(roles, ["User", "Tool", "Agent"]);
-    assert_eq!(chat[1].text, "Bash · npm test");
+    assert_eq!(roles, ["User", "Agent", "Tool", "Agent"]);
+    assert_eq!(chat[2].text, "Bash · npm test");
 
     fs::write(&path, "").unwrap();
     assert_eq!(transcripts::parse_claude(&path, 0).state, Some(State::Idle));
@@ -79,20 +86,33 @@ fn codex_rollout_states() {
     let path = dir.join("rollout.jsonl");
     let meta = r#"{"type":"session_meta","payload":{"id":"t1"}}"#;
     let env = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>x</environment_context>"}]}}"#;
-    let ask = r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"write tests"}]}}"#;
-    let started = r#"{"type":"event_msg","payload":{"type":"task_started"}}"#;
-    let done = r#"{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"Tests written."}}"#;
+    let ask =
+        r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"write tests"}]}}"#;
+    let started = r#"{"type":"event_msg","timestamp":"2026-09-23T16:51:06.609Z","payload":{"type":"task_started","turn_id":"u1","started_at":1790182266}}"#;
+    let done = r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"u1","last_agent_message":"Tests written.","completed_at":1790183062}}"#;
 
     fs::write(&path, format!("{meta}\n{env}\n{ask}\n{started}\n")).unwrap();
     let s = transcripts::parse_codex(&path, 0);
     assert_eq!(s.state, Some(State::Working));
     assert_eq!(s.title.as_deref(), Some("write tests"));
     assert_eq!(s.session_id.as_deref(), Some("t1"));
+    assert_eq!(s.since, Some(1_790_182_266_000));
 
     fs::write(&path, format!("{meta}\n{env}\n{ask}\n{started}\n{done}\n")).unwrap();
     let s = transcripts::parse_codex(&path, 0);
     assert_eq!(s.state, Some(State::Waiting));
     assert_eq!(s.last_message.as_deref(), Some("Tests written."));
+    assert_eq!(s.since, Some(1_790_183_062_000));
+
+    // A turn longer than the tail: the boundary event is out of reach, so the state is unknown
+    // rather than a confident "idle".
+    let filler = format!("{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"pad\":\"{}\"}}}}\n", "x".repeat(4000));
+    let mut long = format!("{meta}\n{ask}\n{started}\n");
+    for _ in 0..(transcripts::TAIL_BYTES / 4000 + 8) {
+        long.push_str(&filler);
+    }
+    fs::write(&path, long).unwrap();
+    assert_eq!(transcripts::parse_codex(&path, 0).state, Some(State::Unknown));
 }
 
 #[test]
@@ -113,20 +133,32 @@ fn hooks_install_uninstall_and_missing_app() {
     fs::create_dir_all(home.join(".codex")).unwrap();
     let theirs = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]},"model":"opus"}"#;
     fs::write(home.join(".claude/settings.json"), theirs).unwrap();
-    fs::write(home.join(".codex/config.toml"), "model = \"gpt\"\nnotify = [\"their-notifier\"]\n\n[tui]\nx = 1\n").unwrap();
 
+    // A broken Codex config stops the whole install before Claude's file changes.
+    fs::write(home.join(".codex/config.toml"), "this = = is not toml\n").unwrap();
+    assert!(hooks::install().is_err());
+    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap(), theirs);
+    assert!(fs::read_dir(home.join(".claude")).unwrap().count() == 1, "no backup or temp file left behind");
+
+    fs::write(home.join(".codex/config.toml"), "model = \"gpt\"\nnotify = [\"their-notifier\"]\n\n[tui]\nx = 1\n").unwrap();
     hooks::install().unwrap();
     let settings = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
     assert!(settings.contains("say done"), "keeps the user's own hooks");
     assert!(settings.contains("\"model\": \"opus\""));
-    assert_eq!(settings.matches("hook claude").count(), 4);
+    assert_eq!(settings.matches("hook claude").count(), 5);
+    assert!(settings.contains("PermissionRequest"));
     let config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert!(config.contains("lantern-engine") && config.contains("[tui]"));
     assert!(hooks::support_dir().join("bin/lantern-engine").exists());
 
-    // Installing twice doesn't duplicate anything.
+    // Installing twice doesn't duplicate anything, and the second backup doesn't overwrite the first.
     hooks::install().unwrap();
-    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap().matches("hook claude").count(), 4);
+    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap().matches("hook claude").count(), 5);
+    let backups = fs::read_dir(home.join(".claude"))
+        .unwrap()
+        .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("lantern-backup"))
+        .count();
+    assert_eq!(backups, 2);
 
     // If Lantern is gone, the hook command still exits 0 and prints nothing.
     let gone = home.join("nowhere/lantern-engine");
@@ -154,7 +186,7 @@ fn pi_session_states() {
     let user = r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"add a flag"}]}}"#;
     let call = r#"{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","arguments":{"path":"a.ts"}}],"stopReason":"toolUse"}}"#;
     let result = r#"{"type":"message","message":{"role":"toolResult","toolName":"read","content":[]}}"#;
-    let done = r#"{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Added --flag."}],"stopReason":"stop"}}"#;
+    let done = r#"{"type":"message","timestamp":"2026-09-21T14:13:20.123Z","message":{"role":"assistant","content":[{"type":"text","text":"Added --flag."}],"stopReason":"stop"}}"#;
 
     fs::write(&path, format!("{header}\n{user}\n{call}\n")).unwrap();
     assert_eq!(pi::parse(&path, 0).state, Some(State::Working));
@@ -164,6 +196,7 @@ fn pi_session_states() {
     assert_eq!(s.last_message.as_deref(), Some("Added --flag."));
     assert_eq!(s.title.as_deref(), Some("add a flag"));
     assert_eq!(s.session_id.as_deref(), Some("p1"));
+    assert_eq!(s.since, Some(1_790_000_000_123));
     let chat = pi::history(&path);
     assert_eq!(chat.len(), 3);
     assert_eq!(chat[1].text, "read · a.ts");
@@ -179,7 +212,7 @@ fn gemini_replay_and_states() {
     let ask = r#"{"id":"u1","type":"user","content":[{"text":"rename the file"}]}"#;
     let partial = r#"{"id":"g1","type":"gemini","content":"","toolCalls":[{"name":"run_shell_command","args":{"command":"mv a b"}}]}"#;
     let tool_result = r#"{"id":"u2","type":"user","content":[{"functionResponse":{}}]}"#;
-    let reply = r#"{"id":"g2","type":"gemini","content":"Renamed."}"#;
+    let reply = r#"{"id":"g2","type":"gemini","timestamp":"2026-09-21T14:13:20.123Z","content":"Renamed."}"#;
 
     fs::write(&path, format!("{header}\n{context}\n")).unwrap();
     assert_eq!(gemini::parse(&path, 0).state, Some(State::Idle));
@@ -190,8 +223,75 @@ fn gemini_replay_and_states() {
     assert_eq!(s.state, Some(State::Waiting));
     assert_eq!(s.last_message.as_deref(), Some("Renamed."));
     assert_eq!(s.title.as_deref(), Some("rename the file"));
+    assert_eq!(s.since, Some(1_790_000_000_123));
     // A rewind drops everything from that message on.
     let rewind = r#"{"$rewindTo":"g2"}"#;
     fs::write(&path, format!("{header}\n{context}\n{ask}\n{partial}\n{tool_result}\n{reply}\n{rewind}\n")).unwrap();
     assert_eq!(gemini::parse(&path, 0).state, Some(State::Working));
+}
+
+fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
+    Agent {
+        id: format!("claude:{pid}:{start_time}"),
+        kind: Kind::Claude,
+        handle: "claude-1".into(),
+        pid,
+        start_time,
+        tty: tty.map(String::from),
+        cwd: None,
+        project: None,
+        title: None,
+        session_id: None,
+        state: State::Waiting,
+        state_since: None,
+        last_message: None,
+        question: None,
+        question_kind: None,
+        host: None,
+        tmux: None,
+        can_reply: true,
+        route: Route::Tmux,
+        state_source: StateSource::None,
+    }
+}
+
+/// Typing goes to a process, not a terminal: an agent that exited (or a reused pid, or a
+/// different terminal) is refused before anything is sent.
+#[test]
+fn delivery_refuses_targets_that_are_not_the_agent_any_more() {
+    // A child that exits at once, so its pid is gone (or reused by something with another start).
+    let child = Command::new("/usr/bin/true").spawn().unwrap();
+    let pid = child.id();
+    let _ = child.wait_with_output();
+    let gone = deliver::verify(&agent_for(pid, 1, None)).unwrap_err().to_string();
+    assert!(gone.contains("exited"), "{gone}");
+
+    // This test process is alive, but not with that start time or on that tty.
+    let me = std::process::id();
+    let live = crate::procs::live(me).unwrap();
+    assert!(deliver::verify(&agent_for(me, live.start + 1, None)).unwrap_err().to_string().contains("another process"));
+    assert!(deliver::verify(&agent_for(me, live.start, Some("ttys999"))).unwrap_err().to_string().contains("terminal"));
+    // Same pid, same start, no tty claim: only the foreground check remains, which depends on
+    // how the test runner was started, so it's asserted through `live` rather than `verify`.
+    assert!(live.tpgid == 0 || live.tpgid != live.pgid || deliver::verify(&agent_for(me, live.start, None)).is_ok());
+}
+
+#[test]
+fn hook_events_carry_typed_questions() {
+    let ev = hooks::HookEvent {
+        source: "claude".into(),
+        state: State::NeedsInput,
+        session_id: Some("s".into()),
+        cwd: None,
+        message: None,
+        question: Some("Permission to run Bash · rm -rf node_modules".into()),
+        question_kind: Some(QuestionKind::Permission),
+        transcript_path: None,
+        ancestors: vec![1],
+        at: 5,
+    };
+    let s = ev.status();
+    assert_eq!((s.state, s.question_kind, s.since), (Some(State::NeedsInput), Some(QuestionKind::Permission), Some(5)));
+    let json = serde_json::to_string(&ev).unwrap();
+    assert!(json.contains("\"questionKind\":\"permission\""));
 }

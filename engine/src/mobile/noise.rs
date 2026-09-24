@@ -45,6 +45,7 @@ pub struct Responder {
     state: HandshakeState,
 }
 
+#[allow(clippy::large_enum_variant)] // One per handshake message; the responder state is the big one.
 pub enum Step {
     /// Send this handshake message and wait for the next one.
     Reply(Responder, Vec<u8>),
@@ -84,10 +85,8 @@ impl Responder {
 
 /// Accepts only the expected, non-zero 32-byte key (constant-time comparison).
 pub fn pinned(remote: &[u8], expected: &[u8]) -> bool {
-    remote.len() == 32
-        && expected.len() == 32
-        && remote.iter().any(|b| *b != 0)
-        && remote.iter().zip(expected).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    use subtle::ConstantTimeEq;
+    remote.len() == 32 && expected.len() == 32 && remote.iter().any(|b| *b != 0) && bool::from(remote.ct_eq(expected))
 }
 
 pub struct Channel {
@@ -153,16 +152,31 @@ mod tests {
 
         let r = Responder::build(&resp_s, &p, Some(&resp_e)).unwrap();
         let Step::Reply(r, m2) = r.read(&m1).unwrap() else { panic!("expected a reply") };
-        assert_eq!(m2, hex("0a8665a960bb70b15a5ccb90411c80f563553f56721ff5d47c8cf79762dd605c130dd5a6734e665b473fdfc79e1f1eafd20e7f19475a8e8493b2ad0aeb0b3edcfbb3f477714150bd432c9e4de16287dee1a57e3d8ad70bf468615e711cc8e2d0"));
+        assert_eq!(
+            m2,
+            hex(
+                "0a8665a960bb70b15a5ccb90411c80f563553f56721ff5d47c8cf79762dd605c130dd5a6734e665b473fdfc79e1f1eafd20e7f19475a8e8493b2ad0aeb0b3edcfbb3f477714150bd432c9e4de16287dee1a57e3d8ad70bf468615e711cc8e2d0"
+            )
+        );
 
         let mut payload = vec![0u8; 1024];
         initiator.read_message(&m2, &mut payload).unwrap();
         let n = initiator.write_message(&[], &mut buf).unwrap();
         let m3 = buf[..n].to_vec();
-        assert_eq!(m3, hex("70c58eb1e7608486a37e7242a5caa666e0629c4ed242b5e90465f480df357f91d086797606dafafcd2d0632e908902a4912addc3d7993ceb4488249bc469c539"));
+        assert_eq!(
+            m3,
+            hex(
+                "70c58eb1e7608486a37e7242a5caa666e0629c4ed242b5e90465f480df357f91d086797606dafafcd2d0632e908902a4912addc3d7993ceb4488249bc469c539"
+            )
+        );
 
         let Step::Done(mut channel, remote, hash) = r.read(&m3).unwrap() else { panic!("expected done") };
-        assert_eq!(hash, hex("12f17393018735d1d35a2ceb1b453521d259313ba87fa329445cb86add148b4be8131a78d970da5c98b9cdb59d1f4a4f079fbc3539859a01e425d9dddc2fdce5"));
+        assert_eq!(
+            hash,
+            hex(
+                "12f17393018735d1d35a2ceb1b453521d259313ba87fa329445cb86add148b4be8131a78d970da5c98b9cdb59d1f4a4f079fbc3539859a01e425d9dddc2fdce5"
+            )
+        );
         assert_eq!(remote.len(), 32);
 
         let mut itx = initiator.into_transport_mode().unwrap();

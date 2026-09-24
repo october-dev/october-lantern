@@ -1,20 +1,19 @@
 //! The stdio protocol the app talks to. See `protocol/README.md`.
 
 use std::io::{BufRead, Write};
-use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::deliver;
 use crate::hooks::now_ms;
 use crate::launch;
-use crate::model::{Agent, Kind, Route, State};
-use crate::october_link::LinkState;
-use std::sync::{Arc, Mutex, mpsc::Sender};
+use crate::model::{Agent, Kind, Route};
+use crate::october_link::{self, Link};
 use crate::scanner::Scanner;
-use crate::deliver;
 
 const SCAN_EVERY: Duration = Duration::from_millis(1500);
 const HEARTBEAT: Duration = Duration::from_secs(10);
@@ -24,14 +23,31 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 enum Request {
     Refresh,
     #[serde(rename_all = "camelCase")]
-    Reply { request_id: String, agent_id: String, text: String },
+    Reply {
+        request_id: String,
+        agent_id: String,
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
-    Launch { request_id: String, kind: Kind, cwd: String, prompt: Option<String>, background: bool },
+    Launch {
+        request_id: String,
+        kind: Kind,
+        cwd: String,
+        prompt: Option<String>,
+        background: bool,
+    },
     #[serde(rename_all = "camelCase")]
-    History { request_id: String, agent_id: String },
+    History {
+        request_id: String,
+        agent_id: String,
+    },
     /// Single keypresses, e.g. "1" or "Escape" to answer a permission prompt.
     #[serde(rename_all = "camelCase")]
-    Keys { request_id: String, agent_id: String, keys: Vec<String> },
+    Keys {
+        request_id: String,
+        agent_id: String,
+        keys: Vec<String>,
+    },
     /// Ask October Desktop to allow Lantern (it shows a code to compare), cancel that, or forget it.
     #[serde(rename = "october.pair")]
     OctoberPair,
@@ -41,26 +57,51 @@ enum Request {
     OctoberForget,
     /// Bring the agent's own tab (or tmux pane) to the front.
     #[serde(rename_all = "camelCase")]
-    Focus { request_id: String, agent_id: String },
+    Focus {
+        request_id: String,
+        agent_id: String,
+    },
     /// Show an agent that runs in a detached tmux session in a Terminal window.
     #[serde(rename_all = "camelCase")]
-    Attach { request_id: String, agent_id: String },
+    Attach {
+        request_id: String,
+        agent_id: String,
+    },
 
     // MARK: Phone (see engine/src/mobile)
-    /// Start acting as an October host for the phone app, with the user's October access token.
-    #[serde(rename = "phone.start", rename_all = "camelCase")]
-    PhoneStart { access_token: String },
-    /// A refreshed access token.
+    /// The user's current October access token: starts hosting for the phone app, or hands a
+    /// running host the refreshed token.
     #[serde(rename = "phone.token", rename_all = "camelCase")]
-    PhoneToken { access_token: String },
+    PhoneToken {
+        access_token: String,
+    },
     #[serde(rename = "phone.pair")]
     PhonePair,
     #[serde(rename = "phone.decide")]
-    PhoneDecide { allow: bool },
+    PhoneDecide {
+        allow: bool,
+    },
     #[serde(rename = "phone.revoke")]
-    PhoneRevoke { bind: String },
+    PhoneRevoke {
+        bind: String,
+    },
     #[serde(rename = "phone.stop")]
     PhoneStop,
+}
+
+/// A reply from the phone, typed by the serve loop like a reply from the app.
+pub struct Deliver {
+    pub agent_id: String,
+    pub text: String,
+    pub done: Sender<Result<(), String>>,
+}
+
+/// Everything the serve loop reacts to.
+pub enum Incoming {
+    Line(String),
+    /// stdin closed: the app is gone.
+    Closed,
+    Deliver(Deliver),
 }
 
 fn emit(v: &Value) {
@@ -70,28 +111,28 @@ fn emit(v: &Value) {
 }
 
 pub fn run() -> Result<()> {
-    let (tx, rx) = mpsc::channel::<Option<String>>();
+    let (tx, rx) = mpsc::channel::<Incoming>();
+    let stdin_tx = tx.clone();
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             match line {
                 Ok(l) => {
-                    if tx.send(Some(l)).is_err() {
+                    if stdin_tx.send(Incoming::Line(l)).is_err() {
                         return;
                     }
                 }
                 Err(_) => break,
             }
         }
-        // stdin closed: the app is gone.
-        let _ = tx.send(None);
+        let _ = stdin_tx.send(Incoming::Closed);
     });
 
-    emit(&json!({"type": "hello", "protocol": 1, "version": env!("CARGO_PKG_VERSION")}));
+    emit(&json!({"type": "hello", "protocol": 2, "version": env!("CARGO_PKG_VERSION")}));
     crate::hooks::refresh_hook_binary();
     // Checking installed agents runs a login shell, so do it off the main loop.
     std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));
 
-    let (october, october_tx) = crate::october_link::start();
+    let link = october_link::start();
     let mut last_october = String::new();
     let mut scanner = Scanner::new();
     let mut agents: Vec<Agent> = Vec::new();
@@ -102,14 +143,14 @@ pub fn run() -> Result<()> {
     loop {
         if Instant::now() >= next_scan {
             let mut fresh = scanner.scan();
+            let october = link.snapshot();
+            october_link::merge(&mut fresh, &october);
             if let Some(p) = &phone {
                 p.update_agents(&fresh);
             }
-            let link = october.lock().map(|s| s.clone()).unwrap_or_default();
-            merge_october(&mut fresh, &link);
-            let summary = serde_json::to_string(&link).unwrap_or_default();
+            let summary = serde_json::to_string(&october).unwrap_or_default();
             if summary != last_october {
-                emit(&json!({"type": "october", "october": link}));
+                emit(&json!({"type": "october", "october": october}));
                 last_october = summary;
             }
             if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
@@ -122,18 +163,15 @@ pub fn run() -> Result<()> {
 
         let wait = next_scan.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
-            Ok(Some(line)) => match serde_json::from_str::<Request>(&line) {
+            Ok(Incoming::Deliver(d)) => {
+                let result = deliver_to(&agents, &link, &d.agent_id, &d.text).map_err(|(_, m)| m);
+                let _ = d.done.send(result);
+                next_scan = Instant::now() + Duration::from_millis(300);
+            }
+            Ok(Incoming::Line(line)) => match serde_json::from_str::<Request>(&line) {
                 Ok(Request::Refresh) => next_scan = Instant::now(),
                 Ok(Request::Reply { request_id, agent_id, text }) => {
-                    let result = match agents.iter().find(|a| a.id == agent_id) {
-                        None => Err(("unknown_agent", format!("no agent {agent_id}"))),
-                        Some(a) if !a.can_reply => Err(("not_reachable", "Lantern can't type into this terminal yet".to_string())),
-                        Some(a) if matches!(a.route, Route::October { .. }) => {
-                            send_via_october(&october, &october_tx, a, &text).map_err(|m| ("send_failed", m))
-                        }
-                        Some(a) => deliver::send_text(a, &text).map_err(|e| ("send_failed", format!("{e:#}"))),
-                    };
-                    match result {
+                    match deliver_to(&agents, &link, &agent_id, &text) {
                         Ok(()) => emit(&json!({"type": "replyResult", "requestId": request_id, "ok": true})),
                         Err((code, message)) => emit(&json!({
                             "type": "replyResult", "requestId": request_id, "ok": false,
@@ -160,26 +198,29 @@ pub fn run() -> Result<()> {
                 Ok(Request::Keys { request_id, agent_id, keys }) => {
                     let result = match agents.iter().find(|a| a.id == agent_id) {
                         None => Err(format!("no agent {agent_id}")),
-                        Some(a) => keys.iter().try_for_each(|k| {
-                            let key = deliver::Key::parse(k).ok_or_else(|| anyhow::anyhow!("unknown key {k}"))?;
-                            std::thread::sleep(Duration::from_millis(40));
-                            deliver::send_key(a, key)
-                        })
-                        .map_err(|e| format!("{e:#}")),
+                        Some(a) => keys
+                            .iter()
+                            .try_for_each(|k| {
+                                let key = deliver::Key::parse(k).ok_or_else(|| anyhow::anyhow!("unknown key {k}"))?;
+                                std::thread::sleep(Duration::from_millis(40));
+                                deliver::send_key(a, key)
+                            })
+                            .map_err(|e| format!("{e:#}")),
                     };
                     emit(&json!({"type": "replyResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::OctoberPair) => { let _ = october_tx.send(crate::october_link::Command::Pair); }
-                Ok(Request::OctoberCancelPair) => { let _ = october_tx.send(crate::october_link::Command::CancelPair); }
-                Ok(Request::OctoberForget) => { let _ = october_tx.send(crate::october_link::Command::Forget); }
+                Ok(Request::OctoberPair) => link.send(october_link::Command::Pair),
+                Ok(Request::OctoberCancelPair) => link.send(october_link::Command::CancelPair),
+                Ok(Request::OctoberForget) => link.send(october_link::Command::Forget),
                 Ok(Request::Focus { request_id, agent_id }) => {
-                    if let Some(oa) = agents.iter().find(|a| a.id == agent_id).and_then(|a| october_agent(&october, a)) {
-                        let _ = october_tx.send(crate::october_link::Command::Focus { agent: oa });
-                    }
                     let result = match agents.iter().find(|a| a.id == agent_id) {
                         None => Err(format!("no agent {agent_id}")),
-                        Some(a) => deliver::focus(a).map_err(|e| format!("{e:#}")),
+                        Some(a) => match link.focus(a) {
+                            Ok(true) => Ok(()),
+                            Ok(false) => deliver::focus(a).map_err(|e| format!("{e:#}")),
+                            Err(e) => Err(e),
+                        },
                     };
                     emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                 }
@@ -191,19 +232,14 @@ pub fn run() -> Result<()> {
                     emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                 }
                 // MARK: Phone
-                Ok(Request::PhoneStart { access_token }) => match &phone {
+                Ok(Request::PhoneToken { access_token }) => match &phone {
                     Some(p) => p.send(crate::mobile::host::Cmd::Token(access_token)),
                     None => {
-                        let p = crate::mobile::host::MobileHost::start(access_token, emit);
+                        let p = crate::mobile::host::MobileHost::start(access_token, emit, tx.clone());
                         p.update_agents(&agents);
                         phone = Some(p);
                     }
                 },
-                Ok(Request::PhoneToken { access_token }) => {
-                    if let Some(p) = &phone {
-                        p.send(crate::mobile::host::Cmd::Token(access_token));
-                    }
-                }
                 Ok(Request::PhonePair) => {
                     if let Some(p) = &phone {
                         p.send(crate::mobile::host::Cmd::Pair);
@@ -224,64 +260,22 @@ pub fn run() -> Result<()> {
                         p.send(crate::mobile::host::Cmd::Stop);
                     }
                 }
-                Err(e) => eprintln!("lantern-engine: bad request {line:?}: {e}"),
+                // The line itself isn't logged: some requests carry an access token.
+                Err(e) => eprintln!("lantern-engine: bad request ({e})"),
             },
-            Ok(None) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
 }
 
-/// October's view of a Lantern agent that runs inside October Desktop, matched by folder and
-/// harness (October's terminals are ordinary processes Lantern also sees).
-fn match_october<'a>(link: &'a LinkState, a: &Agent) -> Option<&'a crate::october_core::OctoberAgent> {
-    if a.host.as_ref().is_none_or(|h| h.app != "October") {
-        return None;
+/// The one place replies are typed, whoever asked (the app or a phone): picks the route and
+/// checks the target is still the agent Lantern saw.
+fn deliver_to(agents: &[Agent], link: &Link, agent_id: &str, text: &str) -> Result<(), (&'static str, String)> {
+    match agents.iter().find(|a| a.id == agent_id) {
+        None => Err(("unknown_agent", format!("no agent {agent_id}"))),
+        Some(a) if !a.can_reply => Err(("not_reachable", "Lantern can't type into this terminal yet".to_string())),
+        Some(a) if matches!(a.route, Route::October { .. }) => link.send_text(a, text).map_err(|m| ("send_failed", m)),
+        Some(a) => deliver::send_text(a, text).map_err(|e| ("send_failed", format!("{e:#}"))),
     }
-    let cwd = a.cwd.as_deref()?;
-    let same_dir: Vec<_> = link.agents.iter().filter(|o| o.cwd.as_deref() == Some(cwd)).collect();
-    let by_harness: Vec<_> = same_dir
-        .iter()
-        .filter(|o| o.harness.as_deref().is_some_and(|h| h.contains(a.kind.as_str())))
-        .copied()
-        .collect();
-    match (by_harness.len(), same_dir.len()) {
-        (1, _) => Some(by_harness[0]),
-        (0, 1) => Some(same_dir[0]),
-        _ => None,
-    }
-}
-
-fn october_agent(link: &Arc<Mutex<LinkState>>, a: &Agent) -> Option<crate::october_core::OctoberAgent> {
-    let link = link.lock().ok()?;
-    match_october(&link, a).cloned()
-}
-
-/// When Lantern is paired with October, agents inside October get their October name and state,
-/// and replies go through October's safe delivery.
-fn merge_october(agents: &mut [Agent], link: &LinkState) {
-    if link.agents.is_empty() {
-        return;
-    }
-    for a in agents.iter_mut() {
-        let Some(o) = match_october(link, a).cloned() else { continue };
-        if a.title.is_none() {
-            a.title = o.name.clone();
-        }
-        if o.state == "needs-user" {
-            a.state = State::NeedsInput;
-            a.question = o.attention.clone().or(a.question.take());
-        }
-        if link.paired {
-            a.route = Route::October { canvas_id: o.canvas_id.clone(), node_id: o.node_id.clone() };
-            a.can_reply = true;
-        }
-    }
-}
-
-fn send_via_october(link: &Arc<Mutex<LinkState>>, tx: &Sender<crate::october_link::Command>, a: &Agent, text: &str) -> Result<(), String> {
-    let agent = october_agent(link, a).ok_or("October no longer lists this agent")?;
-    let (done, wait) = std::sync::mpsc::channel();
-    tx.send(crate::october_link::Command::Send { agent, text: text.to_string(), done }).map_err(|_| "October link stopped")?;
-    wait.recv_timeout(Duration::from_secs(15)).map_err(|_| "October didn't answer in time".to_string())?.map(|_| ())
 }

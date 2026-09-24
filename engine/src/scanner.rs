@@ -34,8 +34,7 @@ fn is_helper(kind: Kind, args: &[String]) -> bool {
         Kind::Opencode => (&["serve", "run", "mcp"], &[]),
         _ => (&["mcp", "serve", "exec", "run", "login"], &["-p", "--print", "--prompt"]),
     };
-    args.first().is_some_and(|a| subcommands.contains(&a.as_str()))
-        || args.iter().any(|a| flags.contains(&a.as_str()))
+    args.first().is_some_and(|a| subcommands.contains(&a.as_str())) || args.iter().any(|a| flags.contains(&a.as_str()))
 }
 
 const INTERPRETERS: [&str; 5] = ["node", "bun", "deno", "python", "uv"];
@@ -44,18 +43,13 @@ const INTERPRETERS: [&str; 5] = ["node", "bun", "deno", "python", "uv"];
 pub fn classify(p: &Proc) -> Option<Kind> {
     let argv0 = p.cmd.first().map(|a| basename(a)).unwrap_or(p.name.as_str());
     let wrapped = INTERPRETERS.iter().any(|i| argv0.starts_with(i));
-    let (prog, rest) = if wrapped {
-        (p.cmd.get(1).map(|a| basename(a))?, p.cmd.get(2..).unwrap_or(&[]))
-    } else {
-        (argv0, p.cmd.get(1..).unwrap_or(&[]))
-    };
+    let (prog, rest) =
+        if wrapped { (p.cmd.get(1).map(|a| basename(a))?, p.cmd.get(2..).unwrap_or(&[])) } else { (argv0, p.cmd.get(1..).unwrap_or(&[])) };
     let kind = match Kind::from_program(prog) {
         // GitHub's Copilot CLI is a node program; a native `copilot` is AWS's deploy tool.
         Some(Kind::Copilot) if !wrapped => return None,
         Some(kind) => kind,
-        None if p.exe.as_ref().is_some_and(|e| e.to_string_lossy().contains("/.local/share/claude/versions/")) => {
-            Kind::Claude
-        }
+        None if p.exe.as_ref().is_some_and(|e| e.to_string_lossy().contains("/.local/share/claude/versions/")) => Kind::Claude,
         None => return None,
     };
     if is_helper(kind, rest) { None } else { Some(kind) }
@@ -99,12 +93,8 @@ impl Scanner {
 
         // Interactive agents only (they have a terminal), and only the outermost process of each
         // kind (the node wrapper, not the native binary it spawns).
-        let candidates: HashMap<u32, Kind> = table
-            .procs
-            .values()
-            .filter(|p| p.tty.is_some())
-            .filter_map(|p| classify(p).map(|k| (p.pid, k)))
-            .collect();
+        let candidates: HashMap<u32, Kind> =
+            table.procs.values().filter(|p| p.tty.is_some()).filter_map(|p| classify(p).map(|k| (p.pid, k))).collect();
         let outermost: Vec<(u32, Kind)> = candidates
             .iter()
             .filter(|(pid, kind)| !table.ancestors(**pid).iter().any(|a| candidates.get(&a.pid) == Some(kind)))
@@ -112,8 +102,7 @@ impl Scanner {
             .collect();
         let agent_pids: Vec<u32> = outermost.iter().map(|(p, _)| *p).collect();
         table.fill_cwds(&mut self.sys, &agent_pids);
-        let mut agents: Vec<(&Proc, Kind)> =
-            outermost.iter().filter_map(|(pid, kind)| table.get(*pid).map(|p| (p, *kind))).collect();
+        let mut agents: Vec<(&Proc, Kind)> = outermost.iter().filter_map(|(pid, kind)| table.get(*pid).map(|p| (p, *kind))).collect();
         agents.sort_by_key(|(p, k)| (*k, p.pid));
 
         let tmux = if agents.is_empty() { None } else { Some(tmux::discover(&table)) };
@@ -126,21 +115,14 @@ impl Scanner {
         self.handles.retain(|pid, (kind, _)| agents.iter().any(|(p, k)| p.pid == *pid && k == kind));
         self.opencode_cache.retain(|pid, _| live.contains(pid));
         self.children = live.iter().filter_map(|pid| table.child_of(*pid).map(|c| (*pid, c))).collect();
-        self.started = agents
-            .iter()
-            .filter_map(|(p, _)| p.cwd.clone().map(|c| (p.pid, (c, p.start_time))))
-            .collect();
+        self.started = agents.iter().filter_map(|(p, _)| p.cwd.clone().map(|c| (p.pid, (c, p.start_time)))).collect();
 
         let mut out = Vec::new();
         for (p, kind) in agents {
             let n = self.handle_number(p.pid, kind);
             let args = p.cmd.get(1..).unwrap_or(&[]);
 
-            let hook = events
-                .iter()
-                .filter(|e| e.source == kind.as_str())
-                .filter(|e| e.ancestors.contains(&p.pid))
-                .max_by_key(|e| e.at);
+            let hook = events.iter().filter(|e| e.source == kind.as_str()).filter(|e| e.ancestors.contains(&p.pid)).max_by_key(|e| e.at);
             let transcript = self.transcript_status(p, kind, args, hook);
             let (status, source) = merge(hook, transcript);
 
@@ -148,19 +130,18 @@ impl Scanner {
             let host = match &tmux_pane {
                 Some(pane) => {
                     let session = pane.target.split(':').next().unwrap_or("").to_string();
-                    tmux.as_ref()
-                        .and_then(|t| t.clients.get(&(pane.socket.clone(), session)))
-                        .and_then(|client| host_app(&table, *client))
+                    tmux.as_ref().and_then(|t| t.clients.get(&(pane.socket.clone(), session))).and_then(|client| host_app(&table, *client))
                 }
                 None => host_app(&table, p.pid),
             };
             let route = self.route(p.pid, p.tty.as_deref(), tmux_pane.is_some(), host.as_ref());
             let cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
             out.push(Agent {
-                id: format!("{}:{}", kind.as_str(), p.pid),
+                id: format!("{}:{}:{}", kind.as_str(), p.pid, p.start_time),
                 kind,
                 handle: format!("{}-{n}", kind.as_str()),
                 pid: p.pid,
+                start_time: p.start_time,
                 tty: p.tty.clone(),
                 project: p.cwd.as_ref().and_then(|c| c.file_name()).map(|f| f.to_string_lossy().into_owned()),
                 cwd,
@@ -170,6 +151,7 @@ impl Scanner {
                 state_since: status.since,
                 last_message: status.last_message,
                 question: status.question,
+                question_kind: status.question_kind,
                 can_reply: route != Route::None,
                 route,
                 host,
@@ -177,6 +159,7 @@ impl Scanner {
                 state_source: source,
             });
         }
+        self.transcripts.prune_stale();
         out
     }
 
@@ -189,18 +172,18 @@ impl Scanner {
         let app = host.map(|h| h.app.as_str()).unwrap_or("");
         let env = |key: &str| -> Option<String> {
             let prefix = format!("{key}=");
-            self.sys.process(Pid::from_u32(pid))?.environ().iter().find_map(|e| {
-                e.to_str().and_then(|e| e.strip_prefix(&prefix)).filter(|v| !v.is_empty()).map(String::from)
-            })
+            self.sys
+                .process(Pid::from_u32(pid))?
+                .environ()
+                .iter()
+                .find_map(|e| e.to_str().and_then(|e| e.strip_prefix(&prefix)).filter(|v| !v.is_empty()).map(String::from))
         };
         let dev_tty = tty.map(|t| format!("/dev/{t}"));
         match app {
-            "cmux" if std::path::Path::new(crate::deliver::CMUX).exists() => {
-                match (env("CMUX_WORKSPACE_ID"), env("CMUX_SURFACE_ID")) {
-                    (Some(workspace), Some(surface)) => Route::Cmux { workspace, surface },
-                    _ => Route::None,
-                }
-            }
+            "cmux" if std::path::Path::new(crate::deliver::CMUX).exists() => match (env("CMUX_WORKSPACE_ID"), env("CMUX_SURFACE_ID")) {
+                (Some(workspace), Some(surface)) => Route::Cmux { workspace, surface },
+                _ => Route::None,
+            },
             "Terminal" => dev_tty.map(|tty| Route::Terminal { tty }).unwrap_or(Route::None),
             "iTerm" | "iTerm2" => dev_tty.map(|tty| Route::Iterm { tty }).unwrap_or(Route::None),
             _ => Route::None,
@@ -222,9 +205,9 @@ impl Scanner {
                 let (cwd, start) = self.started.get(&agent.pid).cloned()?;
                 Some(match agent.kind {
                     Kind::Opencode => crate::readers::opencode::history(&cwd, start),
-                    Kind::Gemini => crate::readers::gemini::session_file(&cwd, start)
-                        .map(|p| crate::readers::gemini::history(&p))
-                        .unwrap_or_default(),
+                    Kind::Gemini => {
+                        crate::readers::gemini::session_file(&cwd, start).map(|p| crate::readers::gemini::history(&p)).unwrap_or_default()
+                    }
                     k => crate::readers::pi::session_file(&cwd, start, k == Kind::October)
                         .map(|p| crate::readers::pi::history(&p))
                         .unwrap_or_default(),
@@ -238,9 +221,7 @@ impl Scanner {
         if let Some((_, n)) = self.handles.get(&pid) {
             return *n;
         }
-        let n = (1..)
-            .find(|n| !self.handles.values().any(|(k, used)| *k == kind && used == n))
-            .unwrap_or(1);
+        let n = (1..).find(|n| !self.handles.values().any(|(k, used)| *k == kind && used == n)).unwrap_or(1);
         self.handles.insert(pid, (kind, n));
         n
     }
@@ -269,10 +250,8 @@ impl Scanner {
             Kind::Codex => {
                 // The node wrapper doesn't hold the file; its native child does.
                 let child = self.children.get(&p.pid).copied();
-                let path = self
-                    .transcripts
-                    .codex_path_for_pid(p.pid)
-                    .or_else(|| child.and_then(|c| self.transcripts.codex_path_for_pid(c)))?;
+                let path =
+                    self.transcripts.codex_path_for_pid(p.pid).or_else(|| child.and_then(|c| self.transcripts.codex_path_for_pid(c)))?;
                 self.transcripts.codex_status(&path)
             }
             // No session file since the process started means nothing has happened yet.
@@ -290,10 +269,10 @@ impl Scanner {
             Kind::Opencode => {
                 // One database for every session: cache per (process, database change).
                 let stamp = crate::readers::opencode::stamp()?;
-                if let Some((s, status)) = self.opencode_cache.get(&p.pid) {
-                    if *s == stamp {
-                        return Some(status.clone());
-                    }
+                if let Some((s, status)) = self.opencode_cache.get(&p.pid)
+                    && *s == stamp
+                {
+                    return Some(status.clone());
                 }
                 let status = crate::readers::opencode::status(p.cwd.as_deref()?, p.start_time).unwrap_or_else(idle);
                 self.opencode_cache.insert(p.pid, (stamp, status.clone()));

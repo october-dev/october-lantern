@@ -5,9 +5,10 @@
 //! relay frames are acknowledged, each phone connection runs a Noise_XX handshake (Lantern
 //! responds, the phone's key is pinned to October's records), pairing shows a 6-digit code to
 //! compare, and paired phones authenticate with a credential Lantern issued and then send
-//! October core requests, answered from Lantern's agents (`api.rs`).
+//! October core requests, answered from Lantern's agents (`api.rs`). Replies are typed by the
+//! serve loop (the one place that delivers), and the phone hears the real result.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -21,12 +22,13 @@ use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
+use super::api;
 use super::control::{self, Binding, ControlError};
 use super::frames::{self, Assembler, Kind};
 use super::noise::{self, Channel, Responder, Step};
 use super::store::{self, HostIdentity};
-use super::api;
 use crate::model::Agent;
+use crate::serve::{Deliver, Incoming};
 
 pub enum Cmd {
     /// A fresh October access token (after sign-in or refresh).
@@ -44,12 +46,24 @@ pub struct MobileHost {
     agents: Arc<Mutex<Vec<Agent>>>,
 }
 
+/// How long a phone's reply may take to reach the terminal before the phone is told it failed.
+const DELIVER_TIMEOUT: Duration = Duration::from_secs(20);
+/// Answers remembered per (phone, idempotency key), so a retried mutation isn't typed twice.
+const REMEMBERED_ANSWERS: usize = 256;
+
 impl MobileHost {
-    pub fn start(access_token: String, emit: fn(&Value)) -> MobileHost {
+    /// `deliver` reaches the serve loop, which types replies. A host that can't load its
+    /// identity reports that once and stops.
+    pub fn start(access_token: String, emit: fn(&Value), deliver: Sender<Incoming>) -> MobileHost {
         let (tx, rx) = channel();
         let agents = Arc::new(Mutex::new(Vec::new()));
         let shared = agents.clone();
-        std::thread::spawn(move || Host::new(access_token, rx, shared, emit).run());
+        std::thread::spawn(move || match Host::new(access_token, rx, shared, emit, deliver) {
+            Ok(host) => host.run(),
+            Err(e) => emit(
+                &json!({"type": "phone", "status": "error", "message": format!("{e:#}"), "hostId": null, "devices": [], "pairing": null}),
+            ),
+        });
         MobileHost { tx, agents }
     }
 
@@ -64,6 +78,7 @@ impl MobileHost {
     }
 }
 
+#[allow(clippy::large_enum_variant)] // One per phone connection; the handshake state is the big one.
 enum Stage {
     Handshake(Responder),
     Pairing(Channel),
@@ -94,6 +109,7 @@ struct Host {
     rx: Receiver<Cmd>,
     agents: Arc<Mutex<Vec<Agent>>>,
     emit: fn(&Value),
+    deliver: Sender<Incoming>,
     ws: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
     sessions: HashMap<String, Session>,
     pairing: Option<PairingState>,
@@ -108,17 +124,20 @@ struct Host {
     process_start: String,
     last_digest: String,
     last_heartbeat: Instant,
+    /// (bind|idempotencyKey) → the answer already given.
+    answered: VecDeque<(String, Vec<u8>)>,
 }
 
 impl Host {
-    fn new(token: String, rx: Receiver<Cmd>, agents: Arc<Mutex<Vec<Agent>>>, emit: fn(&Value)) -> Host {
-        let id = HostIdentity::load_or_create().expect("phone identity");
-        Host {
+    fn new(token: String, rx: Receiver<Cmd>, agents: Arc<Mutex<Vec<Agent>>>, emit: fn(&Value), deliver: Sender<Incoming>) -> Result<Host> {
+        let id = HostIdentity::load_or_create()?;
+        Ok(Host {
             id,
             token,
             rx,
             agents,
             emit,
+            deliver,
             ws: None,
             sessions: HashMap::new(),
             pairing: None,
@@ -129,10 +148,11 @@ impl Host {
             parked: false,
             cursor: crate::hooks::now_ms(),
             instance_id: uuid::Uuid::new_v4().hyphenated().to_string(),
-            process_start: control::chrono_now(),
+            process_start: control::now_iso(),
             last_digest: String::new(),
             last_heartbeat: Instant::now(),
-        }
+            answered: VecDeque::new(),
+        })
     }
 
     fn publish(&self) {
@@ -168,7 +188,9 @@ impl Host {
                 }
                 self.publish();
             }
-            let wanted = !self.parked && (self.id.registered || self.pairing.is_some()) && !store::load_devices().is_empty() || self.pairing.is_some();
+            self.expire_pairing();
+            // Connect while there is a phone to serve or one being paired.
+            let wanted = !self.parked && ((self.id.registered && !store::load_devices().is_empty()) || self.pairing.is_some());
             if self.ws.is_none() && wanted && Instant::now() >= self.next_attempt {
                 self.connect();
                 self.publish();
@@ -269,6 +291,21 @@ impl Host {
         Ok(())
     }
 
+    /// Pairings run out whether or not the relay is connected.
+    fn expire_pairing(&mut self) {
+        let Some(p) = &self.pairing else { return };
+        let ack_timed_out = p.awaiting_ack.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(60));
+        if !ack_timed_out && crate::hooks::now_ms() <= p.expires_at + 60_000 {
+            return;
+        }
+        if let Some((bind, _, _)) = p.awaiting_ack.clone() {
+            let _ = store::remove_device(&bind);
+        }
+        self.pairing = None;
+        self.message = Some(if ack_timed_out { "The phone didn't finish pairing. Try again." } else { "The pairing code expired." }.into());
+        self.publish();
+    }
+
     // MARK: Relay connection
 
     fn connect(&mut self) {
@@ -329,6 +366,16 @@ impl Host {
         self.status = status;
     }
 
+    /// The socket is gone: every phone session with it. Reconnect after a pause.
+    fn lost(&mut self, message: String) {
+        self.ws = None;
+        self.sessions.clear();
+        self.status = "connecting";
+        self.message = Some(message);
+        self.schedule_reconnect();
+        self.publish();
+    }
+
     fn read_once(&mut self) {
         let Some(ws) = self.ws.as_mut() else { return };
         match ws.read() {
@@ -354,31 +401,23 @@ impl Host {
             }
             Ok(_) => {}
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-            Err(e) => {
-                self.ws = None;
-                self.sessions.clear();
-                self.status = "connecting";
-                self.message = Some(format!("Lost the connection: {e}"));
-                self.schedule_reconnect();
-                self.publish();
-            }
+            Err(e) => self.lost(format!("Lost the connection: {e}")),
         }
     }
 
     fn send_outer(&mut self, bytes: Vec<u8>) {
-        if let Some(ws) = self.ws.as_mut() {
-            if ws.send(Message::binary(bytes)).is_err() {
-                self.ws = None;
-                self.schedule_reconnect();
-            }
+        if let Some(ws) = self.ws.as_mut()
+            && let Err(e) = ws.send(Message::binary(bytes))
+        {
+            self.lost(format!("Lost the connection: {e}"));
         }
     }
 
     fn close_session(&mut self, bind: &str, code: u16) {
-        if let Some(s) = self.sessions.remove(bind) {
-            if let Ok(f) = frames::encode_outer(frames::OUTER_CLOSE, bind, s.connection_id, &code.to_be_bytes()) {
-                self.send_outer(f);
-            }
+        if let Some(s) = self.sessions.remove(bind)
+            && let Ok(f) = frames::encode_outer(frames::OUTER_CLOSE, bind, s.connection_id, &code.to_be_bytes())
+        {
+            self.send_outer(f);
         }
     }
 
@@ -390,19 +429,27 @@ impl Host {
                 // Who is this? Ask October, never the phone.
                 let Some(binding) = control::resolve_binding(&self.id.host_id, &outer.bind, &self.token)? else {
                     self.sessions.remove(&outer.bind);
-                    let f = frames::encode_outer(frames::OUTER_CLOSE, &outer.bind, outer.connection_id, &frames::CLOSE_AUTH_FAILED.to_be_bytes())?;
+                    let f = frames::encode_outer(
+                        frames::OUTER_CLOSE,
+                        &outer.bind,
+                        outer.connection_id,
+                        &frames::CLOSE_AUTH_FAILED.to_be_bytes(),
+                    )?;
                     self.send_outer(f);
                     return Ok(());
                 };
                 let p = noise::prologue(&self.id.host_id, &outer.bind, outer.connection_id)?;
                 let responder = Responder::new(&self.id.static_secret(), &p)?;
-                self.sessions.insert(outer.bind.clone(), Session {
-                    connection_id: outer.connection_id,
-                    binding,
-                    stage: Some(Stage::Handshake(responder)),
-                    assembler: Assembler::default(),
-                    last: Instant::now(),
-                });
+                self.sessions.insert(
+                    outer.bind.clone(),
+                    Session {
+                        connection_id: outer.connection_id,
+                        binding,
+                        stage: Some(Stage::Handshake(responder)),
+                        assembler: Assembler::default(),
+                        last: Instant::now(),
+                    },
+                );
             }
             frames::OUTER_CLOSE => {
                 self.sessions.remove(&outer.bind);
@@ -496,21 +543,38 @@ impl Host {
         match kind {
             Kind::Req => {
                 let request: Value = serde_json::from_slice(&data)?;
+                let remembered = request["idempotencyKey"].as_str().map(|k| format!("{bind}|{k}"));
+                if let Some(res) = remembered.as_ref().and_then(|k| self.answered.iter().find(|(key, _)| key == k)).map(|(_, r)| r.clone())
+                {
+                    self.send_frame(bind, Kind::Res, &res, id);
+                    return Ok(());
+                }
                 let agents = self.agents.lock().map(|a| a.clone()).unwrap_or_default();
                 let ctx = api::Context {
-                    agents: &agents, canvas_id: &self.id.canvas_id, host_id: &self.id.host_id,
-                    instance_id: &self.instance_id, process_start: &self.process_start, credential: &credential,
+                    agents: &agents,
+                    canvas_id: &self.id.canvas_id,
+                    host_id: &self.id.host_id,
+                    instance_id: &self.instance_id,
+                    process_start: &self.process_start,
+                    credential: &credential,
                 };
-                let (status, body, action) = api::handle(&ctx, &request);
+                let deliver = &self.deliver;
+                let mut typed = |a: &Agent, text: &str| -> Result<(), String> {
+                    let (done, wait) = channel();
+                    deliver
+                        .send(Incoming::Deliver(Deliver { agent_id: a.id.clone(), text: text.to_string(), done }))
+                        .map_err(|_| "Lantern is shutting down")?;
+                    wait.recv_timeout(DELIVER_TIMEOUT).map_err(|_| "Lantern didn't manage to type it in time".to_string())?
+                };
+                let (status, body) = api::handle(&ctx, &request, &mut typed);
                 let res = frames::encode_response(status, crate::hooks::now_ms(), &serde_json::to_vec(&body)?);
-                self.send_frame(bind, Kind::Res, &res, id);
-                if let api::Action::Deliver { agent_id, text } = action {
-                    if let Some(a) = agents.iter().find(|a| a.id == agent_id) {
-                        if let Err(e) = crate::deliver::send_text(a, &text) {
-                            eprintln!("lantern phone: couldn't deliver to {agent_id}: {e:#}");
-                        }
+                if let Some(key) = remembered {
+                    if self.answered.len() >= REMEMBERED_ANSWERS {
+                        self.answered.pop_front();
                     }
+                    self.answered.push_back((key, res.clone()));
                 }
+                self.send_frame(bind, Kind::Res, &res, id);
             }
             Kind::Sub => {
                 let requested = serde_json::from_slice::<Value>(&data).ok().and_then(|v| v["cursor"].as_u64()).unwrap_or(0);
@@ -578,14 +642,11 @@ impl Host {
         }
     }
 
-    /// Periodic work: tell phones when agents change, heartbeats, timeouts.
+    /// Periodic work while connected: tell phones when agents change, heartbeats, idle sessions.
     fn tick(&mut self) {
         let agents = self.agents.lock().map(|a| a.clone()).unwrap_or_default();
-        let digest = agents
-            .iter()
-            .map(|a| format!("{}|{:?}|{:?}|{:?}", a.id, a.state, a.state_since, a.title))
-            .collect::<Vec<_>>()
-            .join(";");
+        let digest =
+            agents.iter().map(|a| format!("{}|{:?}|{:?}|{:?}", a.id, a.state, a.state_since, a.title)).collect::<Vec<_>>().join(";");
         if digest != self.last_digest {
             self.last_digest = digest;
             let canvas = self.id.canvas_id.clone();
@@ -596,20 +657,10 @@ impl Host {
             self.last_heartbeat = Instant::now();
             self.broadcast("cursor.heartbeat", "", json!({}));
         }
-        let idle: Vec<String> = self.sessions.iter().filter(|(_, s)| s.last.elapsed() >= Duration::from_secs(60)).map(|(b, _)| b.clone()).collect();
+        let idle: Vec<String> =
+            self.sessions.iter().filter(|(_, s)| s.last.elapsed() >= Duration::from_secs(60)).map(|(b, _)| b.clone()).collect();
         for b in idle {
             self.close_session(&b, frames::CLOSE_ENDED);
-        }
-        if let Some(p) = &self.pairing {
-            let ack_timed_out = p.awaiting_ack.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(60));
-            if ack_timed_out || crate::hooks::now_ms() > p.expires_at + 60_000 {
-                if let Some((bind, _, _)) = p.awaiting_ack.clone() {
-                    let _ = store::remove_device(&bind);
-                }
-                self.pairing = None;
-                self.message = Some(if ack_timed_out { "The phone didn't finish pairing. Try again." } else { "The pairing code expired." }.into());
-                self.publish();
-            }
         }
     }
 }

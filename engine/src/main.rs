@@ -18,10 +18,10 @@ mod procs;
 mod readers;
 mod scanner;
 mod serve;
-mod tmux;
-mod transcripts;
 #[cfg(test)]
 mod tests;
+mod tmux;
+mod transcripts;
 
 use anyhow::{Result, bail};
 

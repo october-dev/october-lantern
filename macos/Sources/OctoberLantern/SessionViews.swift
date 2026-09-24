@@ -203,8 +203,7 @@ struct Choice: View {
     }
 }
 
-/// October: where the connections to the October account and October Desktop will live. Both are
-/// locked for now.
+/// October: the account, October Desktop and the phone app, each as its own card.
 struct OctoberView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var account = OctoberAccount.shared
@@ -241,33 +240,5 @@ struct OctoberLogo: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
-    }
-}
-
-struct LockedRow: View {
-    let symbol: String
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 16)).foregroundStyle(Theme.muted).frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink.opacity(0.7))
-                Text(detail).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            HStack(spacing: 4) {
-                Image(systemName: "lock.fill").font(.system(size: 9))
-                Text("Soon").font(.system(size: 10.5, weight: .semibold))
-            }
-            .foregroundStyle(Theme.muted)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(Theme.faint))
-        }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.faint))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.hairline))
-        .help("Coming soon")
     }
 }

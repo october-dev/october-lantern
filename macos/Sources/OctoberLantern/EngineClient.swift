@@ -3,13 +3,21 @@ import Foundation
 /// Runs `lantern-engine serve` and speaks its JSON-lines protocol. Restarts it if it dies.
 @MainActor
 final class EngineClient {
+    /// The protocol this app speaks (protocol/README.md). An engine that says otherwise isn't used.
+    static let protocolVersion = 2
+
     var onAgents: (([Agent]) -> Void)?
     var onReplyResult: ((String, Bool, String?) -> Void)?
     var onInstalled: ((EngineMessage.Installed) -> Void)?
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
-    /// Launch and attach results: (ok, message).
-    var onActionResult: ((Bool, String?) -> Void)?
+    var onPhone: ((PhoneModel.State) -> Void)?
+    /// Launch and attach results: (requestId, ok, message).
+    var onActionResult: ((String, Bool, String?) -> Void)?
+    /// A (new) engine process said hello and is ready for requests.
+    var onReady: (() -> Void)?
+    /// The engine process ended; anything outstanding won't be answered.
+    var onStopped: ((String) -> Void)?
 
     private var process: Process?
     private var stdin: FileHandle?
@@ -39,8 +47,9 @@ final class EngineClient {
 
     func start() {
         stopping = false
+        buffer = Data()
         guard let url = Self.engineURL() else {
-            NSLog("Lantern: lantern-engine not found; set LANTERN_ENGINE")
+            onStopped?("Lantern's engine is missing. Reinstall October Lantern.")
             return
         }
         let p = Process()
@@ -53,11 +62,16 @@ final class EngineClient {
         p.standardError = FileHandle.standardError
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
+            // At end of file the handler keeps firing with no data until it's removed.
+            if data.isEmpty { handle.readabilityHandler = nil; return }
             Task { @MainActor in self?.receive(data) }
         }
         p.terminationHandler = { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.stopping else { return }
+                guard let self else { return }
+                self.stdin = nil
+                if self.stopping { return }
+                self.onStopped?("Lantern's engine stopped; restarting it.")
                 try? await Task.sleep(for: .seconds(2))
                 self.start()
             }
@@ -67,7 +81,7 @@ final class EngineClient {
             process = p
             stdin = input.fileHandleForWriting
         } catch {
-            NSLog("Lantern: failed to start engine: \(error)")
+            onStopped?("Couldn't start Lantern's engine: \(error.localizedDescription)")
         }
     }
 
@@ -105,20 +119,24 @@ final class EngineClient {
         send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
 
-    // MARK: Phone
+    // MARK: Phone (see PhoneModel)
 
-    /// Phone host state from the engine (`{"type":"phone",...}`), decoded by `PhoneModel`.
-    var onPhone: ((Data) -> Void)?
-
-    /// `phone.start` / `phone.token` / `phone.pair` / `phone.decide` / `phone.revoke` / `phone.stop`.
-    func phone(_ obj: [String: Any]) {
-        send(obj)
-    }
+    /// The current October access token: the engine starts hosting for the phone app, or hands a
+    /// running host the refreshed token.
+    func phoneToken(_ accessToken: String) { send(["type": "phone.token", "accessToken": accessToken]) }
+    func phonePair() { send(["type": "phone.pair"]) }
+    func phoneDecide(allow: Bool) { send(["type": "phone.decide", "allow": allow]) }
+    func phoneRevoke(bind: String) { send(["type": "phone.revoke", "bind": bind]) }
+    func phoneStop() { send(["type": "phone.stop"]) }
 
     private func send(_ obj: [String: Any]) {
         guard let stdin, var data = try? JSONSerialization.data(withJSONObject: obj) else { return }
         data.append(0x0A)
-        try? stdin.write(contentsOf: data)
+        do {
+            try stdin.write(contentsOf: data)
+        } catch {
+            onStopped?("Lantern's engine isn't answering.")
+        }
     }
 
     private func receive(_ data: Data) {
@@ -128,21 +146,24 @@ final class EngineClient {
             let line = buffer[buffer.startIndex..<newline]
             buffer.removeSubrange(buffer.startIndex...newline)
             guard !line.isEmpty else { continue }
-            // MARK: Phone
-            if line.range(of: Data(#""type":"phone""#.utf8)) != nil {
-                onPhone?(Data(line))
-                continue
-            }
             do {
                 switch try JSONDecoder().decode(EngineMessage.self, from: line) {
+                case .hello(let protocolVersion, let version):
+                    if protocolVersion == Self.protocolVersion {
+                        onReady?()
+                    } else {
+                        stop()
+                        onStopped?("Lantern's engine (\(version)) doesn't match this app. Reinstall October Lantern.")
+                    }
                 case .snapshot(let agents): onAgents?(agents)
                 case .replyResult(let id, let ok, _, let message): onReplyResult?(id, ok, message)
                 case .installed(let installed): onInstalled?(installed)
                 case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
                 case .october(let link): onOctober?(link)
-                case .launchResult(_, let ok, let message), .attachResult(_, let ok, let message):
-                    onActionResult?(ok, message)
-                case .hello, .other: break
+                case .phone(let state): onPhone?(state)
+                case .launchResult(let id, let ok, let message), .attachResult(let id, let ok, let message):
+                    onActionResult?(id, ok, message)
+                case .other: break
                 }
             } catch {
                 NSLog("Lantern: bad engine message: \(error)")

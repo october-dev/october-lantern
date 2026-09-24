@@ -11,12 +11,9 @@ use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
-use crate::history::{ChatMessage, Role, describe_tool};
-use crate::model::{SessionStatus, State, truncate};
-use crate::transcripts::{home, lines, read_range};
-
-const MESSAGE_CHARS: usize = 2000;
-const HISTORY_LIMIT: usize = 120;
+use crate::history::{ChatMessage, Role, describe_tool, keep_recent, push};
+use crate::model::{SessionStatus, State, epoch_ms, truncate};
+use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range};
 
 fn mtime_ms(path: &Path) -> Option<u64> {
     Some(fs::metadata(path).ok()?.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
@@ -30,29 +27,12 @@ fn text_of(content: &Value) -> Option<String> {
     match content {
         Value::String(s) => Some(s.clone()),
         Value::Array(parts) => {
-            let texts: Vec<&str> = parts
-                .iter()
-                .filter(|p| p["type"].as_str().is_none_or(|t| t == "text"))
-                .filter_map(|p| p["text"].as_str())
-                .collect();
+            let texts: Vec<&str> =
+                parts.iter().filter(|p| p["type"].as_str().is_none_or(|t| t == "text")).filter_map(|p| p["text"].as_str()).collect();
             if texts.is_empty() { None } else { Some(texts.join("\n")) }
         }
         _ => None,
     }
-}
-
-fn push(out: &mut Vec<ChatMessage>, role: Role, text: &str) {
-    let text = text.trim();
-    if !text.is_empty() {
-        out.push(ChatMessage { role, text: truncate(text, 8000), at: None });
-    }
-}
-
-fn keep_recent(mut out: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    if out.len() > HISTORY_LIMIT {
-        out.drain(..out.len() - HISTORY_LIMIT);
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -62,9 +42,7 @@ pub mod opencode {
     use super::*;
 
     fn db() -> PathBuf {
-        std::env::var_os("OPENCODE_DB")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home().join(".local/share/opencode/opencode.db"))
+        std::env::var_os("OPENCODE_DB").map(PathBuf::from).unwrap_or_else(|| home().join(".local/share/opencode/opencode.db"))
     }
 
     /// Changes whenever OpenCode writes (it uses write-ahead logging).
@@ -105,9 +83,8 @@ pub mod opencode {
         let started_ms = started_secs.saturating_sub(60) * 1000;
         // A process with no session activity since it started hasn't begun one yet (or continued an
         // old one without writing): don't show a stale session. `started_secs == 0` means "any".
-        let pick = rows
-            .iter()
-            .find(|r| r["created"].as_u64().unwrap_or(0) >= started_ms || r["last"].as_u64().unwrap_or(0) >= started_ms)?;
+        let pick =
+            rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= started_ms || r["last"].as_u64().unwrap_or(0) >= started_ms)?;
         Some((pick["id"].as_str()?.to_string(), pick["title"].as_str().unwrap_or("").to_string()))
     }
 
@@ -139,10 +116,8 @@ pub mod opencode {
             Some(title)
         };
 
-        let rows = query(&format!(
-            "SELECT id, data, time_updated FROM message WHERE session_id = {} ORDER BY id DESC LIMIT 1",
-            sql_str(&session)
-        ));
+        let rows =
+            query(&format!("SELECT id, data, time_updated FROM message WHERE session_id = {} ORDER BY id DESC LIMIT 1", sql_str(&session)));
         let Some(last) = rows.first() else {
             status.state = Some(State::Idle);
             return Some(status);
@@ -150,9 +125,7 @@ pub mod opencode {
         status.since = last["time_updated"].as_u64();
         let data: Value = last["data"].as_str().and_then(|d| serde_json::from_str(d).ok()).unwrap_or_default();
         let parts = parts(last["id"].as_str().unwrap_or(""));
-        let tool_busy = parts
-            .iter()
-            .any(|p| p["type"] == "tool" && matches!(p["state"]["status"].as_str(), Some("pending" | "running")));
+        let tool_busy = parts.iter().any(|p| p["type"] == "tool" && matches!(p["state"]["status"].as_str(), Some("pending" | "running")));
         let finish = data["finish"].as_str();
         let done = data["role"] == "assistant"
             && (!data["error"].is_null() || (finish.is_some_and(|f| f != "tool-calls" && f != "unknown") && !tool_busy));
@@ -177,13 +150,11 @@ pub mod opencode {
         for r in rows {
             let Some(part) = r["part"].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()) else { continue };
             match (r["role"].as_str(), part["type"].as_str()) {
-                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or("")),
-                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or("")),
-                (Some("assistant"), Some("tool")) => push(
-                    &mut out,
-                    Role::Tool,
-                    &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]),
-                ),
+                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), None),
+                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), None),
+                (Some("assistant"), Some("tool")) => {
+                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), None)
+                }
                 _ => {}
             }
         }
@@ -199,11 +170,7 @@ pub mod pi {
 
     /// `october` is the October harness (a Pi fork); it keeps its data in ~/.october.
     fn agent_dir(october: bool) -> PathBuf {
-        let (var, default) = if october {
-            ("OCTOBER_CODING_AGENT_DIR", ".october/agent")
-        } else {
-            ("PI_CODING_AGENT_DIR", ".pi/agent")
-        };
+        let (var, default) = if october { ("OCTOBER_CODING_AGENT_DIR", ".october/agent") } else { ("PI_CODING_AGENT_DIR", ".pi/agent") };
         std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| home().join(default))
     }
 
@@ -243,22 +210,26 @@ pub mod pi {
                 }
             }
         }
-        let Some(tail) = read_range(path, true, 512 * 1024) else { return status };
+        let Some(tail) = read_range(path, true, TAIL_BYTES) else { return status };
         let mut last: Option<Value> = None;
         for e in lines(&tail) {
-            if e["type"] == "session_info" {
-                if let Some(name) = e["name"].as_str() {
-                    status.title = Some(name.to_string());
-                }
+            if e["type"] == "session_info"
+                && let Some(name) = e["name"].as_str()
+            {
+                status.title = Some(name.to_string());
             }
             if e["type"] == "message" {
-                last = Some(e["message"].clone());
+                last = Some(e);
             }
         }
-        let Some(m) = last else {
+        let Some(e) = last else {
             status.state = Some(State::Idle);
             return status;
         };
+        if let Some(at) = e["timestamp"].as_str().and_then(epoch_ms) {
+            status.since = Some(at);
+        }
+        let m = &e["message"];
         let waiting = m["role"] == "assistant" && !has_tool_call(&m["content"]);
         status.state = Some(if waiting { State::Waiting } else { State::Working });
         if waiting {
@@ -269,29 +240,28 @@ pub mod pi {
     }
 
     pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(text) = read_range(path, true, 3 * 1024 * 1024) else { return Vec::new() };
+        let Some(text) = read_range(path, true, crate::history::TAIL_BYTES) else { return Vec::new() };
         let mut out = Vec::new();
         for e in lines(&text) {
             if e["type"] != "message" {
                 continue;
             }
+            let at = e["timestamp"].as_str();
             let m = &e["message"];
             match m["role"].as_str() {
-                Some("user") => push(&mut out, Role::User, &text_of(&m["content"]).unwrap_or_default()),
+                Some("user") => push(&mut out, Role::User, &text_of(&m["content"]).unwrap_or_default(), at),
                 Some("assistant") => {
                     for b in m["content"].as_array().into_iter().flatten() {
                         match b["type"].as_str() {
-                            Some("text") => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or("")),
-                            Some("toolCall") => push(
-                                &mut out,
-                                Role::Tool,
-                                &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["arguments"]),
-                            ),
+                            Some("text") => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at),
+                            Some("toolCall") => {
+                                push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["arguments"]), at)
+                            }
                             _ => {}
                         }
                     }
                     if let Some(err) = m["errorMessage"].as_str() {
-                        push(&mut out, Role::Agent, err);
+                        push(&mut out, Role::Agent, err, at);
                     }
                 }
                 _ => {}
@@ -308,6 +278,9 @@ pub mod pi {
 pub mod gemini {
     use super::*;
 
+    /// Everything after this much of a session log is ignored (see AUDIT.md, F06).
+    const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
+
     fn root() -> PathBuf {
         std::env::var_os("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(home).join(".gemini")
     }
@@ -315,16 +288,17 @@ pub mod gemini {
     fn project_dir(cwd: &Path) -> Option<PathBuf> {
         let cwd = resolved(cwd).to_string_lossy().into_owned();
         let tmp = root().join("tmp");
-        if let Ok(bytes) = fs::read(root().join("projects.json")) {
-            if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-                if let Some(slug) = v["projects"][&cwd].as_str() {
-                    return Some(tmp.join(slug));
-                }
-            }
+        if let Ok(bytes) = fs::read(root().join("projects.json"))
+            && let Ok(v) = serde_json::from_slice::<Value>(&bytes)
+            && let Some(slug) = v["projects"][&cwd].as_str()
+        {
+            return Some(tmp.join(slug));
         }
-        fs::read_dir(&tmp).ok()?.flatten().map(|e| e.path()).find(|dir| {
-            fs::read_to_string(dir.join(".project_root")).is_ok_and(|r| r.trim() == cwd)
-        })
+        fs::read_dir(&tmp)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .find(|dir| fs::read_to_string(dir.join(".project_root")).is_ok_and(|r| r.trim() == cwd))
     }
 
     pub fn session_file(cwd: &Path, started_secs: u64) -> Option<PathBuf> {
@@ -343,7 +317,7 @@ pub mod gemini {
 
     /// Replays the file into the current list of messages.
     fn messages(path: &Path) -> Vec<Value> {
-        let Some(text) = read_range(path, false, 16 * 1024 * 1024) else { return Vec::new() };
+        let Some(text) = read_range(path, false, REPLAY_BYTES) else { return Vec::new() };
         let mut list: Vec<Value> = Vec::new();
         for e in lines(&text) {
             if let Some(set) = e.get("$set") {
@@ -400,6 +374,9 @@ pub mod gemini {
             status.state = Some(State::Idle);
             return status;
         };
+        if let Some(at) = last["timestamp"].as_str().and_then(epoch_ms) {
+            status.since = Some(at);
+        }
         let with_tools = last["toolCalls"].as_array().is_some_and(|t| !t.is_empty());
         let state = match last["type"].as_str() {
             Some("gemini") if with_tools || content_text(last).trim().is_empty() => State::Working,
@@ -416,15 +393,16 @@ pub mod gemini {
     pub fn history(path: &Path) -> Vec<ChatMessage> {
         let mut out = Vec::new();
         for m in messages(path) {
+            let at = m["timestamp"].as_str();
             match m["type"].as_str() {
-                Some("user") if is_real_prompt(&m) => push(&mut out, Role::User, &content_text(&m)),
+                Some("user") if is_real_prompt(&m) => push(&mut out, Role::User, &content_text(&m), at),
                 Some("gemini") => {
-                    push(&mut out, Role::Agent, &content_text(&m));
+                    push(&mut out, Role::Agent, &content_text(&m), at);
                     for call in m["toolCalls"].as_array().into_iter().flatten() {
-                        push(&mut out, Role::Tool, &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]));
+                        push(&mut out, Role::Tool, &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]), at);
                     }
                 }
-                Some("error") => push(&mut out, Role::Agent, &content_text(&m)),
+                Some("error") => push(&mut out, Role::Agent, &content_text(&m), at),
                 _ => {}
             }
         }

@@ -67,12 +67,7 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
     let mut info = TmuxInfo { panes_by_tty: HashMap::new(), clients: HashMap::new() };
     for socket in sockets(table) {
         let panes = base_command(&socket)
-            .args([
-                "list-panes",
-                "-a",
-                "-F",
-                "#{pane_tty}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}",
-            ])
+            .args(["list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"])
             .output();
         if let Ok(out) = panes {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -81,25 +76,17 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
                     continue;
                 }
                 let tty = parts[0].trim_start_matches("/dev/").to_string();
-                info.panes_by_tty.insert(
-                    tty,
-                    TmuxPane {
-                        socket: socket.clone(),
-                        pane_id: parts[1].to_string(),
-                        target: parts[2].to_string(),
-                    },
-                );
+                info.panes_by_tty
+                    .insert(tty, TmuxPane { socket: socket.clone(), pane_id: parts[1].to_string(), target: parts[2].to_string() });
             }
         }
-        let clients = base_command(&socket)
-            .args(["list-clients", "-F", "#{client_pid}\t#{session_name}"])
-            .output();
+        let clients = base_command(&socket).args(["list-clients", "-F", "#{client_pid}\t#{session_name}"]).output();
         if let Ok(out) = clients {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
-                if let Some((pid, session)) = line.split_once('\t') {
-                    if let Ok(pid) = pid.parse() {
-                        info.clients.insert((socket.clone(), session.to_string()), pid);
-                    }
+                if let Some((pid, session)) = line.split_once('\t')
+                    && let Ok(pid) = pid.parse()
+                {
+                    info.clients.insert((socket.clone(), session.to_string()), pid);
                 }
             }
         }
@@ -134,10 +121,7 @@ pub fn send(pane: &TmuxPane, text: &str) -> Result<()> {
     }
     // Give the TUI a moment to take the pasted text before Enter.
     std::thread::sleep(std::time::Duration::from_millis(60));
-    let status = base_command(&pane.socket)
-        .args(["send-keys", "-t", &pane.pane_id, "Enter"])
-        .status()
-        .context("running tmux send-keys")?;
+    let status = base_command(&pane.socket).args(["send-keys", "-t", &pane.pane_id, "Enter"]).status().context("running tmux send-keys")?;
     if !status.success() {
         bail!("tmux send-keys Enter failed for {}", pane.pane_id);
     }

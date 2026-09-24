@@ -2,8 +2,8 @@
 //!
 //! Discovery: `~/Library/Application Support/October/core/runtime/core-run.json` (v3), written by
 //! core with the loopback address and credentials. Transport: HTTP/1.1 on 127.0.0.1, `POST
-//! /command` with a JSON envelope, `Host` equal to the address, no `Origin`, `Authorization:
-//! Bearer <credential>`.
+//! /command` with a JSON envelope, `Host` equal to the address (which is what the URL gives), no
+//! `Origin`, `Authorization: Bearer <credential>`.
 //!
 //! Two modes:
 //! - **Paired** (full): October approved Lantern ("October Lantern wants to connect") and issued
@@ -86,8 +86,20 @@ pub struct Principal {
 pub struct Client {
     pub run: RunFile,
     pub principal: Principal,
-    agent: ureq2::Agent,
+    agent: ureq::Agent,
     next: u64,
+}
+
+/// (status, JSON body) of a POST, whatever the status.
+fn post(agent: &ureq::Agent, url: &str, headers: &[(&str, &str)], body: &Value) -> Result<(u16, Value)> {
+    let mut req = agent.post(url);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    let mut resp = req.send_json(body).map_err(|e| anyhow!(e)).context("October isn't reachable")?;
+    let status = resp.status().as_u16();
+    let body: Value = resp.body_mut().read_json().unwrap_or(json!({}));
+    Ok((status, body))
 }
 
 impl Client {
@@ -97,7 +109,7 @@ impl Client {
             Some((id, credential)) => Principal { kind: "local-client", id, credential },
             None => Principal { kind: "cli", id: "october-lantern".into(), credential: run.cli_credential.clone() },
         };
-        let agent = ureq2::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
+        let agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into();
         Client { run, principal, agent, next: 0 }
     }
 
@@ -123,25 +135,15 @@ impl Client {
         if mutation {
             env["idempotencyKey"] = json!(format!("{request_id}-m"));
         }
-        let resp = self
-            .agent
-            .post(&self.url("/command"))
-            .set("Host", &self.run.address)
-            .set("Authorization", &format!("Bearer {}", self.principal.credential))
-            .set("Content-Type", "application/json")
-            .send_string(&env.to_string());
-        let body: Value = match resp {
-            Ok(r) => r.into_json()?,
-            Err(ureq2::Error::Status(code, r)) => {
-                let v: Value = r.into_json().unwrap_or(json!({}));
-                let e = &v["error"];
-                if e["details"]["revoked"] == true || code == 401 {
-                    bail!("revoked: {}", e["message"].as_str().unwrap_or("not authorized"));
-                }
-                bail!("{}: {}", e["code"].as_str().unwrap_or("error"), e["message"].as_str().unwrap_or("request failed"));
+        let auth = format!("Bearer {}", self.principal.credential);
+        let (status, body) = post(&self.agent, &self.url("/command"), &[("Authorization", &auth)], &env)?;
+        if !(200..300).contains(&status) {
+            let e = &body["error"];
+            if e["details"]["revoked"] == true || status == 401 {
+                bail!("revoked: {}", e["message"].as_str().unwrap_or("not authorized"));
             }
-            Err(e) => return Err(anyhow!(e)).context("October isn't reachable"),
-        };
+            bail!("{}: {}", e["code"].as_str().unwrap_or("error"), e["message"].as_str().unwrap_or("request failed"));
+        }
         if body["ok"] != true {
             bail!("{}: {}", body["error"]["code"].as_str().unwrap_or("error"), body["error"]["message"].as_str().unwrap_or(""));
         }
@@ -151,7 +153,7 @@ impl Client {
     /// `core.handshake`, checking core's HMAC proof and that it's the instance in core-run.json.
     pub fn handshake(&mut self) -> Result<Value> {
         let mut challenge = [0u8; 32];
-        getrandom(&mut challenge);
+        getrandom::fill(&mut challenge).map_err(|e| anyhow!("{e}"))?;
         let challenge = B64.encode(challenge);
         let r = self.call(
             "core.handshake",
@@ -166,8 +168,7 @@ impl Client {
         {
             bail!("October core changed while connecting");
         }
-        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(self.principal.credential.as_bytes())
-            .map_err(|_| anyhow!("bad key"))?;
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(self.principal.credential.as_bytes()).map_err(|_| anyhow!("bad key"))?;
         mac.update(format!("{challenge}:{instance}:{start}:{API_VERSION}").as_bytes());
         let proof = B64.decode(r["challengeProof"].as_str().unwrap_or("")).unwrap_or_default();
         mac.verify_slice(&proof).map_err(|_| anyhow!("October core failed the identity check"))?;
@@ -177,11 +178,11 @@ impl Client {
     // ---------- pairing (needs an October version with companion pairing) ----------
 
     pub fn pair_request(&self, client_id: &str) -> Result<(String, String)> {
-        let v = self.unauthenticated("/pair/request", json!({"clientId": client_id, "name": "October Lantern", "version": env!("CARGO_PKG_VERSION")}))?;
-        Ok((
-            v["requestId"].as_str().context("no requestId")?.to_string(),
-            v["code"].as_str().context("no code")?.to_string(),
-        ))
+        let v = self.unauthenticated(
+            "/pair/request",
+            json!({"clientId": client_id, "name": "October Lantern", "version": env!("CARGO_PKG_VERSION")}),
+        )?;
+        Ok((v["requestId"].as_str().context("no requestId")?.to_string(), v["code"].as_str().context("no code")?.to_string()))
     }
 
     /// `(state, credential)`; the credential arrives once, with state "approved".
@@ -191,14 +192,11 @@ impl Client {
     }
 
     fn unauthenticated(&self, path: &str, body: Value) -> Result<Value> {
-        match self.agent.post(&self.url(path)).set("Host", &self.run.address).set("Content-Type", "application/json").send_string(&body.to_string()) {
-            Ok(r) => Ok(r.into_json()?),
-            Err(ureq2::Error::Status(404, _)) => bail!("unsupported: this version of October can't pair with Lantern yet"),
-            Err(ureq2::Error::Status(code, r)) => {
-                let v: Value = r.into_json().unwrap_or(json!({}));
-                bail!("{} ({code})", v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("pairing failed"))
-            }
-            Err(e) => Err(anyhow!(e)).context("October isn't reachable"),
+        let (status, v) = post(&self.agent, &self.url(path), &[], &body)?;
+        match status {
+            200..300 => Ok(v),
+            404 => bail!("unsupported: this version of October can't pair with Lantern yet"),
+            code => bail!("{} ({code})", v["error"]["message"].as_str().or(v["message"].as_str()).unwrap_or("pairing failed")),
         }
     }
 
@@ -294,8 +292,4 @@ pub struct OctoberAgent {
     /// working | needs-user | idle | unknown
     pub state: String,
     pub attention: Option<String>,
-}
-
-fn getrandom(buf: &mut [u8]) {
-    unsafe { libc::arc4random_buf(buf.as_mut_ptr().cast(), buf.len()) };
 }

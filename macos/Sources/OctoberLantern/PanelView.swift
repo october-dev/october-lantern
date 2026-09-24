@@ -100,7 +100,7 @@ struct PanelView: View {
 
     @ViewBuilder private var agentList: some View {
         if model.agents.isEmpty {
-            EmptyState(title: "No agents running", detail: "Lantern looks for Claude Code, Codex, OpenCode and Pi.")
+            EmptyState(title: "No agents running", detail: "Start Claude Code, Codex, OpenCode, Pi, Gemini or another agent in any terminal.")
         } else {
             ForEach(model.ranked) { agent in
                 AgentRow(agent: agent, selected: model.target?.id == agent.id)
@@ -318,11 +318,15 @@ struct Composer: View {
         VStack(alignment: .leading, spacing: 6) {
             Menu {
                 ForEach(model.agents) { agent in
-                    Button("@\(agent.handle) · \(agent.project ?? "")") { model.targetId = agent.id }
+                    // Inside a conversation, the recipient is the conversation: choosing another
+                    // agent opens its conversation rather than sending there from this one.
+                    Button("@\(agent.handle) · \(agent.project ?? "")") {
+                        if model.chatAgentId != nil { model.openChat(agent) } else { model.targetId = agent.id }
+                    }
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(model.target.map { "To @\($0.handle)" } ?? "No agent selected")
+                    Text(model.target.map { "To @\($0.handle)" } ?? (model.targetMissing ? "That agent has exited. Choose another" : "No agent selected"))
                     if let t = model.target, !t.canReply {
                         Text("· copies and opens \(t.host?.app ?? "terminal")").foregroundStyle(Theme.muted.opacity(0.7))
                     }
@@ -348,12 +352,13 @@ struct Composer: View {
                 }
                 .buttonStyle(.plain)
                 Button { model.send() } label: {
-                    Image(systemName: "arrow.up.circle.fill")
+                    Image(systemName: model.sending ? "ellipsis.circle" : "arrow.up.circle.fill")
                         .font(.system(size: 18))
-                        .foregroundStyle(model.draft.isEmpty ? Theme.muted : Theme.amber)
+                        .foregroundStyle(model.draft.isEmpty || model.sending ? Theme.muted : Theme.amber)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.draft.isEmpty || model.target == nil)
+                .disabled(model.draft.isEmpty || model.target == nil || model.sending)
+                .help(model.sending ? "Sending…" : "Send")
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))

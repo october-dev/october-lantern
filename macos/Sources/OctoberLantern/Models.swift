@@ -54,7 +54,7 @@ struct TmuxPane: Codable, Hashable {
     let paneId: String
 }
 
-/// How Lantern types into an agent: "tmux", "cmux", "terminal", "iterm" or "none".
+/// How Lantern types into an agent: "tmux", "cmux", "terminal", "iterm", "october" or "none".
 struct Route: Codable, Hashable {
     let via: String
 
@@ -63,6 +63,7 @@ struct Route: Codable, Hashable {
 }
 
 struct Agent: Codable, Identifiable, Hashable {
+    /// `<kind>:<pid>:<start time>`; a reused pid is a different agent.
     let id: String
     let kind: AgentKind
     let handle: String
@@ -76,16 +77,17 @@ struct Agent: Codable, Identifiable, Hashable {
     let stateSince: Double?
     let lastMessage: String?
     let question: String?
+    /// "permission" when a hook says the agent is at a tool permission prompt (`1` allows once,
+    /// Escape declines); "other" for any other question.
+    let questionKind: String?
     let host: HostApp?
     let tmux: TmuxPane?
     let canReply: Bool
     let route: Route?
     let stateSource: String
 
-    /// A Claude Code permission prompt ("Claude needs your permission to use Bash").
-    var isPermissionPrompt: Bool {
-        state == .needsInput && (question?.localizedCaseInsensitiveContains("permission") ?? false)
-    }
+    /// A tool permission prompt Lantern can answer with a keypress.
+    var isPermissionPrompt: Bool { state == .needsInput && questionKind == "permission" }
 
     /// Identifies one particular turn, so dismissing it doesn't hide the next one.
     var turnKey: String { "\(id)@\(Int(stateSince ?? 0))" }
@@ -124,7 +126,7 @@ struct OctoberLink: Decodable, Equatable {
 }
 
 enum EngineMessage: Decodable {
-    case hello(version: String)
+    case hello(protocolVersion: Int, version: String)
     case snapshot(agents: [Agent])
     case replyResult(requestId: String, ok: Bool, error: String?, message: String?)
     case installed(Installed)
@@ -132,6 +134,7 @@ enum EngineMessage: Decodable {
     case attachResult(requestId: String, ok: Bool, message: String?)
     case history(agentId: String, supported: Bool, messages: [ChatMessage])
     case october(OctoberLink)
+    case phone(PhoneModel.State)
     case other
 
     struct Installed: Decodable {
@@ -139,13 +142,18 @@ enum EngineMessage: Decodable {
         let tmux: Bool
     }
 
-    private enum Keys: String, CodingKey { case type, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october }
+    private enum Keys: String, CodingKey {
+        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         switch try c.decode(String.self, forKey: .type) {
         case "hello":
-            self = .hello(version: try c.decodeIfPresent(String.self, forKey: .version) ?? "?")
+            self = .hello(
+                protocolVersion: try c.decodeIfPresent(Int.self, forKey: .protocol) ?? 0,
+                version: try c.decodeIfPresent(String.self, forKey: .version) ?? "?"
+            )
         case "snapshot":
             self = .snapshot(agents: try c.decode([Agent].self, forKey: .agents))
         case "replyResult":
@@ -157,6 +165,8 @@ enum EngineMessage: Decodable {
             )
         case "october":
             self = .october(try c.decode(OctoberLink.self, forKey: .october))
+        case "phone":
+            self = .phone(try PhoneModel.State(from: decoder))
         case "historyResult":
             self = .history(
                 agentId: try c.decode(String.self, forKey: .agentId),

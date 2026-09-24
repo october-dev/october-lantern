@@ -7,7 +7,6 @@
 //! `hooks install` / `uninstall` edit `~/.claude/settings.json` and `~/.codex/config.toml`,
 //! backing both up first.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,9 +15,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
-use crate::model::{SessionStatus, State, truncate};
+use crate::history::describe_tool;
+use crate::model::{QuestionKind, SessionStatus, State, truncate};
 use crate::transcripts::home;
 
 pub fn support_dir() -> PathBuf {
@@ -33,14 +32,19 @@ pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// The latest thing a hook said about a session, already reduced to Lantern's vocabulary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookEvent {
     pub source: String,
-    pub event: String,
+    pub state: State,
     pub session_id: Option<String>,
     pub cwd: Option<String>,
+    /// The agent's last message (Stop / agent-turn-complete).
     pub message: Option<String>,
+    /// What it's asking, for `NeedsInput`.
+    pub question: Option<String>,
+    pub question_kind: Option<QuestionKind>,
     pub transcript_path: Option<String>,
     /// Process ids above the hook command, nearest first. The agent is one of them.
     pub ancestors: Vec<u32>,
@@ -49,56 +53,31 @@ pub struct HookEvent {
 
 impl HookEvent {
     pub fn status(&self) -> SessionStatus {
-        let (state, question) = match (self.source.as_str(), self.event.as_str()) {
-            ("claude", "Notification") => {
-                let msg = self.message.clone().unwrap_or_default();
-                // Claude also notifies after 60s of idling at the prompt; that's not a question.
-                if msg.contains("waiting for your input") {
-                    (State::Waiting, None)
-                } else {
-                    (State::NeedsInput, Some(msg))
-                }
-            }
-            ("claude", "Stop") | ("codex", "agent-turn-complete") => (State::Waiting, None),
-            ("claude", _) => (State::Working, None),
-            _ => (State::Unknown, None),
-        };
         SessionStatus {
-            state: Some(state),
+            state: Some(self.state),
             since: Some(self.at),
-            question,
-            last_message: if self.source == "codex" { self.message.clone() } else { None },
+            question: self.question.clone(),
+            question_kind: self.question_kind,
+            last_message: self.message.clone(),
             session_id: self.session_id.clone(),
             title: None,
         }
     }
 }
 
-fn ancestors() -> Vec<u32> {
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, false, ProcessRefreshKind::nothing());
-    let mut out = Vec::new();
-    let mut cur = sysinfo::get_current_pid().ok().and_then(|p| sys.process(p)).and_then(|p| p.parent());
-    while let Some(pid) = cur {
-        if pid.as_u32() <= 1 || out.len() >= 8 {
-            break;
-        }
-        out.push(pid.as_u32());
-        cur = sys.process(pid).and_then(|p| p.parent());
-    }
-    out
+fn event_path(source: &str, session_id: Option<&str>, ancestors: &[u32]) -> PathBuf {
+    let id = session_id.map(String::from).unwrap_or_else(|| format!("pid{}", ancestors.first().unwrap_or(&0)));
+    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    events_dir().join(format!("{source}-{safe}.json"))
 }
 
 fn write_event(ev: &HookEvent) -> Result<()> {
-    let dir = events_dir();
-    fs::create_dir_all(&dir)?;
-    let id = ev.session_id.clone().unwrap_or_else(|| format!("pid{}", ev.ancestors.first().unwrap_or(&0)));
-    let safe: String = id.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-    let path = dir.join(format!("{}-{}.json", ev.source, safe));
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec(ev)?)?;
-    fs::rename(tmp, path)?;
-    Ok(())
+    fs::create_dir_all(events_dir())?;
+    write_atomic(&event_path(&ev.source, ev.session_id.as_deref(), &ev.ancestors), &serde_json::to_vec(ev)?)
+}
+
+fn read_event(path: &Path) -> Option<HookEvent> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
 /// Entry point for `lantern-engine hook <source> [json]`. Never fails loudly: a broken hook
@@ -110,29 +89,26 @@ pub fn run_hook(source: &str, arg: Option<String>) {
                 let mut input = String::new();
                 std::io::stdin().read_to_string(&mut input)?;
                 let v: Value = serde_json::from_str(&input)?;
-                write_event(&HookEvent {
-                    source: "claude".into(),
-                    event: v["hook_event_name"].as_str().unwrap_or("").into(),
-                    session_id: v["session_id"].as_str().map(String::from),
-                    cwd: v["cwd"].as_str().map(String::from),
-                    message: v["message"].as_str().map(String::from),
-                    transcript_path: v["transcript_path"].as_str().map(String::from),
-                    ancestors: ancestors(),
-                    at: now_ms(),
-                })
+                if let Some(ev) = claude_event(&v) {
+                    write_event(&ev)?;
+                }
+                Ok(())
             }
             "codex" => {
                 let raw = arg.context("codex notify passes JSON as an argument")?;
                 chain_previous_codex_notify(&raw);
                 let v: Value = serde_json::from_str(&raw)?;
+                let state = if v["type"] == "agent-turn-complete" { State::Waiting } else { State::Unknown };
                 write_event(&HookEvent {
                     source: "codex".into(),
-                    event: v["type"].as_str().unwrap_or("").into(),
+                    state,
                     session_id: v["thread-id"].as_str().map(String::from),
                     cwd: v["cwd"].as_str().map(String::from),
                     message: v["last-assistant-message"].as_str().map(|t| truncate(t, 2000)),
+                    question: None,
+                    question_kind: None,
                     transcript_path: None,
-                    ancestors: ancestors(),
+                    ancestors: crate::procs::ancestors_of(std::process::id()),
                     at: now_ms(),
                 })
             }
@@ -144,6 +120,58 @@ pub fn run_hook(source: &str, arg: Option<String>) {
     }
 }
 
+/// Reduces one Claude Code hook payload to an event, or `None` for events that say nothing about
+/// whether the session needs you.
+fn claude_event(v: &Value) -> Option<HookEvent> {
+    let ancestors = crate::procs::ancestors_of(std::process::id());
+    let session_id = v["session_id"].as_str().map(String::from);
+    let (state, question, question_kind, message) = match v["hook_event_name"].as_str().unwrap_or("") {
+        // The moment Claude asks, with the exact tool and command.
+        "PermissionRequest" => {
+            // The command itself, when there is one: that's what the person is approving.
+            let tool = v["tool_name"].as_str().unwrap_or("a tool");
+            let what = match v["tool_input"]["command"].as_str() {
+                Some(c) => format!("{tool} · {}", truncate(c.lines().next().unwrap_or(c), 200)),
+                None => describe_tool(tool, &v["tool_input"]),
+            };
+            (State::NeedsInput, Some(format!("Permission to run {what}")), Some(QuestionKind::Permission), None)
+        }
+        "Notification" => match v["notification_type"].as_str().unwrap_or("") {
+            // Fires only after the prompt has waited ~6 s; PermissionRequest already covered it,
+            // unless this is a prompt PermissionRequest doesn't fire for (a sandboxed network request).
+            "permission_prompt" => {
+                let already = read_event(&event_path("claude", session_id.as_deref(), &ancestors))
+                    .is_some_and(|e| e.state == State::NeedsInput && e.question_kind == Some(QuestionKind::Permission));
+                if already {
+                    return None;
+                }
+                (State::NeedsInput, v["message"].as_str().map(String::from), Some(QuestionKind::Permission), None)
+            }
+            "idle_prompt" => (State::Waiting, None, None, None),
+            "elicitation_dialog" | "elicitation_url_dialog" | "agent_needs_input" => {
+                (State::NeedsInput, v["message"].as_str().map(String::from), Some(QuestionKind::Other), None)
+            }
+            // Sign-in, elicitation bookkeeping, quota notices: nothing about the turn.
+            _ => return None,
+        },
+        "Stop" => (State::Waiting, None, None, v["last_assistant_message"].as_str().map(|t| truncate(t, 2000))),
+        // UserPromptSubmit, PostToolUse: Claude is at work.
+        _ => (State::Working, None, None, None),
+    };
+    Some(HookEvent {
+        source: "claude".into(),
+        state,
+        session_id,
+        cwd: v["cwd"].as_str().map(String::from),
+        message,
+        question,
+        question_kind,
+        transcript_path: v["transcript_path"].as_str().map(String::from),
+        ancestors,
+        at: now_ms(),
+    })
+}
+
 /// Latest hook event per session, dropping files older than a day.
 pub fn read_events() -> Vec<HookEvent> {
     let Ok(dir) = fs::read_dir(events_dir()) else { return Vec::new() };
@@ -151,7 +179,7 @@ pub fn read_events() -> Vec<HookEvent> {
     dir.flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| {
-            let ev: HookEvent = serde_json::from_slice(&fs::read(e.path()).ok()?).ok()?;
+            let ev = read_event(&e.path())?;
             if ev.at < cutoff {
                 let _ = fs::remove_file(e.path());
                 return None;
@@ -163,7 +191,7 @@ pub fn read_events() -> Vec<HookEvent> {
 
 // ---------- install / uninstall ----------
 
-const CLAUDE_EVENTS: [&str; 4] = ["Notification", "Stop", "UserPromptSubmit", "PostToolUse"];
+const CLAUDE_EVENTS: [&str; 5] = ["PermissionRequest", "Notification", "Stop", "UserPromptSubmit", "PostToolUse"];
 
 fn hook_binary() -> PathBuf {
     support_dir().join("bin/lantern-engine")
@@ -206,12 +234,7 @@ pub(crate) fn claude_hook_command(engine: &Path) -> String {
 /// The Codex `notify` program. Codex appends the event JSON as the last argument, which becomes $1.
 pub(crate) fn codex_notify_command(engine: &Path) -> Vec<String> {
     let q = shell_quote(engine);
-    vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        format!("[ -x {q} ] && exec {q} hook codex \"$1\"; exit 0"),
-        "lantern-engine-notify".into(),
-    ]
+    vec!["/bin/sh".into(), "-c".into(), format!("[ -x {q} ] && exec {q} hook codex \"$1\"; exit 0"), "lantern-engine-notify".into()]
 }
 
 fn shell_quote(p: &Path) -> String {
@@ -222,13 +245,20 @@ fn is_ours(command: &str) -> bool {
     command.contains("lantern-engine") && command.contains(" hook ")
 }
 
+/// Writes through a temporary file in the same folder, so a crash mid-write can't leave a
+/// half-written config, and keeps the original file's permissions.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension(format!("{}.lantern-tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
+    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    if let Ok(meta) = fs::metadata(path) {
+        let _ = fs::set_permissions(&tmp, meta.permissions());
+    }
+    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+}
+
 fn backup(path: &Path) -> Result<()> {
     if path.exists() {
-        let dest = path.with_file_name(format!(
-            "{}.lantern-backup-{}",
-            path.file_name().unwrap().to_string_lossy(),
-            now_ms() / 1000
-        ));
+        let dest = path.with_file_name(format!("{}.lantern-backup-{}", path.file_name().unwrap().to_string_lossy(), now_ms()));
         fs::copy(path, &dest).with_context(|| format!("backing up {}", path.display()))?;
         println!("backed up {} → {}", path.display(), dest.display());
     }
@@ -274,61 +304,55 @@ fn remove_claude_hooks(settings: &mut Value) -> usize {
 }
 
 fn codex_notify(doc: &toml_edit::DocumentMut) -> Option<Vec<String>> {
-    doc.get("notify")?
-        .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+    doc.get("notify")?.as_array().map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
 }
 
+/// Adds Lantern to both agents' configs. Both files are read and checked before either is
+/// changed, so a broken config in one leaves the other untouched.
 pub fn install() -> Result<()> {
-    let engine = install_hook_binary()?;
-
-    // Claude Code
-    let path = claude_settings_path();
-    let mut settings: Value = match fs::read(&path) {
+    let claude_path = claude_settings_path();
+    let mut settings: Value = match fs::read(&claude_path) {
         Ok(b) => serde_json::from_slice(&b).context("~/.claude/settings.json is not valid JSON")?,
         Err(_) => json!({}),
     };
-    backup(&path)?;
+    settings.as_object().context("~/.claude/settings.json is not a JSON object")?;
+    let codex_path = codex_config_path();
+    let mut doc: toml_edit::DocumentMut =
+        fs::read_to_string(&codex_path).unwrap_or_default().parse().context("~/.codex/config.toml is not valid TOML")?;
+
+    let engine = install_hook_binary()?;
+
+    // Claude Code
+    backup(&claude_path)?;
     remove_claude_hooks(&mut settings);
     let command = claude_hook_command(&engine);
-    let hooks = settings
-        .as_object_mut()
-        .context("settings.json is not an object")?
-        .entry("hooks")
-        .or_insert_with(|| json!({}));
+    let hooks = settings.as_object_mut().unwrap().entry("hooks").or_insert_with(|| json!({}));
     for event in CLAUDE_EVENTS {
-        let list = hooks
-            .as_object_mut()
-            .context("settings.hooks is not an object")?
-            .entry(event)
-            .or_insert_with(|| json!([]));
+        let list = hooks.as_object_mut().context("settings.hooks is not an object")?.entry(event).or_insert_with(|| json!([]));
         list.as_array_mut()
             .context("hook list is not an array")?
             .push(json!({"hooks": [{"type": "command", "command": command, "timeout": 5}]}));
     }
-    fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, serde_json::to_string_pretty(&settings)? + "\n")?;
-    println!("Claude Code: added Lantern to {} hooks in {}", CLAUDE_EVENTS.join(", "), path.display());
+    fs::create_dir_all(claude_path.parent().unwrap())?;
+    write_atomic(&claude_path, (serde_json::to_string_pretty(&settings)? + "\n").as_bytes())?;
+    println!("Claude Code: added Lantern to {} hooks in {}", CLAUDE_EVENTS.join(", "), claude_path.display());
 
     // Codex
-    let path = codex_config_path();
-    let text = fs::read_to_string(&path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = text.parse().context("~/.codex/config.toml is not valid TOML")?;
-    if let Some(prev) = codex_notify(&doc) {
-        if !prev.iter().any(|a| a.contains("lantern-engine")) {
-            fs::write(codex_previous_path(), serde_json::to_vec(&prev)?)?;
-            println!("Codex: your existing notify program will still run: {}", prev.join(" "));
-        }
+    if let Some(prev) = codex_notify(&doc)
+        && !prev.iter().any(|a| a.contains("lantern-engine"))
+    {
+        fs::write(codex_previous_path(), serde_json::to_vec(&prev)?)?;
+        println!("Codex: your existing notify program will still run: {}", prev.join(" "));
     }
-    backup(&path)?;
+    backup(&codex_path)?;
     let mut arr = toml_edit::Array::new();
     for part in codex_notify_command(&engine) {
         arr.push(part);
     }
     doc.insert("notify", toml_edit::value(arr));
-    fs::create_dir_all(path.parent().unwrap())?;
-    fs::write(&path, doc.to_string())?;
-    println!("Codex: set notify in {}", path.display());
+    fs::create_dir_all(codex_path.parent().unwrap())?;
+    write_atomic(&codex_path, doc.to_string().as_bytes())?;
+    println!("Codex: set notify in {}", codex_path.display());
     println!("Restart running agents for the hooks to take effect.");
     Ok(())
 }
@@ -340,7 +364,7 @@ pub fn uninstall() -> Result<()> {
         let removed = remove_claude_hooks(&mut settings);
         if removed > 0 {
             backup(&path)?;
-            fs::write(&path, serde_json::to_string_pretty(&settings)? + "\n")?;
+            write_atomic(&path, (serde_json::to_string_pretty(&settings)? + "\n").as_bytes())?;
         }
         println!("Claude Code: removed {removed} Lantern hook(s)");
     }
@@ -350,8 +374,7 @@ pub fn uninstall() -> Result<()> {
         let mut doc: toml_edit::DocumentMut = text.parse()?;
         if codex_notify(&doc).is_some_and(|n| n.iter().any(|a| a.contains("lantern-engine"))) {
             backup(&path)?;
-            let prev: Option<Vec<String>> =
-                fs::read(codex_previous_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let prev: Option<Vec<String>> = fs::read(codex_previous_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
             match prev {
                 Some(prev) => {
                     let mut arr = toml_edit::Array::new();
@@ -366,7 +389,7 @@ pub fn uninstall() -> Result<()> {
                     println!("Codex: removed notify");
                 }
             }
-            fs::write(&path, doc.to_string())?;
+            write_atomic(&path, doc.to_string().as_bytes())?;
             let _ = fs::remove_file(codex_previous_path());
         } else {
             println!("Codex: Lantern is not installed");
@@ -392,18 +415,14 @@ pub fn status() -> Result<()> {
         .ok()
         .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
         .map(|s| {
-            let mut found: HashMap<String, bool> = HashMap::new();
-            if let Some(hooks) = s["hooks"].as_object() {
-                for (event, groups) in hooks {
-                    let ours = groups.as_array().into_iter().flatten().any(|g| {
-                        g["hooks"].as_array().into_iter().flatten().any(|h| h["command"].as_str().is_some_and(is_ours))
-                    });
-                    if ours {
-                        found.insert(event.clone(), true);
-                    }
-                }
-            }
-            CLAUDE_EVENTS.iter().all(|e| found.contains_key(*e))
+            let hooked = |event: &str| {
+                s["hooks"][event]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|g| g["hooks"].as_array().into_iter().flatten().any(|h| h["command"].as_str().is_some_and(is_ours)))
+            };
+            CLAUDE_EVENTS.iter().all(|e| hooked(e))
         })
         .unwrap_or(false);
     let codex = fs::read_to_string(codex_config_path())

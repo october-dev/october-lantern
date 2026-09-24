@@ -42,7 +42,7 @@ final class WindowController {
     var onMenu: ((NSView) -> Void)?
 
     private var edge: Edge {
-        get { Edge(rawValue: UserDefaults.standard.string(forKey: "pillEdge") ?? "") ?? .right }
+        get { Edge(rawValue: Preferences.shared.edge) ?? .right }
         set { Preferences.shared.edge = newValue.rawValue }
     }
     /// Top of the pill as a fraction of the screen's visible height. The pill grows downward from

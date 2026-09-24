@@ -3,7 +3,8 @@ import SwiftUI
 
 /// "Connect to October phone app": Lantern acts as an October host computer, so the October
 /// phone app pairs with it (QR code, then a 6-digit code to compare) and reaches Lantern's
-/// agents through October's relay. The protocol lives in the engine (`engine/src/mobile`).
+/// agents through October's relay. The protocol lives in the engine (`engine/src/mobile`); this
+/// is a view of the engine's phone state plus the requests the card can make.
 @MainActor
 final class PhoneModel: ObservableObject {
     static let shared = PhoneModel()
@@ -25,38 +26,36 @@ final class PhoneModel: ObservableObject {
     }
 
     struct State: Decodable {
+        /// offline | connecting | connected | plan-required | signed-out | error
         let status: String
         let message: String?
-        let hostId: String
+        let hostId: String?
         let devices: [Device]
         let pairing: Pairing?
     }
 
     @Published private(set) var state: State?
-    @Published private(set) var started = false
 
-    /// Set by the app: sends a request to the engine (`EngineClient.phone`).
-    var send: (([String: Any]) -> Void)?
+    /// Set by `AppModel`; the engine hosts the phone connection.
+    weak var engine: EngineClient?
 
-    func receive(_ data: Data) {
-        if let s = try? JSONDecoder().decode(State.self, from: data) { state = s }
-    }
+    func receive(_ s: State) { state = s }
 
-    /// Start (or refresh the token of) the phone host. Call after sign-in and on token refresh.
-    func start(accessToken: String) {
-        send?(["type": started ? "phone.token" : "phone.start", "accessToken": accessToken])
-        started = true
-    }
+    /// The engine is gone, and with it the host; a new engine reports fresh state after `token`.
+    func reset() { state = nil }
+
+    /// The current October access token. Sent after sign-in, on every refresh, and whenever the
+    /// engine (re)starts: the engine starts hosting if it isn't, or takes the new token.
+    func token(_ accessToken: String) { engine?.phoneToken(accessToken) }
 
     func stop() {
-        send?(["type": "phone.stop"])
-        started = false
+        engine?.phoneStop()
         state = nil
     }
 
-    func pair() { send?(["type": "phone.pair"]) }
-    func decide(_ allow: Bool) { send?(["type": "phone.decide", "allow": allow]) }
-    func revoke(_ bind: String) { send?(["type": "phone.revoke", "bind": bind]) }
+    func pair() { engine?.phonePair() }
+    func decide(_ allow: Bool) { engine?.phoneDecide(allow: allow) }
+    func revoke(_ bind: String) { engine?.phoneRevoke(bind: bind) }
 }
 
 /// The card in the October panel.
@@ -76,7 +75,7 @@ struct PhoneCard: View {
                     Text(detail).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                if signedIn && planAllowsPhone != false && model.state?.pairing == nil {
+                if signedIn && planAllowsPhone != false && model.state?.pairing == nil && model.state?.status != "error" {
                     Button(model.state?.devices.isEmpty ?? true ? "Pair a Phone" : "Pair Another") { model.pair() }
                         .buttonStyle(SecondaryButtonStyle())
                 }
@@ -111,6 +110,7 @@ struct PhoneCard: View {
         guard signedIn else { return "Sign in to October above, then pair your phone to check on and reply to your agents." }
         if planAllowsPhone == false { return "Your October plan doesn't include the phone app." }
         guard let s = model.state else { return "Starting…" }
+        if s.status == "error" { return "The phone connection couldn't start." }
         if s.devices.isEmpty { return "Check on your agents and reply to them from your phone." }
         switch s.status {
         case "connected": return "Connected. Your phone sees Lantern's agents."

@@ -10,9 +10,9 @@ use crate::model::truncate;
 use crate::transcripts::{lines, read_range};
 
 /// How far back to read. Long sessions are tens of MB; the recent part is what matters here.
-const TAIL_BYTES: u64 = 3 * 1024 * 1024;
-const MAX_MESSAGES: usize = 120;
-const MESSAGE_CHARS: usize = 8000;
+pub(crate) const TAIL_BYTES: u64 = 3 * 1024 * 1024;
+pub(crate) const MAX_MESSAGES: usize = 120;
+pub(crate) const MESSAGE_CHARS: usize = 8000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -32,12 +32,20 @@ pub struct ChatMessage {
     pub at: Option<String>,
 }
 
-fn push(out: &mut Vec<ChatMessage>, role: Role, text: &str, at: Option<&str>) {
+pub(crate) fn push(out: &mut Vec<ChatMessage>, role: Role, text: &str, at: Option<&str>) {
     let text = text.trim();
     if text.is_empty() {
         return;
     }
     out.push(ChatMessage { role, text: truncate(text, MESSAGE_CHARS), at: at.map(String::from) });
+}
+
+/// The last `MAX_MESSAGES` messages.
+pub(crate) fn keep_recent(mut out: Vec<ChatMessage>) -> Vec<ChatMessage> {
+    if out.len() > MAX_MESSAGES {
+        out.drain(..out.len() - MAX_MESSAGES);
+    }
+    out
 }
 
 /// Text the harness adds to the user's side that the user didn't type.
@@ -48,18 +56,17 @@ fn is_injected(text: &str) -> bool {
 
 /// A short description of a tool call: its name plus the most telling argument.
 pub(crate) fn describe_tool(name: &str, input: &Value) -> String {
-    if let Value::String(s) = input {
-        if serde_json::from_str::<Value>(s).is_err() {
-            return describe_code_call(name, s);
-        }
+    if let Value::String(s) = input
+        && serde_json::from_str::<Value>(s).is_err()
+    {
+        return describe_code_call(name, s);
     }
     let input = match input {
         Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null),
         v => v.clone(),
     };
-    let detail = ["description", "command", "cmd", "file_path", "path", "pattern", "url", "query", "prompt"]
-        .iter()
-        .find_map(|k| match &input[*k] {
+    let detail =
+        ["description", "command", "cmd", "file_path", "path", "pattern", "url", "query", "prompt"].iter().find_map(|k| match &input[*k] {
             Value::String(s) => Some(s.clone()),
             Value::Array(a) => Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
             _ => None,
@@ -166,11 +173,4 @@ pub fn codex(path: &Path) -> Vec<ChatMessage> {
         }
     }
     keep_recent(out)
-}
-
-fn keep_recent(mut out: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    if out.len() > MAX_MESSAGES {
-        out.drain(..out.len() - MAX_MESSAGES);
-    }
-    out
 }

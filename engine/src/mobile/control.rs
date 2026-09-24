@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::store::HostIdentity;
+use crate::model::iso;
 
 pub const SUPABASE: &str = "https://latwxiqjgvluiddckvmj.supabase.co";
 pub const ANON_KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdHd4aXFqZ3ZsdWlkZGNrdm1qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAzMDExMzEsImV4cCI6MjA2NTg3NzEzMX0.Aor5lE6ZSvv83Or_CxQNUdRzRUqit3fODkNSJpcDJ7E";
@@ -45,11 +46,7 @@ pub fn signed_message(operation: &str, body: &[u8], session_id: &str, request_id
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(Duration::from_secs(15)))
-        .build()
-        .into()
+    ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(15))).build().into()
 }
 
 fn read(mut resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
@@ -121,17 +118,18 @@ pub struct Binding {
 pub fn resolve_binding(host_id: &str, bind: &str, access_token: &str) -> Result<Option<Binding>> {
     let cols = "bind,device_static_pub,device_sign_pub,label,platform,revoked_at";
     let rows = rest_get(&format!("mobile_devices?select={cols}&host_id=eq.{host_id}&bind=eq.{bind}&limit=1"), access_token)?;
-    if let Some(d) = rows.as_array().and_then(|a| a.first()) {
-        if d["revoked_at"].is_null() {
-            if let Some(key) = d["device_static_pub"].as_str().and_then(super::store::decode_key) {
-                return Ok(Some(binding(d, bind, key, false)));
-            }
-        }
+    if let Some(d) = rows.as_array().and_then(|a| a.first())
+        && d["revoked_at"].is_null()
+        && let Some(key) = d["device_static_pub"].as_str().and_then(super::store::decode_key)
+    {
+        return Ok(Some(binding(d, bind, key, false)));
     }
-    let now = chrono_now();
+    let now = now_iso();
     let cols = "intent_id,bind,device_static_pub,device_sign_pub,label,platform,state,state_version,expires_at";
     let rows = rest_get(
-        &format!("mobile_pair_intents?select={cols}&host_id=eq.{host_id}&bind=eq.{bind}&state=in.(pending,approved)&expires_at=gt.{now}&limit=1"),
+        &format!(
+            "mobile_pair_intents?select={cols}&host_id=eq.{host_id}&bind=eq.{bind}&state=in.(pending,approved)&expires_at=gt.{now}&limit=1"
+        ),
         access_token,
     )?;
     let Some(i) = rows.as_array().and_then(|a| a.first()) else { return Ok(None) };
@@ -157,24 +155,8 @@ fn binding(row: &Value, bind: &str, key: [u8; 32], pairing: bool) -> Binding {
 }
 
 /// Current UTC time as ISO 8601 (for PostgREST filters and the phone's timestamps).
-pub fn chrono_now() -> String {
+pub fn now_iso() -> String {
     iso(crate::hooks::now_ms())
-}
-
-pub fn iso(ms: u64) -> String {
-    let secs = (ms / 1000) as i64;
-    let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
-    // Civil-from-days (Howard Hinnant's algorithm).
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", rem / 3600, rem % 3600 / 60, rem % 60, ms % 1000)
 }
 
 #[cfg(test)]
@@ -184,11 +166,14 @@ mod tests {
     #[test]
     fn signed_message_format_matches_october() {
         let body = br#"{"a":1}"#;
-        let m = signed_message("ticket-host", body, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", 1790000000);
+        let m =
+            signed_message("ticket-host", body, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", 1790000000);
         let digest = B64.encode(Sha256::digest(body));
         assert_eq!(
             m,
-            format!("october-mobile/v1\nticket-host\n11111111-1111-4111-8111-111111111111\n22222222-2222-4222-8222-222222222222\n{digest}\n1790000000")
+            format!(
+                "october-mobile/v1\nticket-host\n11111111-1111-4111-8111-111111111111\n22222222-2222-4222-8222-222222222222\n{digest}\n1790000000"
+            )
         );
     }
 
@@ -198,5 +183,8 @@ mod tests {
         assert_eq!(session_id(&format!("h.{payload}.sig")).as_deref(), Some("s-1"));
         assert_eq!(iso(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(iso(1_790_000_000_123), "2026-09-21T14:13:20.123Z");
+        assert_eq!(crate::model::epoch_ms("2026-09-21T14:13:20.123Z"), Some(1_790_000_000_123));
+        assert_eq!(crate::model::epoch_ms("2026-09-21T14:13:20Z"), Some(1_790_000_000_000));
+        assert_eq!(crate::model::epoch_ms("not a time"), None);
     }
 }
