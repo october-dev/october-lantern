@@ -31,5 +31,5 @@ What the website needs for the beta. Product facts come from [product guide](doc
 ## Don't claim
 
 - Automatic routing ("say it once and it picks the agent") or screen/screenshot context: neither exists yet.
-- October connections: describe them exactly as in the product guide's "What's true today" table. Full October Desktop support needs October 1.0.52+. The phone connection is built but has not been tested against the real phone app: don't advertise it until AUDIT.md records a live pairing and reply.
+- October connections: describe them exactly as in the product guide's "What's true today" table. Full October Desktop support needs October 1.0.52+. The phone connection is built but has not been tested against the real phone app: don't advertise it until a live pairing and reply have been confirmed.
 - Windows or Linux.

@@ -279,7 +279,7 @@ pub mod pi {
 pub mod gemini {
     use super::*;
 
-    /// Everything after this much of a session log is ignored (see AUDIT.md, F06).
+    /// Everything after this much of a session log is ignored.
     const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
 
     fn root() -> PathBuf {

@@ -152,7 +152,7 @@ Lantern is in **beta (v0.3.1)**.
 | Screenshot or screen context | ❌ Not yet |
 | Sign in with an October account (Google, GitHub, Apple, email) | ✅ |
 | Connect to October Desktop | ✅ Read-only with any October version that runs october-core (lists October's terminals). Full connection (October's agent names and questions, replies through October's safe delivery, Open on the canvas) needs October 1.0.52 or later, after the user clicks Connect and allows Lantern in October. |
-| October phone app | ⚠️ Built, not yet tested against the real phone app and relay: sign in, then pair the phone by QR. Needs a plan that includes mobile. Lantern appears as its own computer on the October account. Treat as experimental until AUDIT.md records a live pairing and reply. |
+| October phone app | ⚠️ Built, not yet tested against the real phone app and relay: sign in, then pair the phone by QR. Needs a plan that includes mobile. Lantern appears as its own computer on the October account. Treat as experimental until a live pairing and reply have been confirmed. |
 | Windows or Linux | ❌ Not yet |
 | Pricing | Free during the beta. No account needed; signing in to October is optional. |
 
@@ -190,7 +190,7 @@ Lantern doesn't need Accessibility, Screen Recording or Full Disk Access.
 
 ## Roadmap
 
-1. **Prove the October connections live:** a real phone pairing, reply and revoke, and a real October Desktop pairing (see AUDIT.md).
+1. **Prove the October connections live:** a real phone pairing, reply and revoke, and a real October Desktop pairing.
 2. **Replies in more terminals:** Ghostty, VS Code and Warp.
 3. **Status for more agents:** Grok, Cursor, Qwen, Goose and others.
 4. **Automatic routing.** Say "tell the backend agent to use Postgres" and Lantern picks the agent.
@@ -316,7 +316,6 @@ scripts/publish.sh "Release notes in one paragraph"
 | `engine/` | Rust engine: agent detection, session readers, hooks, delivery, launching |
 | `macos/` | Swift package for the macOS app. `Resources/` holds the app icon and logos. |
 | `protocol/` | The message protocol between the app and the engine |
-| `AUDIT.md` | The audit: findings, what was changed, what remains, and how it was verified |
 | `scripts/` | Build, release, publish and icon scripts |
 | `logo.png` | The Lantern logo |
 
