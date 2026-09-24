@@ -57,6 +57,9 @@ final class AppModel: ObservableObject {
     private var launchingInBackground = false
     private var launchingWithScreenshot = false
     private var launchingModel = "default"
+    /// A session Lantern just started: its conversation opens as soon as the agent shows up.
+    private var openWhenSeen: (session: String, until: Date)?
+    private var chatPoll: Task<Void, Never>?
     /// The agent whose conversation is open in the panel, if any.
     @Published private(set) var chatAgentId: String?
     @Published private(set) var chatMessages: [ChatMessage] = []
@@ -103,6 +106,10 @@ final class AppModel: ObservableObject {
             self?.replyFinished(id, ok: ok, uncertain: error == "uncertain", message: message)
         }
         engine.onActionResult = { [weak self] id, ok, message in self?.actionFinished(id, ok: ok, message: message) }
+        engine.onLaunched = { [weak self] session in
+            self?.openWhenSeen = (session, Date().addingTimeInterval(30))
+            self?.openLaunched()
+        }
         engine.onHistory = { [weak self] agentId, supported, messages in
             guard let self, agentId == self.chatAgentId else { return }
             self.chatLoading = false
@@ -207,12 +214,37 @@ final class AppModel: ObservableObject {
         chatAgentId = agent.id
         targetId = agent.id  // the composer switches to this agent's own draft
         engine.history(agentId: agent.id)
+        pollChat(agent.id)
         composeFocusToken += 1
     }
 
     func closeChat() {
         chatAgentId = nil
         chatMessages = []
+        chatPoll?.cancel()
+        chatPoll = nil
+    }
+
+    /// Opens the conversation of the session Lantern just started, once it appears.
+    private func openLaunched() {
+        guard let (session, until) = openWhenSeen else { return }
+        if Date() > until { return openWhenSeen = nil }
+        guard let agent = agents.first(where: { $0.tmux?.target.hasPrefix("\(session):") ?? false }) else { return }
+        openWhenSeen = nil
+        openChat(agent)
+    }
+
+    /// While a conversation is open it refreshes every two seconds, so a long turn shows its
+    /// progress (snapshots only arrive when an agent's state changes).
+    private func pollChat(_ agentId: String) {
+        chatPoll?.cancel()
+        chatPoll = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, self.chatAgentId == agentId, !Task.isCancelled else { return }
+                self.engine.history(agentId: agentId)
+            }
+        }
     }
 
     func dismiss(_ agent: Agent) { dismiss([agent]) }
@@ -412,6 +444,7 @@ final class AppModel: ObservableObject {
 
     func update(_ fresh: [Agent]) {
         agents = fresh
+        openLaunched()
         Analytics.shared.dailyActive(kinds: Dictionary(fresh.map { ($0.kind.rawValue, 1) }, uniquingKeysWith: +))
         drafts.prune(keeping: Set(fresh.map(\.id)))
         noticeNewTurns()

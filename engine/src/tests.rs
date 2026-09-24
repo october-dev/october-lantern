@@ -575,3 +575,19 @@ fn models_are_listed_and_passed() {
     let (flags, _) = cmd.split_once(" -- ").unwrap();
     assert!(flags.contains("--model") && flags.contains("opus"), "{cmd}");
 }
+
+/// Agents that take a first message on the command line get it there (nothing to type later),
+/// and Claude Code gets a session id so its conversation is matched from the start.
+#[test]
+fn first_messages_go_on_the_command_line() {
+    use crate::launch::agent_command;
+    use std::path::Path;
+    for kind in [Kind::Grok, Kind::October, Kind::Pi, Kind::Gemini] {
+        let cmd = agent_command(kind, Path::new("/p"), Some("fix it"), None, None);
+        assert!(cmd.contains(" -- ") && cmd.contains("fix it"), "{cmd}");
+    }
+    let opencode = agent_command(Kind::Opencode, Path::new("/p"), Some("fix it"), None, None);
+    assert!(opencode.contains("--prompt") && !opencode.contains(" -- "), "{opencode}");
+    let claude = agent_command(Kind::Claude, Path::new("/p"), Some("fix it"), None, None);
+    assert!(claude.contains("--session-id"), "{claude}");
+}

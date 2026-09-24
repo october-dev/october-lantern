@@ -184,6 +184,11 @@ pub fn exe_path(pid: u32) -> Option<String> {
     String::from_utf8(buf).ok()
 }
 
+/// The executables of every process on terminal `tty` (e.g. `ttys012`) that Lantern can read.
+pub fn on_tty(tty: &str) -> Vec<Option<String>> {
+    ps_rows().into_iter().filter(|r| r.tty.as_deref() == Some(tty)).map(|r| exe_path(r.pid)).collect()
+}
+
 /// Parent pid of `pid`, including root-owned processes; `None` when it's gone.
 pub fn parent_of(pid: u32) -> Option<u32> {
     bsd_info(pid as i32).map(|i| i.pbi_ppid).or_else(|| short_info(pid as i32).map(|r| r.ppid))

@@ -25,6 +25,8 @@ final class EngineClient {
     var onPhone: ((PhoneModel.State) -> Void)?
     /// Launch and attach results: (requestId, ok, message).
     var onActionResult: ((String, Bool, String?) -> Void)?
+    /// A session started on Lantern's tmux server, by tmux session name.
+    var onLaunched: ((String) -> Void)?
     /// A (new) engine process said hello and is ready for requests.
     var onReady: (() -> Void)?
     /// The engine process ended; anything outstanding won't be answered.
@@ -249,7 +251,10 @@ final class EngineClient {
                 case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
-                case .launchResult(let id, let ok, let message), .attachResult(let id, let ok, let message):
+                case .launchResult(let id, let ok, let message, let session):
+                    onActionResult?(id, ok, message)
+                    if ok, let session { onLaunched?(session) }
+                case .attachResult(let id, let ok, let message):
                     onActionResult?(id, ok, message)
                 case .other: break
                 }

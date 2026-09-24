@@ -141,7 +141,8 @@ enum EngineMessage: Decodable {
     case replyResult(requestId: String, ok: Bool, error: String?, message: String?)
     case installed(Installed)
     case models(ModelList)
-    case launchResult(requestId: String, ok: Bool, message: String?)
+    /// `session`: the tmux session a started agent runs in (absent without tmux).
+    case launchResult(requestId: String, ok: Bool, message: String?, session: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
     case history(agentId: String, supported: Bool, messages: [ChatMessage])
     case october(OctoberLink)
@@ -168,7 +169,7 @@ enum EngineMessage: Decodable {
     }
 
     private enum Keys: String, CodingKey {
-        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october
+        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session
     }
 
     init(from decoder: Decoder) throws {
@@ -207,7 +208,7 @@ enum EngineMessage: Decodable {
             let ok = try c.decode(Bool.self, forKey: .ok)
             let message = try c.decodeIfPresent(String.self, forKey: .message)
             self = try c.decode(String.self, forKey: .type) == "launchResult"
-                ? .launchResult(requestId: id, ok: ok, message: message)
+                ? .launchResult(requestId: id, ok: ok, message: message, session: try c.decodeIfPresent(String.self, forKey: .session))
                 : .attachResult(requestId: id, ok: ok, message: message)
         default:
             self = .other

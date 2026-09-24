@@ -94,9 +94,24 @@ pub struct Launched {
     pub session: Option<String>,
 }
 
-/// Harnesses that take the first prompt as a command-line argument.
+/// How a harness takes its first message on the command line: as the last argument (after
+/// `--`), or as an option's value. Harnesses with neither have it typed in once they're up.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PromptArg {
+    Positional,
+    Option(&'static str),
+}
+
+fn prompt_arg(kind: Kind) -> Option<PromptArg> {
+    match kind {
+        Kind::Claude | Kind::Codex | Kind::Grok | Kind::October | Kind::Pi | Kind::Gemini => Some(PromptArg::Positional),
+        Kind::Opencode => Some(PromptArg::Option("--prompt")),
+        _ => None,
+    }
+}
+
 fn takes_prompt_arg(kind: Kind) -> bool {
-    matches!(kind, Kind::Claude | Kind::Codex)
+    prompt_arg(kind).is_some()
 }
 
 /// Where the app saves screenshots for new sessions; the only folder `launch` accepts them from.
@@ -131,10 +146,16 @@ pub(crate) fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>, screen
             _ => {}
         }
     }
-    if let Some(p) = prompt.filter(|_| takes_prompt_arg(kind)) {
+    // Claude Code gets a session id of Lantern's choosing, so its conversation is matched
+    // exactly from the start (see scanner::transcript_status).
+    if kind == Kind::Claude {
+        cmd.push_str(&format!(" --session-id {}", uuid::Uuid::new_v4().hyphenated()));
+    }
+    match (prompt, prompt_arg(kind)) {
         // `--` so a message starting with `-` isn't read as an option.
-        cmd.push_str(" -- ");
-        cmd.push_str(&quote(p));
+        (Some(p), Some(PromptArg::Positional)) => cmd.push_str(&format!(" -- {}", quote(p))),
+        (Some(p), Some(PromptArg::Option(flag))) => cmd.push_str(&format!(" {flag} {}", quote(p))),
+        _ => {}
     }
     format!("exec {} -lic {}", shell(), quote(&cmd))
 }
@@ -224,26 +245,35 @@ pub fn launch(
     Ok(Launched { session: Some(session) })
 }
 
-const SHELLS: [&str; 6] = ["sh", "bash", "zsh", "fish", "dash", "login"];
-
-/// Waits until the pane's process is the agent (not the shell starting it), in the foreground,
-/// with a screen that has stopped changing, then types. Gives up after 20 s.
+/// Waits until something other than a shell runs on the pane's terminal (the agent, even when a
+/// wrapper script starts it as a child), and its screen has stopped changing (or it has been up
+/// for 5 s, for interfaces that animate), then types. Gives up after 30 s.
 fn type_first_prompt(pane: &TmuxPane, kind: Kind, text: &str) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let (mut last, mut steady) = (String::new(), 0);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let (mut last, mut steady, mut up_since) = (String::new(), 0, None::<Instant>);
     loop {
         if Instant::now() >= deadline {
-            bail!("{} didn't finish starting within 20 s; type your message in its window", program(kind));
+            bail!("{} didn't finish starting within 30 s; type your message in its window", program(kind));
         }
         std::thread::sleep(Duration::from_millis(300));
-        let out = tmux::output(pane, &["display-message", "-p", "-t", &pane.pane_id, "#{pane_pid}"])?;
-        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().context("tmux didn't say which process runs the pane")?;
-        let Some(live) = crate::procs::live(pid) else { bail!("{} exited", program(kind)) };
-        let exe = live.exe.as_deref().map(crate::procs::basename).unwrap_or("");
-        if exe.is_empty() || SHELLS.contains(&exe) || live.tpgid != live.pgid {
+        let out = tmux::output(pane, &["display-message", "-p", "-t", &pane.pane_id, "#{pane_pid}\t#{pane_tty}"])?;
+        let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let (pid, tty) = line.split_once('\t').context("tmux didn't describe the pane")?;
+        let pid: u32 = pid.parse().context("tmux didn't say which process runs the pane")?;
+        if crate::procs::live(pid).is_none() {
+            bail!("{} exited", program(kind));
+        }
+        // The agent itself, or the runtime it's written in (not a shell plugin's helper).
+        let running = crate::procs::on_tty(tty.trim_start_matches("/dev/")).iter().flatten().any(|exe| {
+            let name = crate::procs::basename(exe);
+            exe.contains(program(kind)) || ["node", "bun", "deno", "python", "uv"].iter().any(|r| name.starts_with(r))
+        });
+        if !running {
             steady = 0;
+            up_since = None;
             continue;
         }
+        let up = *up_since.get_or_insert_with(Instant::now);
         let screen = String::from_utf8_lossy(&tmux::output(pane, &["capture-pane", "-p", "-t", &pane.pane_id])?.stdout).into_owned();
         if !screen.trim().is_empty() && screen == last {
             steady += 1;
@@ -251,7 +281,7 @@ fn type_first_prompt(pane: &TmuxPane, kind: Kind, text: &str) -> Result<()> {
             steady = 0;
             last = screen;
         }
-        if steady >= 3 {
+        if steady >= 3 || up.elapsed() >= Duration::from_secs(5) {
             return tmux::send(pane, text);
         }
     }
