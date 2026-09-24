@@ -80,8 +80,7 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
     let mut info = TmuxInfo { panes_by_tty: HashMap::new(), clients: HashMap::new() };
     for socket in sockets(table) {
         let panes = &mut base_command(&socket);
-        let panes = panes
-            .args(["list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"]);
+        let panes = panes.args(["list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"]);
         let panes = crate::run::output(panes, DISCOVER_LIMIT);
         if let Ok(out) = panes {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
@@ -94,7 +93,8 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
                     .insert(tty, TmuxPane { socket: socket.clone(), pane_id: parts[1].to_string(), target: parts[2].to_string() });
             }
         }
-        let clients = crate::run::output(base_command(&socket).args(["list-clients", "-F", "#{client_pid}\t#{session_name}"]), DISCOVER_LIMIT);
+        let clients =
+            crate::run::output(base_command(&socket).args(["list-clients", "-F", "#{client_pid}\t#{session_name}"]), DISCOVER_LIMIT);
         if let Ok(out) = clients {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Some((pid, session)) = line.split_once('\t')

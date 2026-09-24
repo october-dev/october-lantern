@@ -527,7 +527,8 @@ fn helpers_are_bounded_and_drained() {
     assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
     // Exits at once, but leaves a child holding its output open: still ends at the limit.
     let t = Instant::now();
-    let out = crate::run::output(Command::new("/bin/sh").args(["-c", "echo hi; /bin/sleep 5 & exit 0"]), Duration::from_millis(100)).unwrap();
+    let out =
+        crate::run::output(Command::new("/bin/sh").args(["-c", "echo hi; /bin/sleep 5 & exit 0"]), Duration::from_millis(100)).unwrap();
     assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
 }

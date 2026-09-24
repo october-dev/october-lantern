@@ -41,8 +41,10 @@ pub fn output(cmd: &mut Command, limit: Duration) -> Result<Output> {
     // Read both pipes as they fill; each reader says when its pipe closed.
     let (closed, pipes_done) = mpsc::channel();
     let buffers = [Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(Vec::new()))];
-    let pipes: [Option<Box<dyn Read + Send>>; 2] =
-        [child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>), child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>)];
+    let pipes: [Option<Box<dyn Read + Send>>; 2] = [
+        child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+        child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>),
+    ];
     for (pipe, buffer) in pipes.into_iter().zip(buffers.iter().cloned()) {
         let closed = closed.clone();
         std::thread::spawn(move || {
