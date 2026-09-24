@@ -86,16 +86,16 @@ struct NewSessionView: View {
                 if app.target != nil, !app.isTerminal { workOnApp }
                 screenshotToggle
                 if screenshotOn { screenshotPreview }
+                permissionLine
             }
             section("Open in") {
                 HStack(spacing: 8) {
                     Choice(title: "Terminal window", symbol: "macwindow", selected: !background) { background = false }
                     Choice(title: "Background", symbol: "moon", selected: background, disabled: !model.tmuxAvailable) { background = true }
                 }
-                Text(model.tmuxAvailable
-                     ? "Lantern can reply directly to sessions it starts. Background sessions open in Terminal when you click Open."
-                     : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                .help(model.tmuxAvailable
+                      ? "Lantern can reply directly to sessions it starts. Background sessions open in Terminal when you click Open."
+                      : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
             }
         }
     }
@@ -208,8 +208,11 @@ struct NewSessionView: View {
         Menu {
             if task, let doc = documentFolder {
                 Button("\(Self.short(doc)) (the document's folder)") { folder = doc }
-                Divider()
             }
+            if task, let own = tasksFolder {
+                Button("Lantern Tasks/\(URL(fileURLWithPath: own).lastPathComponent)") { folder = own }
+            }
+            if task { Divider() }
             ForEach(model.recentFolders, id: \.self) { f in Button(Self.short(f)) { folder = f } }
             if !model.recentFolders.isEmpty { Divider() }
             Button("Choose Folder…") { chooseFolder() }
@@ -281,17 +284,35 @@ struct NewSessionView: View {
                 ProgressView().controlSize(.small)
                 Text("Taking a screenshot…").font(.system(size: 11)).foregroundStyle(Theme.muted)
             }
-        } else if let error = shot.error {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(error).font(.system(size: 11)).foregroundStyle(Theme.red).fixedSize(horizontal: false, vertical: true)
-                if shot.needsPermission {
-                    Button("Allow in System Settings…") { shot.requestPermission() }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
-                    Text("After allowing it, quit and reopen Lantern.").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                } else {
-                    Button("Try again") { Task { await shot.capture() } }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+        } else if let error = shot.error, !shot.needsPermission {
+            // A permission that's missing is explained once, by the permission line below.
+            HStack(spacing: 6) {
+                Text(error).font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                Button("Try again") { Task { await shot.capture() } }
+                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+            }
+        }
+    }
+
+    /// One calm line for whatever permission the chosen context still needs (Accessibility to name
+    /// the open document, Screen Recording for the screenshot); gone once both are allowed.
+    @ViewBuilder private var permissionLine: some View {
+        let needsAccess = task && !app.trusted
+        let needsRecording = screenshotOn && shot.needsPermission
+        if needsAccess || needsRecording {
+            let text = switch (needsAccess, needsRecording) {
+            case (true, true): "To include the window and a screenshot, allow Accessibility and Screen Recording."
+            case (true, false): "To tell the agent which document is open, allow Accessibility."
+            default: "To include a screenshot, allow Screen Recording."
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(text).font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                Button("Allow…") {
+                    if needsAccess { app.requestAccess() }
+                    if needsRecording { shot.requestPermission() }
                 }
+                .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+                .help(needsRecording ? "After allowing Screen Recording, reopen Lantern." : "Opens System Settings")
             }
         }
     }
@@ -351,8 +372,19 @@ struct NewSessionView: View {
     private var selectedKind: AgentKind? { kind ?? model.installedKinds.flatMap { ordered($0).first } }
 
     /// A Task starts in the open document's folder, or where the last Task for this app ran.
+    /// A task starts in its document's folder; without one, where the last task for that app ran,
+    /// or a folder of its own under ~/Documents/Lantern Tasks (never an unrelated project).
     private var selectedFolder: String? {
-        folder ?? (task ? documentFolder ?? model.taskFolder(for: app.target?.bundleId) : nil) ?? model.recentFolders.first
+        folder ?? (task ? documentFolder ?? model.taskFolder(for: app.target?.bundleId) ?? tasksFolder : nil) ?? model.recentFolders.first
+    }
+
+    /// ~/Documents/Lantern Tasks/<App>, created when a task starts there.
+    private var tasksFolder: String? {
+        guard let name = app.target?.name else { return nil }
+        let safe = name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/Lantern Tasks/\(safe.isEmpty ? "App" : safe)").path
     }
 
     private var documentFolder: String? { app.target?.document?.deletingLastPathComponent().path }
@@ -406,14 +438,6 @@ struct NewSessionView: View {
                 : "Click to start this as a task for \(t.name)")
             .accessibilityLabel("Work on \(t.name)")
             .accessibilityAddTraits(on ? .isSelected : [])
-            if on, !app.trusted {
-                HStack(spacing: 4) {
-                    Text("Lantern can't see which document is open.").font(.system(size: 10.5)).foregroundStyle(Theme.muted)
-                    Button("Allow…") { app.requestAccess() }
-                        .buttonStyle(.plain).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.amber)
-                        .help("Allow Accessibility so Lantern can tell the agent which document is open.")
-                }
-            }
         }
     }
 
@@ -425,6 +449,14 @@ struct NewSessionView: View {
     private func start() {
         guard let k = selectedKind, let f = selectedFolder else { return }
         failure = nil
+        if f == tasksFolder {
+            do {
+                try FileManager.default.createDirectory(atPath: f, withIntermediateDirectories: true)
+            } catch {
+                failure = "Couldn't create \(Self.short(f)): \(error.localizedDescription)"
+                return
+            }
+        }
         var used = UserDefaults.standard.stringArray(forKey: "agentOrder") ?? []
         used.removeAll { $0 == k.rawValue }
         UserDefaults.standard.set([k.rawValue] + used, forKey: "agentOrder")
