@@ -31,9 +31,9 @@
 
 ## Less checking. More getting things done.
 
-Claude is working in one window. Codex is waiting in another. A third agent finished ten minutes ago.
+Claude is working in one window. Codex is waiting in another. October finished ten minutes ago.
 
-Lantern brings them together in one quiet place. Keep your favorite agents and terminals, and start them exactly as you do today. Lantern finds supported sessions automatically.
+Lantern watches tools like Claude Code, Codex, October, and Cursor, and brings them together in one quiet place. Keep your favorite agents and terminals, and start them exactly as you do today. Lantern finds supported sessions automatically.
 
 | When this happens…                 | Lantern helps you…                                                                       |
 | ---------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -59,7 +59,7 @@ Press **Control + Option + Space** whenever you want to write a reply. Use the m
 
 | Agents                                                                                               | What you can see                                                                                                               |
 | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI**                                    | Working / your-turn status, the last message, and conversation history.                                                        |
+| **Claude Code, Codex, [October Harness](https://harness.october.dev), OpenCode, Pi, Gemini CLI**     | Working / your-turn status, the last message, and conversation history.                                                        |
 | **Grok, Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie** | Running sessions, with replies and navigation where the terminal supports them. Detailed status and chat aren't available yet. |
 
 Optional hooks add prompt completion updates for Codex and permission requests for Claude Code. When Lantern can't confidently match a conversation to a session, it says so.
