@@ -52,6 +52,10 @@ enum Request {
         bus: bool,
         background: bool,
     },
+    /// Download October Bus now if it isn't here (answered with `bus`), so the first session with
+    /// the Bus doesn't wait for it.
+    #[serde(rename = "bus.prepare")]
+    BusPrepare,
     /// Rebuild the toolkit list now (answered with `toolkit`).
     #[serde(rename = "toolkit.refresh")]
     ToolkitRefresh,
@@ -250,6 +254,12 @@ pub fn run() -> Result<()> {
                         }
                     });
                     next_scan = Instant::now() + Duration::from_millis(1500);
+                }
+                Ok(Request::BusPrepare) => {
+                    std::thread::spawn(|| match crate::bus::ensure_installed() {
+                        Ok(_) => emit(&json!({"type": "bus", "ready": true})),
+                        Err(e) => emit(&json!({"type": "bus", "ready": false, "message": format!("{e:#}")})),
+                    });
                 }
                 Ok(Request::ToolkitRefresh) => {
                     std::thread::spawn(|| match crate::toolkit::refresh() {

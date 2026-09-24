@@ -1,0 +1,6 @@
+{
+  "commit": "20b745682818f33b7d03dc7a3e65d32a71ded35b",
+  "tag": "bus-20b7456",
+  "arm64": {"url": "https://github.com/harshsaver/october-lantern-releases/releases/download/bus-20b7456/october-bus-20b7456-arm64.zip", "sha256": "a9e481cbaa09f9305256d3ac3bb9b5236bacee8ab21403f892fe0f557056abf5"},
+  "x86_64": {"url": "https://github.com/harshsaver/october-lantern-releases/releases/download/bus-20b7456/october-bus-20b7456-x86_64.zip", "sha256": "b1ee41920e2fa2bf302bd8fcf1b2cb1d35df9452a86d3d707502fda65a14c9a9"}
+}

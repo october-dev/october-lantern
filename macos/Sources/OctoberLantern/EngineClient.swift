@@ -170,6 +170,12 @@ final class EngineClient {
         return send(request)
     }
 
+    /// Downloads October Bus in the background if it isn't here yet.
+    @discardableResult
+    func prepareBus() -> Bool {
+        send(["type": "bus.prepare"])
+    }
+
     @discardableResult
     func refreshToolkit() -> Bool {
         send(["type": "toolkit.refresh"])

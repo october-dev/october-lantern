@@ -47,6 +47,9 @@ enum Assets {
 
     static var logo: NSImage? { image("logo.png") }
 
+    /// October's avatars (Resources/avatars/21.webp … 44.webp).
+    static func avatar(_ n: Int) -> NSImage? { image("avatars/\(n).webp") }
+
     static func harness(_ kind: AgentKind) -> NSImage? { image("harness/\(kind.rawValue).png") }
 }
 

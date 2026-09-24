@@ -6,8 +6,8 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 Third-party software and artwork retain their respective licenses and notices.
 Harness logo attribution is recorded in macos/Resources/harness/NOTICE.md.
 
-The app bundles October Bus (https://github.com/october-dev/october-bus), built from source,
-licensed under the Apache License, Version 2.0.
+Lantern downloads October Bus (https://github.com/october-dev/october-bus), built from source,
+when it's first needed. October Bus is licensed under the Apache License, Version 2.0.
 
 October, Lantern, and the names and logos of supported agents identify their
 respective products. The Apache License does not grant rights to use trademarks,

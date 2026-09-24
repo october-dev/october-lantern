@@ -131,7 +131,14 @@ final class AppModel: ObservableObject {
             self?.installedKinds = installed.kinds
             self?.tmuxAvailable = installed.tmux
         }
-        engine.onReady = { OctoberAccount.shared.engineReady() }
+        engine.onReady = { [weak self] in
+            OctoberAccount.shared.engineReady()
+            // Fetch October Bus a minute after start, so the first session on it doesn't wait.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(60))
+                if let self, self.prefs.busForSessions { self.engine.prepareBus() }
+            }
+        }
         engine.onStopped = { [weak self] message in self?.engineStopped(message) }
         engine.onHealth = { [weak self] health in
             if case .failed = health { Analytics.shared.capture("engine_failed") }

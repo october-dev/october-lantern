@@ -33,7 +33,7 @@ struct NewSessionView: View {
     @State private var taskDismissed = false
     @ObservedObject private var app = AppContext.shared
     @State private var screenshotOn = false
-    @State private var showOthers = false
+    @State private var showShot = false
     @State private var kind: AgentKind?
     @State private var folder: String?
     @State private var prompt = ""
@@ -52,11 +52,7 @@ struct NewSessionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ScrollView {
-                form.padding(.horizontal, 16).padding(.bottom, 4)
-            }
-            .frame(maxHeight: max(200, metrics.maxHeight - 150))
-            .fixedSize(horizontal: false, vertical: true)
+            form.padding(.horizontal, 16)
             footer.padding(.horizontal, 16)
         }
         .padding(.bottom, 16)
@@ -67,6 +63,7 @@ struct NewSessionView: View {
         }
         .onAppear { kindChanged() }
         .onChange(of: selectedKind) { kindChanged() }
+        .onChange(of: shot.error) { if screenshotOn, shot.error != nil { showShot = true } }
         .onChange(of: model.launching) { was, now in
             // A start that succeeded moves to the Agents list; one that failed leaves us here.
             if was && !now && model.panel == .newSession {
@@ -75,108 +72,159 @@ struct NewSessionView: View {
         }
     }
 
+    /// The message first, then one row of agents and one row of options.
     private var form: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if task, app.target != nil {
-                taskCard
-                section("What should it do\(app.target.map { " in \($0.name)" } ?? "")?") { promptField("e.g. Normalize the voice and fix the lighting") }
-            }
-            section("Agent") {
-                // nil while the engine is still looking.
-                if let installed = model.installedKinds {
-                    if installed.isEmpty {
-                        Text("No agents found on this Mac yet. Click one below to get it, then reopen this panel.")
-                            .font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-                    }
-                    // Installed agents; the others folded away, dimmed, each opening where to get it.
-                    let others = AgentKind.supported.filter { !installed.contains($0) }
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(installed + (showOthers ? others : []), id: \.self) { k in
-                            let has = installed.contains(k)
-                            AgentTile(kind: k, selected: has && selectedKind == k, installed: has) {
-                                if has { kind = k } else if let url = k.website { NSWorkspace.shared.open(url) }
-                            }
+        VStack(alignment: .leading, spacing: 10) {
+            if task, app.target != nil { taskCard }
+            promptField(task ? "What should it do in \(app.target?.name ?? "this app")?" : "What should it work on? (optional)")
+            agentRow
+            optionRow
+        }
+    }
+
+    // MARK: Agents
+
+    /// Agents in the order you last used them; the rest keep Lantern's order.
+    private func ordered(_ installed: [AgentKind]) -> [AgentKind] {
+        let used = UserDefaults.standard.stringArray(forKey: "agentOrder") ?? []
+        return installed.enumerated().sorted { a, b in
+            let (ia, ib) = (used.firstIndex(of: a.element.rawValue) ?? Int.max, used.firstIndex(of: b.element.rawValue) ?? Int.max)
+            return ia != ib ? ia < ib : a.offset < b.offset
+        }.map(\.element)
+    }
+
+    @ViewBuilder private var agentRow: some View {
+        if let installed = model.installedKinds {
+            let all = ordered(installed)
+            let shown = Array(all.prefix(5))
+            let rest = Array(all.dropFirst(5))
+            let others = AgentKind.supported.filter { !installed.contains($0) }
+            HStack(spacing: 6) {
+                if installed.isEmpty {
+                    Text("No agents found on this Mac yet.").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                }
+                ForEach(shown, id: \.self) { k in
+                    AgentChip(kind: k, selected: selectedKind == k) { kind = k }
+                }
+                if !rest.isEmpty || !others.isEmpty {
+                    Menu {
+                        ForEach(rest, id: \.self) { k in Button(k.displayName) { kind = k } }
+                        if !rest.isEmpty && !others.isEmpty { Divider() }
+                        ForEach(others, id: \.self) { k in
+                            Button("Get \(k.displayName)…") { if let url = k.website { NSWorkspace.shared.open(url) } }
                         }
+                    } label: {
+                        Image(systemName: "ellipsis").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
+                            .frame(width: 30, height: 28)
+                            .background(Capsule().fill(Theme.faint))
                     }
-                    if !others.isEmpty {
-                        Button(showOthers ? "Show only installed agents" : "\(others.count) more agents Lantern works with…") {
-                            showOthers.toggle()
-                        }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
-                    }
-                } else {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Looking for installed agents…").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                    }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    .help("More agents")
+                    .accessibilityLabel("More agents")
                 }
+                Spacer(minLength: 0)
             }
-
-            if let k = selectedKind { section("Model") { modelPicker(k) } }
-
-            section("Folder") {
-                Menu {
-                    if task, let doc = documentFolder {
-                        Button("\(Self.short(doc)) (the document's folder)") { folder = doc }
-                        Divider()
-                    }
-                    ForEach(model.recentFolders, id: \.self) { f in
-                        Button(Self.short(f)) { folder = f }
-                    }
-                    if !model.recentFolders.isEmpty { Divider() }
-                    Button("Choose Folder…") { chooseFolder() }
-                } label: {
-                    HStack {
-                        Image(systemName: "folder")
-                        Text(selectedFolder.map(Self.short) ?? "Choose a folder…").lineLimit(1).truncationMode(.head)
-                        Spacer()
-                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
-                    }
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(Theme.ink.opacity(0.9))
-                    .padding(.horizontal, 12).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-            }
-
-            if !task {
-                section("First message (optional)") { promptField("What should it work on?") }
-            }
-
-            section("Context") {
-                Toggle(isOn: Binding(
-                    get: { screenshotOn },
-                    set: { on in
-                        screenshotOn = on
-                        // A plain session's choice is remembered; a Task always starts with it on.
-                        if !task { prefs.screenshotNewSessions = on }
-                        if on { Task { await shot.capture() } } else { shot.discard() }
-                    }
-                )) {
-                    Text("Include a screenshot of my screen").font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.9))
-                }
-                .toggleStyle(.switch).controlSize(.small)
-                if screenshotOn { screenshotPreview }
-                if task {
-                    Text("The agent is also told about \(app.target?.name ?? "the app") and given Lantern's list of tools on this Mac.")
-                        .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            section("Open in") {
-                HStack(spacing: 8) {
-                    Choice(title: "Terminal window", symbol: "macwindow", selected: !background) { background = false }
-                    Choice(title: "Background", symbol: "moon", selected: background, disabled: !model.tmuxAvailable) { background = true }
-                }
-                Text(model.tmuxAvailable
-                     ? "Lantern can reply directly to sessions it starts. Background sessions open in Terminal when you click Open."
-                     : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Looking for installed agents…").font(.system(size: 12)).foregroundStyle(Theme.muted)
             }
         }
+    }
+
+    // MARK: Options
+
+    private var optionRow: some View {
+        HStack(spacing: 6) {
+            if let k = selectedKind { modelChip(k) }
+            folderChip
+            screenshotChip
+            openInChip
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder private func modelChip(_ k: AgentKind) -> some View {
+        if let list = model.models[k.rawValue] {
+            if list.choosable {
+                Menu {
+                    Button("Default") { chosenModel = nil }
+                    if !list.models.isEmpty && list.models.count <= 25 {
+                        Divider()
+                        ForEach(list.models, id: \.id) { m in Button(m.label) { chosenModel = m.id } }
+                    }
+                    Divider()
+                    Button(list.models.count > 25 ? "Search \(list.models.count) models…" : "Other model…") { searchingModels = true }
+                } label: {
+                    Chip(symbol: "cpu", text: modelLabel(list), maxWidth: 88)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Model: \(modelLabel(list))")
+                .popover(isPresented: $searchingModels, arrowEdge: .bottom) {
+                    modelSearch(list).padding(10).frame(width: 280)
+                }
+            } else {
+                Chip(symbol: "cpu", text: "Default", maxWidth: 88).opacity(0.6)
+                    .help("\(k.displayName) starts with its own default model.")
+            }
+        } else {
+            Chip(symbol: "cpu", text: "Model…", maxWidth: 88).opacity(0.6).help("Loading \(k.displayName)'s models…")
+        }
+    }
+
+    private var folderChip: some View {
+        Menu {
+            if task, let doc = documentFolder {
+                Button("\(Self.short(doc)) (the document's folder)") { folder = doc }
+                Divider()
+            }
+            ForEach(model.recentFolders, id: \.self) { f in Button(Self.short(f)) { folder = f } }
+            if !model.recentFolders.isEmpty { Divider() }
+            Button("Choose Folder…") { chooseFolder() }
+        } label: {
+            Chip(symbol: "folder", text: selectedFolder.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Folder", maxWidth: 100)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(selectedFolder.map { "Runs in \(Self.short($0))" } ?? "Choose a folder")
+    }
+
+    /// On: a screenshot of your screen goes with the first message. Its preview (and Retake)
+    /// shows when you point at the chip.
+    private var screenshotChip: some View {
+        Button {
+            screenshotOn.toggle()
+            // A plain session's choice is remembered; a task always starts with it on.
+            if !task { prefs.screenshotNewSessions = screenshotOn }
+            if screenshotOn {
+                showShot = true
+                Task { await shot.capture() }
+            } else {
+                showShot = false
+                shot.discard()
+            }
+        } label: {
+            Chip(symbol: screenshotOn ? "camera.fill" : "camera", text: nil, active: screenshotOn)
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in if screenshotOn && inside { showShot = true } }
+        .popover(isPresented: $showShot, arrowEdge: .bottom) {
+            screenshotPreview.padding(10).frame(width: 280)
+        }
+        .help(screenshotOn ? "A screenshot of your screen goes with the first message" : "Include a screenshot of your screen")
+        .accessibilityLabel(screenshotOn ? "Screenshot on" : "Screenshot off")
+    }
+
+    private var openInChip: some View {
+        Menu {
+            Button("Terminal window") { background = false }
+            Button("Background (open it later)") { background = true }.disabled(!model.tmuxAvailable)
+        } label: {
+            Chip(symbol: background ? "moon" : "macwindow", text: background ? "Background" : "Terminal", maxWidth: 84)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help(model.tmuxAvailable
+            ? "Lantern can reply directly to sessions it starts. Background sessions open in Terminal when you click Open."
+            : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
     }
 
     /// Always visible, however long the form.
@@ -247,37 +295,6 @@ struct NewSessionView: View {
         modelQuery = ""
     }
 
-    @ViewBuilder
-    private func modelPicker(_ k: AgentKind) -> some View {
-        if let list = model.models[k.rawValue] {
-            if !list.choosable {
-                Text("\(k.displayName) starts with its own default model.").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    Menu {
-                        Button("Default") { chosenModel = nil; searchingModels = false }
-                        if !list.models.isEmpty && list.models.count <= 25 {
-                            Divider()
-                            ForEach(list.models, id: \.id) { m in Button(m.label) { chosenModel = m.id; searchingModels = false } }
-                        }
-                        Divider()
-                        Button(list.models.count > 25 ? "Search \(list.models.count) models…" : "Other model…") { searchingModels = true }
-                    } label: {
-                        fieldLabel(symbol: "cpu", text: modelLabel(list))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    if searchingModels { modelSearch(list) }
-                }
-            }
-        } else {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Loading \(k.displayName)'s models…").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
-            }
-        }
-    }
-
     private func modelLabel(_ list: EngineMessage.ModelList) -> String {
         guard let chosenModel else { return "Default" }
         return list.models.first { $0.id == chosenModel }.map { m in m.group.map { "\(m.label) · \($0)" } ?? m.label } ?? chosenModel
@@ -321,21 +338,7 @@ struct NewSessionView: View {
         modelQuery = ""
     }
 
-    private func fieldLabel(symbol: String, text: String) -> some View {
-        HStack {
-            Image(systemName: symbol)
-            Text(text).lineLimit(1).truncationMode(.middle)
-            Spacer()
-            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
-        }
-        .font(.system(size: 12.5))
-        .foregroundStyle(Theme.ink.opacity(0.9))
-        .padding(.horizontal, 12).padding(.vertical, 9)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
-    }
-
-    private var selectedKind: AgentKind? { kind ?? model.installedKinds?.first }
+    private var selectedKind: AgentKind? { kind ?? model.installedKinds.flatMap { ordered($0).first } }
 
     /// A Task starts in the open document's folder, or where the last Task for this app ran.
     private var selectedFolder: String? {
@@ -357,45 +360,36 @@ struct NewSessionView: View {
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
     }
 
-    /// The app the Task is for: its icon, name, window and document.
+    /// The app the task is for, on one line; ✕ makes it a plain session.
     @ViewBuilder private var taskCard: some View {
         if let t = app.target {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 10) {
-                    if let icon = t.icon { Image(nsImage: icon).resizable().frame(width: 30, height: 30) }
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(t.name).font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                        if let detail = t.document?.lastPathComponent ?? t.windowTitle, !detail.isEmpty {
-                            Text(detail).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle)
-                        }
-                    }
-                    Spacer()
-                    Button {
-                        taskDismissed = true
-                        screenshotOn = prefs.screenshotNewSessions
-                        if !screenshotOn { shot.discard() }
-                    } label: {
-                        Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Start a plain session instead")
-                    .accessibilityLabel("Not for \(t.name)")
-                }
+            HStack(spacing: 8) {
+                if let icon = t.icon { Image(nsImage: icon).resizable().frame(width: 18, height: 18) }
+                Text([t.name, t.document?.lastPathComponent ?? t.windowTitle].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
                 if !app.trusted {
-                    HStack(spacing: 8) {
-                        Text("Allow Accessibility so Lantern can tell the agent which document is open.")
-                            .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-                        Button("Allow…") { app.requestAccess() }
-                            .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
-                    }
+                    Button("Allow…") { app.requestAccess() }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+                        .help("Allow Accessibility so Lantern can tell the agent which document is open.")
                 }
+                Spacer(minLength: 4)
+                Button {
+                    taskDismissed = true
+                    screenshotOn = prefs.screenshotNewSessions
+                    if !screenshotOn { shot.discard() }
+                } label: {
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
+                }
+                .buttonStyle(.plain)
+                .help("Start a plain session instead")
+                .accessibilityLabel("Not for \(t.name)")
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hairline))
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
+            .help("The agent is told about \(t.name) and given Lantern's list of tools on this Mac.")
         }
     }
-    /// A screenshot that's on must be ready (or failed, which the form shows) before starting.
+
     private var canStart: Bool {
         selectedKind != nil && selectedFolder != nil && !model.launching && !(screenshotOn && shot.capturing)
             && (!task || !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -404,6 +398,9 @@ struct NewSessionView: View {
     private func start() {
         guard let k = selectedKind, let f = selectedFolder else { return }
         failure = nil
+        var used = UserDefaults.standard.stringArray(forKey: "agentOrder") ?? []
+        used.removeAll { $0 == k.rawValue }
+        UserDefaults.standard.set([k.rawValue] + used, forKey: "agentOrder")
         var screenshot: URL?
         if screenshotOn {
             guard let saved = shot.save() else {
@@ -437,12 +434,60 @@ struct NewSessionView: View {
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
-    @ViewBuilder
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
-            content()
+}
+
+/// A small rounded option: an icon, and its current value when there's room.
+struct Chip: View {
+    let symbol: String
+    let text: String?
+    var active = false
+    var maxWidth: CGFloat = 100
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: symbol).font(.system(size: 10.5, weight: .medium))
+            if let text {
+                Text(text).lineLimit(1).truncationMode(.middle).frame(maxWidth: maxWidth, alignment: .leading).fixedSize(horizontal: true, vertical: false)
+            }
         }
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(active ? Theme.amber : Theme.ink.opacity(0.85))
+        .padding(.horizontal, 9).padding(.vertical, 5)
+        .background(Capsule().fill(Theme.faint))
+        .overlay(Capsule().strokeBorder(active ? Theme.amber.opacity(0.6) : Theme.hairline))
+    }
+}
+
+/// An installed agent in New Session's row: its icon, and its name when it's the one chosen.
+struct AgentChip: View {
+    let kind: AgentKind
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Group {
+                    if let img = Assets.harness(kind) {
+                        Image(nsImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    } else {
+                        Image(systemName: "terminal").font(.system(size: 11))
+                    }
+                }
+                .frame(width: 18, height: 18)
+                if selected {
+                    Text(kind.displayName).font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, selected ? 9 : 6).padding(.vertical, 5)
+            .background(Capsule().fill(Theme.faint))
+            .overlay(Capsule().strokeBorder(selected ? Theme.amber.opacity(0.7) : Theme.hairline, lineWidth: selected ? 1.5 : 1))
+        }
+        .buttonStyle(.plain)
+        .help(kind.displayName)
+        .accessibilityLabel(kind.displayName)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 

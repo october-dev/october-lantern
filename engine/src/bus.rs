@@ -3,7 +3,9 @@
 //! work together.
 //!
 //! Lantern uses the public October Bus (github.com/october-dev/october-bus): a local daemon, with
-//! its data on this Mac, no account. The app ships the `october-bus` program next to the engine;
+//! its data on this Mac, no account. The `october-bus` program isn't in the app: it's downloaded
+//! the first time it's needed (a small signed build for this Mac's chip, from a pinned commit,
+//! published with Lantern's releases) and checked against the SHA-256 in `engine/bus.json`.
 //! Lantern starts the daemon when it isn't running and keeps its agents in one scope, "lantern".
 //!
 //! Each agent gets an MCP entry that registers it with the Bus when the agent starts it
@@ -25,13 +27,81 @@ use crate::model::Kind;
 
 pub const SCOPE: &str = "lantern";
 
-/// The `october-bus` program: next to the engine in the app, or `LANTERN_BUS_BIN`.
+/// The pinned build: commit, and this chip's download and checksum.
+struct Pin {
+    commit: String,
+    url: String,
+    sha256: String,
+}
+
+fn pin() -> Option<Pin> {
+    let v: serde_json::Value = serde_json::from_str(include_str!("../bus.json")).ok()?;
+    let arch = if cfg!(target_arch = "aarch64") { "arm64" } else { "x86_64" };
+    Some(Pin {
+        commit: v["commit"].as_str()?.to_string(),
+        url: v[arch]["url"].as_str()?.to_string(),
+        sha256: v[arch]["sha256"].as_str()?.to_string(),
+    })
+}
+
+/// Where the downloaded Bus lives, named by its commit.
+fn installed_path() -> Option<PathBuf> {
+    let p = pin()?;
+    Some(support_dir().join(format!("bin/october-bus-{}", &p.commit[..7.min(p.commit.len())])))
+}
+
+/// The `october-bus` program, once downloaded (or `LANTERN_BUS_BIN`, for development).
 pub fn binary() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("LANTERN_BUS_BIN").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    Some(exe.parent()?.join("october-bus")).filter(|p| p.is_file())
+    installed_path().filter(|p| p.is_file())
+}
+
+/// Downloads the pinned Bus for this Mac if it isn't here yet, and checks it before keeping it.
+pub fn ensure_installed() -> Result<PathBuf> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LOCK.lock().unwrap();
+    if let Some(p) = binary() {
+        return Ok(p);
+    }
+    let pin = pin().context("this build has no October Bus to download")?;
+    let dest = installed_path().context("no install path")?;
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).build().into();
+    let mut resp = agent.get(&pin.url).call().context("downloading October Bus")?;
+    let bytes = resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec().context("downloading October Bus")?;
+    use sha2::Digest;
+    let sum: String = sha2::Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+    if sum != pin.sha256 {
+        bail!("the October Bus download didn't match its checksum, so it wasn't used");
+    }
+    let bin_dir = dest.parent().context("no folder")?;
+    std::fs::create_dir_all(bin_dir)?;
+    let work = bin_dir.join(format!(".bus-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&work)?;
+    let result = (|| -> Result<()> {
+        let zip = work.join("bus.zip");
+        std::fs::write(&zip, &bytes)?;
+        let out = crate::run::output(Command::new("/usr/bin/ditto").args(["-x", "-k"]).arg(&zip).arg(&work), Duration::from_secs(30))?;
+        if !out.status.success() {
+            bail!("couldn't unpack October Bus");
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let bin = work.join("october-bus");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::rename(&bin, &dest)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result?;
+    // Older pinned builds are no longer used.
+    for old in std::fs::read_dir(bin_dir).into_iter().flatten().flatten() {
+        let name = old.file_name().to_string_lossy().into_owned();
+        if name.starts_with("october-bus-") && old.path() != dest {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+    Ok(dest)
 }
 
 /// Which agents Lantern can connect.
@@ -40,7 +110,7 @@ pub fn supported(kind: Kind) -> bool {
 }
 
 fn bus(args: &[&str], limit: Duration) -> Result<std::process::Output> {
-    let bin = binary().context("October Bus isn't included in this build")?;
+    let bin = binary().context("October Bus isn't downloaded yet")?;
     crate::run::output(Command::new(bin).args(args), limit)
 }
 
@@ -50,9 +120,10 @@ pub fn ensure_ready() -> Result<()> {
     if READY.lock().unwrap().is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
         return Ok(());
     }
+    ensure_installed()?;
     let running = |_: ()| bus(&["status"], Duration::from_secs(3)).is_ok_and(|o| o.status.success());
     if !running(()) {
-        let bin = binary().context("October Bus isn't included in this build")?;
+        let bin = binary().context("October Bus isn't downloaded yet")?;
         let log = std::fs::File::create(support_dir().join("october-bus.log")).ok();
         use std::os::unix::process::CommandExt;
         let mut cmd = Command::new(bin);
@@ -103,7 +174,7 @@ pub fn new_id(kind: Kind) -> String {
 /// Prepares one launch. Writes the agent's MCP file, when it needs one, in Lantern's support
 /// folder.
 pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
-    let bin = binary().context("October Bus isn't included in this build")?;
+    let bin = binary().context("October Bus isn't downloaded yet")?;
     let bin = bin.to_string_lossy().into_owned();
     let mut a = Attach { id: id.into(), name: name.into(), ..Default::default() };
     let dir = support_dir().join("bus");
