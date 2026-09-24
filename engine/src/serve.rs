@@ -38,6 +38,8 @@ enum Request {
         kind: Kind,
         cwd: String,
         prompt: Option<String>,
+        /// A screenshot the app saved for this session (in the screenshots folder).
+        screenshot: Option<String>,
         background: bool,
     },
     #[serde(rename_all = "camelCase")]
@@ -204,11 +206,12 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Launch { request_id, kind, cwd, prompt, background }) => {
+                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, background }) => {
                     // Off the loop: it may wait for the agent to start before typing its first message.
                     std::thread::spawn(move || {
                         let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
-                        match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), mode) {
+                        let screenshot = screenshot.map(std::path::PathBuf::from);
+                        match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), screenshot.as_deref(), mode) {
                             Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
                             Err(e) => {
                                 emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}))

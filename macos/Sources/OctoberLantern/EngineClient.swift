@@ -153,8 +153,10 @@ final class EngineClient {
     }
 
     @discardableResult
-    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, background: Bool) -> Bool {
-        send(["type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background])
+    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, background: Bool) -> Bool {
+        var request: [String: Any] = ["type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background]
+        if let screenshot { request["screenshot"] = screenshot }
+        return send(request)
     }
 
     @discardableResult

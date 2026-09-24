@@ -101,7 +101,7 @@ The connection to October Desktop, sent whenever it changes.
 ```
 
 ```json
-{"type":"launch","requestId":"l1","kind":"codex","cwd":"/Users/me/proj","prompt":"write tests","background":false}
+{"type":"launch","requestId":"l1","kind":"codex","cwd":"/Users/me/proj","prompt":"write tests","screenshot":"/Users/me/Library/Application Support/October Lantern/screenshots/screen-20260924-130501-1a2b.png","background":false}
 {"type":"attach","requestId":"a1","agentId":"codex:4242:1790180000"}
 {"type":"history","requestId":"h1","agentId":"codex:4242:1790180000"}
 ```
@@ -119,7 +119,7 @@ The connection to October Desktop, sent whenever it changes.
 
 `keys` presses single keys without Enter (`"1"`, `"Escape"`), e.g. to answer a permission prompt, after the same target check as `reply`; the result comes back as `replyResult`. For an agent at a permission prompt, `promptId` is required and must name the current prompt, both when the request arrives and again immediately before the key is pressed. `focus` brings the agent's own tab or pane to the front (for a tmux session nobody is attached to, it opens a Terminal window attached to it; for an agent inside a connected October Desktop, it shows the agent on the canvas); the result comes back as `attachResult`.
 
-`launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument (after `--`, so a message starting with `-` isn't read as an option). Other agents have it typed in once the pane runs the agent (not the shell starting it), in the foreground, and its screen has stopped changing, within 20 seconds; without tmux they can't be given a first message, and `launch` says so instead of dropping it. `attach` opens a Terminal window attached to an agent's tmux session.
+`launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument (after `--`, so a message starting with `-` isn't read as an option). Other agents have it typed in once the pane runs the agent (not the shell starting it), in the foreground, and its screen has stopped changing, within 20 seconds; without tmux they can't be given a first message, and `launch` says so instead of dropping it. `screenshot` (optional) is a PNG the app saved in `~/Library/Application Support/October Lantern/screenshots`; a path anywhere else is refused. Its path is added to the first message (a first message is made if there isn't one), Codex also gets it with `--image`, and Claude Code (`--add-dir`) and Gemini CLI (`--include-directories`) may read that folder without asking. `attach` opens a Terminal window attached to an agent's tmux session.
 
 `reply` types the text into the agent's terminal (see `route`), then presses Enter. For agents with `route.via == "none"` it returns `not_reachable`, and the app falls back to copying the text and bringing the host app forward. `october.pair` asks October Desktop to allow Lantern (October shows a code to compare), `october.cancelPair` withdraws that, and `october.forget` drops the credential October issued (Lantern then goes back to listing October's terminals read-only).
 

@@ -74,7 +74,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Agents:** every running agent, the ones that need you first, with logo, handle, folder, terminal and status (*Needs you*, *Your turn*, *Working*, *Idle*, *Running*).
 - **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
 - **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
-- **New session:** a grid of the agents installed on this Mac, a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Open in** *Terminal window* or *Background*, and **Start**.
+- **New session:** a grid of the agents installed on this Mac, a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Context** (include a screenshot of your screen, with a preview and Retake), **Open in** *Terminal window* or *Background*, and **Start**.
 - **October:** three cards. **Connect to October** signs in (Google, GitHub, Apple or email) and then shows the account and plan. **Connect to October Desktop** shows whether October is running, and once you click **Connect** and allow Lantern in October (matching a 6-digit code), it's fully connected. **October phone app** pairs a phone by QR after you sign in, then lists paired phones with Revoke.
 
 **Welcome.** The first launch shows a short, four-page welcome:
@@ -149,7 +149,7 @@ Lantern is in **beta (v0.3.2)**.
 | Global shortcut (default ⌃⌥Space, changeable) | ✅ |
 | Welcome guide, Settings, Report a Problem, Uninstall | ✅ |
 | Automatic routing ("send this to whichever agent it's for") | ❌ Not yet. You choose the agent. |
-| Screenshot or screen context | ❌ Not yet |
+| Screenshot as context for a new session | ✅ Optional (New Session › Context, or Settings › General). Needs Screen Recording permission. |
 | Sign in with an October account (Google, GitHub, Apple, email) | ✅ |
 | Connect to October Desktop | ✅ Read-only with any October version that runs october-core (lists October's terminals). Full connection (October's agent names and questions, replies through October's safe delivery, Open on the canvas) needs October 1.0.52 or later, after the user clicks Connect and allows Lantern in October. |
 | October phone app | ⚠️ Built, not yet tested against the real phone app and relay: sign in, then pair the phone by QR. Needs a plan that includes mobile. Lantern appears as its own computer on the October account. Treat as experimental until a live pairing and reply have been confirmed. |
@@ -172,7 +172,7 @@ Lantern is in **beta (v0.3.2)**.
 - **October Desktop (optional).** Lantern talks to October only on your Mac (127.0.0.1), and only after you allow it in October. You can disconnect it from either app.
 - **October phone app (optional).** Traffic goes through October's relay and is end-to-end encrypted (Noise), so the relay can't read it. Phones are paired by QR and can be revoked from Lantern.
 - **Dictation is on-device only.** Lantern uses Apple's on-device speech recognizer and never sends audio to Apple's servers: if on-device recognition isn't available for your language on this Mac, dictation says so rather than falling back. Lantern listens only while the mic button is on.
-- **No screen recording.** Lantern doesn't take screenshots.
+- **Screenshots only when you ask.** Lantern takes a screenshot only if you turn on "Include a screenshot of my screen" for new sessions. It captures the display you're on when you open New Session, leaving out Lantern's own windows, and shows you a preview. When you click Start, it's saved on your Mac (`~/Library/Application Support/October Lantern/screenshots`, only readable by you, deleted after a week), and the new agent is given its path with the first message: Codex gets it attached (`--image`), and Claude Code and Gemini CLI are allowed to read that folder. Lantern itself never uploads it; the agent sends it to its model provider like any image you give it. It's never recorded continuously.
 - **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`), and never modifies them.
 - **Typing replies.** When you send a reply, Lantern types it into that agent's terminal: through cmux's command-line tool, tmux, or macOS Automation for Terminal and iTerm2. macOS asks you once per app before Automation is allowed.
 - **Optional hooks.** If you turn on exact status, Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`: PermissionRequest, Notification, Stop, UserPromptSubmit, PostToolUse, PostToolUseFailure) and Codex's `notify` setting (`~/.codex/config.toml`). It reads and checks both files before changing either, backs both up (never overwriting an earlier backup), replaces each atomically, puts the first file back if the second can't be written, keeps any existing Codex notify program working, and restores everything when you turn hooks off or uninstall. Settings shows Claude Code and Codex separately, and offers an update when an older Lantern's Claude hooks are installed. If Lantern is deleted without uninstalling, the hooks quietly do nothing. The hook events Lantern stores (`~/Library/Application Support/October Lantern/events`) hold the agent's last message and the command it asked permission for.
@@ -189,7 +189,9 @@ Lantern is in **beta (v0.3.2)**.
 | Notifications | Telling you when an agent finishes or needs you | In the welcome, or when you turn them on |
 | Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button |
 
-Lantern doesn't need Accessibility, Screen Recording or Full Disk Access.
+| Screen Recording | Including a screenshot when starting a session | When you turn that option on |
+
+Lantern doesn't need Accessibility or Full Disk Access.
 
 ## Installing, updating and uninstalling
 

@@ -85,7 +85,7 @@ Optional hooks add prompt completion updates for Codex and permission requests f
 Your code and conversations stay on your Mac when you use Lantern on its own. No account is needed. On its own, Lantern connects to the internet for two things: its update check, and anonymous usage counts, which you can turn off in Settings.
 
 - **On-device dictation.** Audio stays on your Mac. If your language doesn't support on-device recognition, Lantern tells you.
-- **No screen recording.** Lantern reads supported agents' local session files.
+- **No screen recording.** Lantern reads supported agents' local session files. The one exception is optional: New Session can include a screenshot of your screen for the new agent, only when you turn it on.
 - **You're in control.** Replies are sent when you choose. Optional hooks can be removed in Settings.
 - **Anonymous usage counts.** How often Lantern and its features are used (e.g. "a reply was sent through tmux"), never content. The [privacy guide](docs/PRODUCT.md#privacy) lists exactly what's sent. Off with one switch in Settings; builds from source send nothing.
 - **Optional October connections.** Signing in and connecting other devices introduces network connections; the [privacy guide](docs/PRODUCT.md#privacy) explains each one.
@@ -115,7 +115,7 @@ The core Mac app is free, and it stays free forever. The source code is licensed
 <details>
 <summary><strong>Why does macOS ask to control my terminal?</strong></summary>
 
-Lantern uses macOS Automation to send your reply to the right Terminal or iTerm2 tab. Permission is requested the first time you reply through that app. Lantern doesn't require Accessibility, Screen Recording, or Full Disk Access.
+Lantern uses macOS Automation to send your reply to the right Terminal or iTerm2 tab. Permission is requested the first time you reply through that app. Lantern doesn't require Accessibility or Full Disk Access. Screen Recording is asked for only if you turn on screenshots for new sessions.
 
 </details>
 

@@ -53,6 +53,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var launchError: String?
     private var launchingKind = ""
     private var launchingInBackground = false
+    private var launchingWithScreenshot = false
     /// The agent whose conversation is open in the panel, if any.
     @Published private(set) var chatAgentId: String?
     @Published private(set) var chatMessages: [ChatMessage] = []
@@ -292,7 +293,8 @@ final class AppModel: ObservableObject {
         return (used + running).filter { seen.insert($0).inserted && $0 != NSHomeDirectory() }.prefix(8).map { $0 }
     }
 
-    func launch(kind: AgentKind, folder: String, prompt: String, background: Bool) {
+    /// `screenshot`: a saved screenshot (ScreenCapture.save) the agent gets with its first message.
+    func launch(kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, background: Bool) {
         var used = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
         used.removeAll { $0 == folder }
         used.insert(folder, at: 0)
@@ -301,8 +303,12 @@ final class AppModel: ObservableObject {
         launchError = nil
         launchingKind = kind.rawValue
         launchingInBackground = background
+        launchingWithScreenshot = screenshot != nil
         let id = request("l")
-        track(id, .launch, sent: engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, background: background))
+        track(
+            id, .launch,
+            sent: engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, background: background)
+        )
     }
 
     func toggleDictation() {
@@ -465,7 +471,7 @@ final class AppModel: ObservableObject {
         switch request {
         case .launch:
             launching = false
-            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground])
+            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot])
             if ok {
                 panel = .agents
                 show("Session started")

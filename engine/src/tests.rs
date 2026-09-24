@@ -532,3 +532,26 @@ fn helpers_are_bounded_and_drained() {
     assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
 }
+
+/// A screenshot reaches each agent in a way it can use: attached (Codex), or readable without a
+/// permission prompt (Claude Code, Gemini), and named in the first message for everyone.
+#[test]
+fn new_sessions_carry_the_screenshot() {
+    use crate::launch::{agent_command, first_message};
+    use std::path::Path;
+    let shot = Path::new("/Users/me/Library/Application Support/October Lantern/screenshots/s1.png");
+    let msg = first_message(Some("fix the layout"), Some(shot)).unwrap();
+    assert!(msg.starts_with("fix the layout") && msg.contains("s1.png"));
+    assert!(first_message(None, Some(shot)).unwrap().contains("wait for my instructions"));
+    assert_eq!(first_message(Some("hi"), None).as_deref(), Some("hi"));
+
+    let codex = agent_command(Kind::Codex, Path::new("/p"), Some(&msg), Some(shot));
+    let (flags, prompt) = codex.split_once(" -- ").unwrap();
+    assert!(flags.contains("--image") && flags.contains("s1.png"), "{codex}");
+    assert!(prompt.contains("fix the layout"));
+    let claude = agent_command(Kind::Claude, Path::new("/p"), Some(&msg), Some(shot));
+    assert!(claude.split_once(" -- ").unwrap().0.contains("--add-dir"), "{claude}");
+    let gemini = agent_command(Kind::Gemini, Path::new("/p"), Some(&msg), Some(shot));
+    assert!(gemini.contains("--include-directories"));
+    assert!(!agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None).contains("--add-dir"));
+}

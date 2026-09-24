@@ -30,6 +30,8 @@ struct NewSessionView: View {
     @State private var folder: String?
     @State private var prompt = ""
     @State private var background = false
+    @ObservedObject private var prefs = Preferences.shared
+    @ObservedObject private var shot = ScreenCapture.shared
     /// Why the last start failed, shown above the Start button (the form keeps what you typed).
     @State private var failure: String?
     @ObservedObject private var metrics = PanelMetrics.shared
@@ -46,6 +48,10 @@ struct NewSessionView: View {
             footer.padding(.horizontal, 16)
         }
         .padding(.bottom, 16)
+        .task {
+            // The screen as it is when you open New Session (Lantern's own windows left out).
+            if prefs.screenshotNewSessions { await shot.capture() }
+        }
         .onChange(of: model.launching) { was, now in
             // A start that succeeded moves to the Agents list; one that failed leaves us here.
             if was && !now && model.panel == .newSession {
@@ -111,6 +117,20 @@ struct NewSessionView: View {
                     .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
             }
 
+            section("Context") {
+                Toggle(isOn: Binding(
+                    get: { prefs.screenshotNewSessions },
+                    set: { on in
+                        prefs.screenshotNewSessions = on
+                        if on { Task { await shot.capture() } } else { shot.discard() }
+                    }
+                )) {
+                    Text("Include a screenshot of my screen").font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.9))
+                }
+                .toggleStyle(.switch).controlSize(.small)
+                if prefs.screenshotNewSessions { screenshotPreview }
+            }
+
             section("Open in") {
                 HStack(spacing: 8) {
                     Choice(title: "Terminal window", symbol: "macwindow", selected: !background) { background = false }
@@ -149,15 +169,60 @@ struct NewSessionView: View {
         }
     }
 
+    @ViewBuilder private var screenshotPreview: some View {
+        if let image = shot.image {
+            HStack(alignment: .top, spacing: 10) {
+                Image(nsImage: NSImage(cgImage: image, size: .zero)).resizable().aspectRatio(contentMode: .fit)
+                    .frame(width: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Theme.hairline))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Saved on this Mac and given to the agent with its first message.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    Button("Retake") { Task { await shot.capture() } }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+                }
+            }
+        } else if shot.capturing {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Taking a screenshot…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
+        } else if let error = shot.error {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(error).font(.system(size: 11)).foregroundStyle(Theme.red).fixedSize(horizontal: false, vertical: true)
+                if shot.needsPermission {
+                    Button("Allow in System Settings…") { shot.requestPermission() }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+                    Text("After allowing it, quit and reopen Lantern.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                } else {
+                    Button("Try again") { Task { await shot.capture() } }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+                }
+            }
+        }
+    }
+
     private var selectedKind: AgentKind? { kind ?? model.installedKinds?.first }
     private var selectedFolder: String? { folder ?? model.recentFolders.first }
-    private var canStart: Bool { selectedKind != nil && selectedFolder != nil && !model.launching }
+    /// A screenshot that's on must be ready (or failed, which the form shows) before starting.
+    private var canStart: Bool {
+        selectedKind != nil && selectedFolder != nil && !model.launching && !(prefs.screenshotNewSessions && shot.capturing)
+    }
 
     private func start() {
         guard let k = selectedKind, let f = selectedFolder else { return }
         failure = nil
+        var screenshot: URL?
+        if prefs.screenshotNewSessions {
+            guard let saved = shot.save() else {
+                failure = shot.error ?? "The screenshot isn't ready. Retake it, or turn it off."
+                return
+            }
+            screenshot = saved
+        }
         // The prompt stays until the session has started (a success closes this panel).
-        model.launch(kind: k, folder: f, prompt: prompt, background: background)
+        model.launch(kind: k, folder: f, prompt: prompt, screenshot: screenshot, background: background)
     }
 
     private func chooseFolder() {

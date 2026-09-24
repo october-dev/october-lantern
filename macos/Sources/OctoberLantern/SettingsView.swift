@@ -43,6 +43,13 @@ struct SettingsView: View {
                     .onChange(of: autoUpdate) { _, on in Updater.shared.automaticallyChecks = on }
             }
             Section {
+                Toggle("Include a screenshot of my screen when starting a session", isOn: $prefs.screenshotNewSessions)
+                Text("The new agent gets a screenshot of the screen you're on (without Lantern) with its first message, for context. It stays on this Mac. Needs Screen Recording permission; you can also switch it per session.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } header: {
+                Text("New sessions")
+            }
+            Section {
                 HooksSetting(hooks: hooks)
             } header: {
                 Text("Exact status from agent hooks")

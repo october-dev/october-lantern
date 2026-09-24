@@ -99,8 +99,35 @@ fn takes_prompt_arg(kind: Kind) -> bool {
     matches!(kind, Kind::Claude | Kind::Codex)
 }
 
-fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>) -> String {
+/// Where the app saves screenshots for new sessions; the only folder `launch` accepts them from.
+pub fn screenshots_dir() -> PathBuf {
+    support_dir().join("screenshots")
+}
+
+/// The first message, with the screenshot's path added so any agent can open it.
+pub fn first_message(prompt: Option<&str>, screenshot: Option<&Path>) -> Option<String> {
+    match (prompt, screenshot) {
+        (p, None) => p.map(String::from),
+        (Some(p), Some(s)) => Some(format!("{p}\n\nFor context, a screenshot of my screen when I started this session: {}", s.display())),
+        (None, Some(s)) => Some(format!(
+            "For context, here's a screenshot of my screen as I start this session: {}. Take a look, then wait for my instructions.",
+            s.display()
+        )),
+    }
+}
+
+pub(crate) fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>) -> String {
     let mut cmd = format!("cd {} && exec {}", quote(&cwd.to_string_lossy()), program(kind));
+    // Let the agent read the screenshot without asking (it's outside the project), or attach it.
+    if let Some(s) = screenshot {
+        let dir = quote(&s.parent().unwrap_or(s).to_string_lossy());
+        match kind {
+            Kind::Claude => cmd.push_str(&format!(" --add-dir {dir}")),
+            Kind::Codex => cmd.push_str(&format!(" --image {}", quote(&s.to_string_lossy()))),
+            Kind::Gemini => cmd.push_str(&format!(" --include-directories {dir}")),
+            _ => {}
+        }
+    }
     if let Some(p) = prompt.filter(|_| takes_prompt_arg(kind)) {
         // `--` so a message starting with `-` isn't read as an option.
         cmd.push_str(" -- ");
@@ -124,14 +151,21 @@ fn open_in_terminal(name: &str, script: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, mode: Mode) -> Result<Launched> {
+pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>, mode: Mode) -> Result<Launched> {
     if !cwd.is_dir() {
         bail!("{} is not a folder", cwd.display());
     }
     if !installed().kinds.contains(&kind) {
         bail!("{} isn't installed", program(kind));
     }
-    let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
+    if let Some(s) = screenshot {
+        let inside = s.canonicalize().ok().zip(screenshots_dir().canonicalize().ok()).is_some_and(|(s, dir)| s.starts_with(dir));
+        if !inside || !s.is_file() {
+            bail!("the screenshot wasn't saved; try again");
+        }
+    }
+    let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), screenshot);
+    let prompt = message.as_deref();
 
     if !installed().tmux {
         if mode == Mode::Background {
@@ -141,7 +175,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, mode: Mode) -> Resul
             bail!("Without tmux, Lantern can't hand {} a first message. Leave the message empty, or install tmux.", program(kind));
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
-        open_in_terminal(&name, &agent_command(kind, cwd, prompt))?;
+        open_in_terminal(&name, &agent_command(kind, cwd, prompt, screenshot))?;
         return Ok(Launched { session: None });
     }
 
@@ -152,7 +186,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, mode: Mode) -> Resul
     let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
-        .arg(agent_command(kind, cwd, prompt));
+        .arg(agent_command(kind, cwd, prompt, screenshot));
     let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
         bail!("tmux couldn't start the session");

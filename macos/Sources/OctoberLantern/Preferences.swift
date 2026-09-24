@@ -13,6 +13,9 @@ final class Preferences: ObservableObject {
     @Published var mutedKinds: Set<String> { didSet { d.set(Array(mutedKinds), forKey: "mutedKinds") } }
     @Published var hotkey: HotKeyPreset { didSet { d.set(hotkey.rawValue, forKey: "hotkey") } }
     @Published var edge: String { didSet { d.set(edge, forKey: "pillEdge") } }
+    /// New sessions start with a screenshot of the screen you're on (New Session can turn it off
+    /// for one session).
+    @Published var screenshotNewSessions: Bool { didSet { d.set(screenshotNewSessions, forKey: "screenshotNewSessions") } }
 
     private init() {
         d.register(defaults: ["notificationsEnabled": true, "notifyOnFinish": true])
@@ -21,6 +24,7 @@ final class Preferences: ObservableObject {
         mutedKinds = Set(d.stringArray(forKey: "mutedKinds") ?? [])
         hotkey = HotKeyPreset(rawValue: d.string(forKey: "hotkey") ?? "") ?? .controlOptionSpace
         edge = d.string(forKey: "pillEdge") ?? "right"
+        screenshotNewSessions = d.bool(forKey: "screenshotNewSessions")
     }
 
     func counts(_ kind: AgentKind) -> Bool { !mutedKinds.contains(kind.rawValue) }

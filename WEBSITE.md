@@ -11,7 +11,7 @@ What the website needs for the beta. Product facts come from [product guide](doc
    - everything stays on the Mac unless you choose to sign in to October; no account is needed
    - without an October account, the only network requests are the daily update check (a public file on GitHub) and anonymous usage counts (feature counts, never content), which are on by default and can be turned off in Settings; the product guide lists every event
    - dictation is on-device only (Lantern refuses rather than sending audio to Apple)
-   - there's no screen recording
+   - there's no screen recording; a screenshot is taken only if you turn on "include a screenshot" for new sessions, and it stays on the Mac (the agent gets its path)
    - session files are only read, never changed
    - Automation permission is used only to type replies into Terminal and iTerm2
    - the optional hooks are backed up and restored
@@ -24,12 +24,12 @@ What the website needs for the beta. Product facts come from [product guide](doc
   - Full support: Claude Code, Codex, OpenCode, Pi, October harness and Gemini CLI.
   - Replying from Lantern: cmux, Terminal, iTerm2 and tmux.
   - Ghostty, VS Code and Warp: copy and paste for now.
-- **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply), Notifications (optional), Microphone and Speech Recognition (only for dictation). No Accessibility, Screen Recording or Full Disk Access.
+- **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only if you turn on screenshots for new sessions). No Accessibility or Full Disk Access.
 - **FAQ entries** from the product guide FAQ, especially "Why did macOS ask whether Lantern can control Terminal?" and "How do I uninstall it?".
 - **Support contact:** hey@october.dev. The app's Report a Problem uses the same address.
 
 ## Don't claim
 
-- Automatic routing ("say it once and it picks the agent") or screen/screenshot context: neither exists yet.
+- Automatic routing ("say it once and it picks the agent") doesn't exist yet. Screenshot context exists only when starting a new session, not for replies.
 - October connections: describe them exactly as in the product guide's "What's true today" table. Full October Desktop support needs October 1.0.52+. The phone connection is built but has not been tested against the real phone app: don't advertise it until a live pairing and reply have been confirmed.
 - Windows or Linux.
