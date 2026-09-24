@@ -115,7 +115,7 @@ The core Mac app is free, and it stays free forever. The source code is licensed
 <details>
 <summary><strong>Why does macOS ask to control my terminal?</strong></summary>
 
-Lantern uses macOS Automation to send your reply to the right Terminal or iTerm2 tab. Permission is requested the first time you reply through that app. Lantern doesn't require Accessibility or Full Disk Access. Screen Recording is asked for only if you turn on screenshots for new sessions.
+Lantern uses macOS Automation to send your reply to the right Terminal or iTerm2 tab. Permission is requested the first time you reply through that app. Lantern doesn't require Full Disk Access. Screen Recording is asked for only if you turn on screenshots, and Accessibility only if you let a Task see which document you have open.
 
 </details>
 

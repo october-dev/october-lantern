@@ -3,7 +3,7 @@ import LanternCore
 import SwiftUI
 
 enum PanelMode: Equatable {
-    case inbox, agents, newSession, october
+    case inbox, agents, newSession, task, october
 
     /// The inbox and agent list share tabs and the composer; the others are standalone.
     var isList: Bool { self == .inbox || self == .agents }
@@ -56,6 +56,8 @@ final class AppModel: ObservableObject {
     private var launchingKind = ""
     private var launchingInBackground = false
     private var launchingWithScreenshot = false
+    /// The app a Task was started for (its bundle id), for usage counts.
+    private var launchingTask = "none"
     private var launchingModel = "default"
     /// A session Lantern just started: its conversation opens as soon as the agent shows up.
     private var openWhenSeen: (session: String, until: Date)?
@@ -338,7 +340,30 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.dictionary(forKey: "lastModels") as? [String: String])?[kind.rawValue]
     }
 
-    func launch(kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, model: String? = nil, background: Bool) {
+    /// Opens Task for the app you're in (read now, before anything else can come to the front).
+    func startTask() {
+        if panel == .task { return panel = nil }
+        AppContext.shared.capture()
+        panel = .task
+    }
+
+    func refreshToolkit() { engine.refreshToolkit() }
+
+    /// The folder a Task for this app used last time.
+    func taskFolder(for bundleId: String?) -> String? {
+        guard let bundleId else { return nil }
+        return (UserDefaults.standard.dictionary(forKey: "taskFolders") as? [String: String])?[bundleId]
+    }
+
+    func launch(
+        kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, model: String? = nil, context: String? = nil,
+        toolkit: Bool = false, taskApp: String? = nil, background: Bool
+    ) {
+        if let taskApp {
+            var folders = UserDefaults.standard.dictionary(forKey: "taskFolders") as? [String: String] ?? [:]
+            folders[taskApp] = folder
+            UserDefaults.standard.set(folders, forKey: "taskFolders")
+        }
         var last = UserDefaults.standard.dictionary(forKey: "lastModels") as? [String: String] ?? [:]
         last[kind.rawValue] = model
         UserDefaults.standard.set(last, forKey: "lastModels")
@@ -351,12 +376,14 @@ final class AppModel: ObservableObject {
         launchingKind = kind.rawValue
         launchingInBackground = background
         launchingWithScreenshot = screenshot != nil
+        launchingTask = taskApp ?? "none"
         launchingModel = model ?? "default"
         let id = request("l")
         track(
             id, .launch,
             sent: engine.launch(
-                requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, background: background
+                requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, context: context,
+                toolkit: toolkit, background: background
             )
         )
     }
@@ -522,7 +549,7 @@ final class AppModel: ObservableObject {
         switch request {
         case .launch:
             launching = false
-            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot, "model": launchingModel])
+            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot, "model": launchingModel, "task": launchingTask])
             if ok {
                 panel = .agents
                 show("Session started")

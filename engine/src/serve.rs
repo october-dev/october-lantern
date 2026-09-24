@@ -42,8 +42,16 @@ enum Request {
         screenshot: Option<String>,
         /// A model id for the agent's `--model`; absent for the agent's own default.
         model: Option<String>,
+        /// What the person is working in (a task started from an app), added to the first message.
+        context: Option<String>,
+        /// Add the toolkit list to the first message.
+        #[serde(default)]
+        toolkit: bool,
         background: bool,
     },
+    /// Rebuild the toolkit list now (answered with `toolkit`).
+    #[serde(rename = "toolkit.refresh")]
+    ToolkitRefresh,
     /// The models to offer when starting `kind` (answered with `models`).
     Models {
         kind: Kind,
@@ -151,6 +159,8 @@ pub fn run() -> Result<()> {
     crate::hooks::refresh_hook_binary();
     // Checking installed agents runs a login shell, so do it off the main loop.
     std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));
+    // The toolkit list is kept, not rebuilt before each start: refresh it now if it's old.
+    std::thread::spawn(crate::toolkit::refresh_if_stale);
 
     let link = october_link::start();
     let mut executor = Executor::new(link.clone());
@@ -212,19 +222,15 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, background }) => {
+                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, context, toolkit, background }) => {
                     // Off the loop: it may wait for the agent to start before typing its first message.
                     std::thread::spawn(move || {
                         let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
                         let screenshot = screenshot.map(std::path::PathBuf::from);
-                        match launch::launch(
-                            kind,
-                            std::path::Path::new(&cwd),
-                            prompt.as_deref(),
-                            screenshot.as_deref(),
-                            model.as_deref(),
-                            mode,
-                        ) {
+                        let toolkit = if toolkit { crate::toolkit::text() } else { None };
+                        let extras =
+                            launch::Extras { screenshot: screenshot.as_deref(), context: context.as_deref(), toolkit: toolkit.as_deref() };
+                        match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), extras, model.as_deref(), mode) {
                             Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
                             Err(e) => {
                                 emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}))
@@ -232,6 +238,12 @@ pub fn run() -> Result<()> {
                         }
                     });
                     next_scan = Instant::now() + Duration::from_millis(1500);
+                }
+                Ok(Request::ToolkitRefresh) => {
+                    std::thread::spawn(|| match crate::toolkit::refresh() {
+                        Ok(path) => emit(&json!({"type": "toolkit", "ok": true, "path": path})),
+                        Err(e) => emit(&json!({"type": "toolkit", "ok": false, "message": format!("{e:#}")})),
+                    });
                 }
                 Ok(Request::Models { kind }) => {
                     // Listing runs the agent's own command; off the loop.

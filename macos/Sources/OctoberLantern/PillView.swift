@@ -49,8 +49,8 @@ struct PillView: View {
                     PillIcon(symbol: "plus", active: model.panel == .newSession, help: "New session") {
                         model.toggle(.newSession)
                     }
-                    PillIcon(symbol: "text.bubble", help: "Message an agent  ⌃⌥Space") {
-                        model.compose(to: nil)
+                    PillIcon(symbol: "wand.and.stars", active: model.panel == .task, help: "Task for the app you're in") {
+                        model.startTask()
                     }
                     PillIcon(symbol: dictation.isActive ? "mic.fill" : "mic",
                              tint: dictation.isRecording ? Theme.red : dictation.isActive ? Theme.amber : nil,

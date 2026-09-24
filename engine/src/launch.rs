@@ -120,15 +120,36 @@ pub fn screenshots_dir() -> PathBuf {
 }
 
 /// The first message, with the screenshot's path added so any agent can open it.
-pub fn first_message(prompt: Option<&str>, screenshot: Option<&Path>) -> Option<String> {
-    match (prompt, screenshot) {
-        (p, None) => p.map(String::from),
-        (Some(p), Some(s)) => Some(format!("{p}\n\nFor context, a screenshot of my screen when I started this session: {}", s.display())),
-        (None, Some(s)) => Some(format!(
-            "For context, here's a screenshot of my screen as I start this session: {}. Take a look, then wait for my instructions.",
-            s.display()
-        )),
+/// What goes with the first message, besides your words.
+#[derive(Default, Clone, Copy)]
+pub struct Extras<'a> {
+    /// A screenshot the app saved (in the screenshots folder).
+    pub screenshot: Option<&'a Path>,
+    /// What you're working in, from the app (a task: the app, its window, its document).
+    pub context: Option<&'a str>,
+    /// The toolkit list (toolkit.md).
+    pub toolkit: Option<&'a str>,
+}
+
+/// The first message: your words, then the context, the screenshot's path and the toolkit list.
+/// Nothing is sent when there are no words and no screenshot (an agent would act on context
+/// alone).
+pub fn first_message(prompt: Option<&str>, extras: Extras) -> Option<String> {
+    let mut out = match (prompt, extras.screenshot) {
+        (Some(p), _) => p.to_string(),
+        (None, Some(_)) => "Take a look at the screenshot below, then wait for my instructions.".into(),
+        (None, None) => return None,
+    };
+    if let Some(c) = extras.context.map(str::trim).filter(|c| !c.is_empty()) {
+        out.push_str(&format!("\n\n{c}"));
     }
+    if let Some(s) = extras.screenshot {
+        out.push_str(&format!("\n\nFor context, a screenshot of my screen when I started this session: {}", s.display()));
+    }
+    if let Some(t) = extras.toolkit.map(str::trim).filter(|t| !t.is_empty()) {
+        out.push_str(&format!("\n\nWhat this Mac already has (from Lantern's toolkit list; prefer these over installing new tools):\n{t}"));
+    }
+    Some(out)
 }
 
 pub(crate) fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>, model: Option<&str>) -> String {
@@ -175,14 +196,8 @@ fn open_in_terminal(name: &str, script: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn launch(
-    kind: Kind,
-    cwd: &Path,
-    prompt: Option<&str>,
-    screenshot: Option<&Path>,
-    model: Option<&str>,
-    mode: Mode,
-) -> Result<Launched> {
+pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, model: Option<&str>, mode: Mode) -> Result<Launched> {
+    let screenshot = extras.screenshot;
     if !cwd.is_dir() {
         bail!("{} is not a folder", cwd.display());
     }
@@ -204,7 +219,7 @@ pub fn launch(
             bail!("\"{m}\" doesn't look like a model id");
         }
     }
-    let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), screenshot);
+    let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), extras);
     let prompt = message.as_deref();
 
     if !installed().tmux {

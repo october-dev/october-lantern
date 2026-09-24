@@ -24,6 +24,7 @@ mod serve;
 #[cfg(test)]
 mod tests;
 mod tmux;
+mod toolkit;
 mod transcripts;
 
 use anyhow::{Result, bail};

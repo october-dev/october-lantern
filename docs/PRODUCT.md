@@ -67,14 +67,15 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Amber glow with a number:** that many agents have finished or are asking you something since you last looked.
 - **Amber glow, no number:** agents are still waiting, but you've already seen them.
 
-**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting**, **Agents**, **New session (+)**, **Message**, **Dictate** and **More**, then the **October** logo. It tucks back in when the mouse leaves. Drag the lantern to move it; it snaps to the nearest screen edge.
+**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting**, **Agents**, **New session (+)**, **Task** (the wand), **Dictate** and **More**, then the **October** logo. It tucks back in when the mouse leaves. Drag the lantern to move it; it snaps to the nearest screen edge.
 
 **The panel** opens beside the lantern:
 - **Waiting:** a card for each agent that finished or needs you since you last looked, showing its logo, handle (e.g. `@claude-2`), project, the terminal it runs in, how long ago, the session title and its last message. Cards have **Reply**, **Open** (jumps to the agent's own tab) and **Dismiss** buttons. A permission prompt ("Permission to run Bash · npm test") gets **Allow** and **Deny** buttons, and **Show full request** shows every line of the command. Below the cards, an **Earlier** list holds agents that are still waiting but that you've seen, with **Clear all**.
 - **Agents:** every running agent, the ones that need you first, with logo, handle, folder, terminal and status (*Needs you*, *Your turn*, *Working*, *Idle*, *Running*).
 - **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
 - **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
-- **New session:** a grid of the agents installed on this Mac, a **Model** menu (Default, the models the agent offers, a search for long lists such as October's, or any model id you type; the last choice per agent is remembered), a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Context** (include a screenshot of your screen, with a preview and Retake), **Open in** *Terminal window* or *Background*, and **Start**.
+- **New session:** a grid of the agents installed on this Mac (with "more agents Lantern works with…" showing the rest, dimmed, each linking to where to get it), a **Model** menu (Default, the models the agent offers, a search for long lists such as October's, or any model id you type; the last choice per agent is remembered), a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Context** (include a screenshot of your screen, with a preview and Retake), **Open in** *Terminal window* or *Background*, and **Start**.
+- **Task:** the same form, started from the app you're in. Click the wand while you're in DaVinci Resolve, Preview, Keynote or any app: the panel shows that app (and, with Accessibility allowed, its window and open document), asks "What should it do in DaVinci Resolve?", starts in the document's folder (or where the last task for that app ran), and turns the screenshot on. The agent's first message says which app, window and document you're in, and includes the toolkit list.
 - **October:** three cards. **Connect to October** signs in (Google, GitHub, Apple or email) and then shows the account and plan. **Connect to October Desktop** shows whether October is running, and once you click **Connect** and allow Lantern in October (matching a 6-digit code), it's fully connected. **October phone app** pairs a phone by QR after you sign in, then lists paired phones with Revoke.
 
 **Welcome.** The first launch shows a short, four-page welcome:
@@ -89,7 +90,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Agents:** which agents count toward Waiting and notifications.
 - **About:** version, check for updates, report a problem, the welcome guide, and uninstall.
 
-**Menu bar.** A small lantern icon: Waiting, Agents, New Session, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Welcome Guide, Quit.
+**Menu bar.** A small lantern icon: Waiting, Agents, New Session, Task for the App in Front, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Welcome Guide, Quit.
 
 **Look and feel.** Dark, translucent glass (Apple's Liquid Glass on macOS 26, a frosted blur on earlier versions) with a light rim. Amber means "needs you", green means "working" and grey means "idle". Each agent is shown with its official logo.
 
@@ -163,7 +164,7 @@ Lantern is in **beta (v0.3.4)**.
   - `lantern_active`, once a day: how many agents of each kind are running (e.g. 3 Claude Code, 1 Codex).
   - `reply_sent`, `reply_failed`, `reply_uncertain`, `reply_copied`: the agent's kind and how the reply was typed (tmux, cmux, Terminal…).
   - `permission_answered`: allow or deny, and the route.
-  - `session_started`, `session_start_failed`: the agent's kind, the model id chosen (or "default"), whether it started in the background, and whether a screenshot was included.
+  - `session_started`, `session_start_failed`: the agent's kind, the model id chosen (or "default"), whether it started in the background, whether a screenshot was included, and for a Task the app's bundle id (e.g. `com.blackmagic-design.DaVinciResolve`), never the document or window title.
   - `chat_opened`, `agent_opened`, `dictation_started`, `hooks_changed` (on or off).
   - `october_signed_in`, `october_signed_out`, `october_desktop_connected`, `phone_paired`, `engine_failed`.
 
@@ -172,6 +173,8 @@ Lantern is in **beta (v0.3.4)**.
 - **October Desktop (optional).** Lantern talks to October only on your Mac (127.0.0.1), and only after you allow it in October. You can disconnect it from either app.
 - **October phone app (optional).** Traffic goes through October's relay and is end-to-end encrypted (Noise), so the relay can't read it. Phones are paired by QR and can be revoked from Lantern.
 - **Dictation is on-device only.** Lantern uses Apple's on-device speech recognizer and never sends audio to Apple's servers: if on-device recognition isn't available for your language on this Mac, dictation says so rather than falling back. Lantern listens only while the mic button is on.
+- **The toolkit list.** Lantern keeps a short list of what this Mac has in `~/Library/Application Support/October Lantern/toolkit.md`: the chip and memory, notable command-line tools, local AI models (Ollama, whisper, Hugging Face and LM Studio caches), and apps agents can script. It's rebuilt in the background when it's a day old (or from Settings), never sent anywhere by Lantern, and given to agents you start in a Task (and in new sessions if you turn that on). Anything you write under its "Your notes" heading is kept.
+- **Tasks.** A Task tells the agent which app you're in, its front window's title and its open document's path. Reading the window and document uses macOS's Accessibility permission, asked only when you click Allow on the Task panel.
 - **Screenshots only when you ask.** Lantern takes a screenshot only if you turn on "Include a screenshot of my screen" for new sessions. It captures the display you're on when you open New Session, leaving out Lantern's own windows, and shows you a preview. When you click Start, it's saved on your Mac (`~/Library/Application Support/October Lantern/screenshots`, only readable by you, deleted after a week), and the new agent is given its path with the first message: Codex gets it attached (`--image`), and Claude Code and Gemini CLI are allowed to read that folder. Lantern itself never uploads it; the agent sends it to its model provider like any image you give it. It's never recorded continuously.
 - **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`), and never modifies them.
 - **Typing replies.** When you send a reply, Lantern types it into that agent's terminal: through cmux's command-line tool, tmux, or macOS Automation for Terminal and iTerm2. macOS asks you once per app before Automation is allowed.
@@ -190,8 +193,9 @@ Lantern is in **beta (v0.3.4)**.
 | Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button |
 
 | Screen Recording | Including a screenshot when starting a session | When you turn that option on |
+| Accessibility | Telling a Task's agent which window and document you have open | When you click Allow on the Task panel |
 
-Lantern doesn't need Accessibility or Full Disk Access.
+Lantern doesn't need Full Disk Access.
 
 ## Installing, updating and uninstalling
 

@@ -24,7 +24,7 @@ What the website needs for the beta. Product facts come from [product guide](doc
   - Full support: Claude Code, Codex, OpenCode, Pi, October harness and Gemini CLI.
   - Replying from Lantern: cmux, Terminal, iTerm2 and tmux.
   - Ghostty, VS Code and Warp: copy and paste for now.
-- **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only if you turn on screenshots for new sessions). No Accessibility or Full Disk Access.
+- **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only if you turn on screenshots), Accessibility (only if you let a Task see which document is open). No Full Disk Access.
 - **FAQ entries** from the product guide FAQ, especially "Why did macOS ask whether Lantern can control Terminal?" and "How do I uninstall it?".
 - **Support contact:** hey@october.dev. The app's Report a Problem uses the same address.
 

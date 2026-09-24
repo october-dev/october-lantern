@@ -16,6 +16,8 @@ final class Preferences: ObservableObject {
     /// New sessions start with a screenshot of the screen you're on (New Session can turn it off
     /// for one session).
     @Published var screenshotNewSessions: Bool { didSet { d.set(screenshotNewSessions, forKey: "screenshotNewSessions") } }
+    /// Also give the toolkit list to plain new sessions (Tasks always get it).
+    @Published var toolkitInSessions: Bool { didSet { d.set(toolkitInSessions, forKey: "toolkitInSessions") } }
 
     private init() {
         d.register(defaults: ["notificationsEnabled": true, "notifyOnFinish": true])
@@ -25,6 +27,7 @@ final class Preferences: ObservableObject {
         hotkey = HotKeyPreset(rawValue: d.string(forKey: "hotkey") ?? "") ?? .controlOptionSpace
         edge = d.string(forKey: "pillEdge") ?? "right"
         screenshotNewSessions = d.bool(forKey: "screenshotNewSessions")
+        toolkitInSessions = d.bool(forKey: "toolkitInSessions")
     }
 
     func counts(_ kind: AgentKind) -> Bool { !mutedKinds.contains(kind.rawValue) }

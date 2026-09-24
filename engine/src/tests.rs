@@ -537,13 +537,20 @@ fn helpers_are_bounded_and_drained() {
 /// permission prompt (Claude Code, Gemini), and named in the first message for everyone.
 #[test]
 fn new_sessions_carry_the_screenshot() {
-    use crate::launch::{agent_command, first_message};
+    use crate::launch::{Extras, agent_command, first_message};
     use std::path::Path;
     let shot = Path::new("/Users/me/Library/Application Support/October Lantern/screenshots/s1.png");
-    let msg = first_message(Some("fix the layout"), Some(shot)).unwrap();
+    let with_shot = Extras { screenshot: Some(shot), ..Default::default() };
+    let msg = first_message(Some("fix the layout"), with_shot).unwrap();
     assert!(msg.starts_with("fix the layout") && msg.contains("s1.png"));
-    assert!(first_message(None, Some(shot)).unwrap().contains("wait for my instructions"));
-    assert_eq!(first_message(Some("hi"), None).as_deref(), Some("hi"));
+    assert!(first_message(None, with_shot).unwrap().contains("wait for my instructions"));
+    assert_eq!(first_message(Some("hi"), Extras::default()).as_deref(), Some("hi"));
+    // A task: your words, then the app context, the screenshot and the toolkit, in that order.
+    let task = Extras { context: Some("Working in DaVinci Resolve"), toolkit: Some("- Media: ffmpeg"), ..with_shot };
+    let full = first_message(Some("normalize the voice"), task).unwrap();
+    let at = |s: &str| full.find(s).unwrap();
+    assert!(at("normalize") < at("DaVinci") && at("DaVinci") < at("s1.png") && at("s1.png") < at("ffmpeg"), "{full}");
+    assert_eq!(first_message(None, Extras { toolkit: Some("- x"), ..Default::default() }), None);
 
     let codex = agent_command(Kind::Codex, Path::new("/p"), Some(&msg), Some(shot), None);
     let (flags, prompt) = codex.split_once(" -- ").unwrap();
@@ -590,4 +597,23 @@ fn first_messages_go_on_the_command_line() {
     assert!(opencode.contains("--prompt") && !opencode.contains(" -- "), "{opencode}");
     let claude = agent_command(Kind::Claude, Path::new("/p"), Some("fix it"), None, None);
     assert!(claude.contains("--session-id"), "{claude}");
+}
+
+#[test]
+fn toolkit_list_keeps_the_users_notes() {
+    use crate::toolkit::{Found, NOTES_HEADING, render};
+    let found = Found {
+        machine: Some("Apple M3, 16 GB memory".into()),
+        tools: vec![("Media", vec!["ffmpeg".into()]), ("Cloud", vec![])],
+        models: vec!["Ollama: llama3.2".into()],
+        apps: vec!["DaVinci Resolve (scripting API in /Library/...)".into()],
+    };
+    let text = render(&found, "use my LUTs in ~/Grades\n");
+    assert!(text.contains("- Media: ffmpeg") && !text.contains("Cloud"), "{text}");
+    assert!(text.contains("Ollama: llama3.2") && text.contains("DaVinci Resolve"));
+    assert_eq!(crate::toolkit::notes_of(&text).map(str::trim), Some("use my LUTs in ~/Grades"));
+    // Rendering again from its own notes doesn't grow the file.
+    let again = render(&found, crate::toolkit::notes_of(&text).unwrap());
+    assert_eq!(again.matches(NOTES_HEADING).count(), 1);
+    assert_eq!(again.len(), text.len());
 }

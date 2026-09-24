@@ -14,6 +14,25 @@ struct AgentKind: RawRepresentable, Codable, Hashable {
         try c.encode(rawValue)
     }
 
+    /// Every agent Lantern supports, in the order New Session lists them.
+    static let supported: [AgentKind] = [
+        "claude", "codex", "gemini", "opencode", "pi", "october", "grok", "cursor", "copilot", "qwen", "goose", "aider", "amp",
+        "kimi", "droid", "crush", "auggie",
+    ].map { AgentKind(rawValue: $0) }
+
+    /// Where to get an agent that isn't installed.
+    var website: URL? {
+        [
+            "claude": "https://code.claude.com/docs", "codex": "https://github.com/openai/codex",
+            "gemini": "https://github.com/google-gemini/gemini-cli", "opencode": "https://opencode.ai",
+            "pi": "https://github.com/earendil-works/pi", "october": "https://github.com/october-dev/october-harness",
+            "grok": "https://x.ai", "cursor": "https://cursor.com/cli", "copilot": "https://github.com/github/copilot-cli",
+            "qwen": "https://github.com/QwenLM/qwen-code", "goose": "https://github.com/block/goose", "aider": "https://aider.chat",
+            "amp": "https://ampcode.com", "kimi": "https://github.com/MoonshotAI/kimi-cli", "droid": "https://factory.ai",
+            "crush": "https://github.com/charmbracelet/crush", "auggie": "https://www.augmentcode.com",
+        ][rawValue].flatMap { URL(string: $0) }
+    }
+
     var displayName: String {
         [
             "claude": "Claude Code", "codex": "Codex", "opencode": "OpenCode", "pi": "Pi", "gemini": "Gemini CLI",

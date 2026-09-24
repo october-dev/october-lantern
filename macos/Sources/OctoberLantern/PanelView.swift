@@ -12,6 +12,9 @@ struct PanelView: View {
             case .newSession:
                 PanelTitle(title: "New session", model: model)
                 NewSessionView(model: model)
+            case .task:
+                PanelTitle(title: "Task", model: model)
+                NewSessionView(model: model, task: true)
             case .october:
                 PanelTitle(title: "October", model: model)
                 OctoberView(model: model)

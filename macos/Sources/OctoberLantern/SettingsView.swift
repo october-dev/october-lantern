@@ -46,8 +46,20 @@ struct SettingsView: View {
                 Toggle("Include a screenshot of my screen when starting a session", isOn: $prefs.screenshotNewSessions)
                 Text("The new agent gets a screenshot of the screen you're on (without Lantern) with its first message, for context. It stays on this Mac. Needs Screen Recording permission; you can also switch it per session.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Also give new sessions the list of tools on this Mac", isOn: $prefs.toolkitInSessions)
+                HStack {
+                    Text("Lantern keeps a short list of what this Mac has (tools, apps, local models) for agents it starts. Tasks always get it. You can add your own notes at the end of the list.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open List") {
+                        let url = FileManager.default.homeDirectoryForCurrentUser
+                            .appendingPathComponent("Library/Application Support/October Lantern/toolkit.md")
+                        if FileManager.default.fileExists(atPath: url.path) { NSWorkspace.shared.open(url) } else { model.refreshToolkit() }
+                    }
+                    Button("Refresh") { model.refreshToolkit() }
+                }
             } header: {
-                Text("New sessions")
+                Text("New sessions and tasks")
             }
             Section {
                 HooksSetting(hooks: hooks)
