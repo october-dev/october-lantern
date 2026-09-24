@@ -11,18 +11,17 @@ struct DesktopCard: View {
         let paired = link?.paired == true
         VStack(alignment: .leading, spacing: 10) {
             DesktopArtwork(connected: paired, pairing: link?.status == "pairing")
-            HStack(alignment: .top, spacing: 10) {
+            // Title with its status under it, the action on the right; the explanation below, full width.
+            HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
-                        Text("October Desktop").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.ink)
-                            .lineLimit(1).fixedSize()
-                        StatusPill(text: statusText(link), color: statusColor(link))
-                    }
-                    Text(detail(link)).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    Text("October Desktop").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
+                    StatusPill(text: statusText(link), color: statusColor(link))
                 }
                 Spacer(minLength: 8)
-                action(link)
+                action(link).fixedSize()
             }
+            Text(detail(link)).font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             if let code = link?.pairingCode {
                 HStack(spacing: 10) {
                     ProgressView().controlSize(.small)
@@ -111,6 +110,8 @@ struct StatusPill: View {
         }
         .padding(.horizontal, 7).padding(.vertical, 2)
         .background(Capsule().fill(color.opacity(0.14)))
+        // Never squeezed into a column: the text stays on one line.
+        .fixedSize()
     }
 }
 
