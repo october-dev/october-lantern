@@ -51,6 +51,12 @@ Collapsed, it's one small lantern. It stays beside you across desktop Spaces and
 2. **Drag October Lantern into Applications** and open it.
 3. **Keep working with your agents.** Lantern finds supported sessions already running on your Mac. The welcome guide walks you through optional notifications and hooks.
 
+Prefer Terminal? One command downloads, installs, and opens the latest release:
+
+```sh
+curl -fsSL https://lantern.october.dev/install.sh | sh
+```
+
 Press **Control + Option + Space** whenever you want to write a reply. Use the mic button to dictate instead. The shortcut is customizable in Settings.
 
 ## Your tools. One place to check.
