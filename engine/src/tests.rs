@@ -554,15 +554,15 @@ fn new_sessions_carry_the_screenshot() {
     assert!(at("normalize") < at("DaVinci") && at("DaVinci") < at("s1.png") && at("s1.png") < at("ffmpeg"), "{full}");
     assert_eq!(first_message(None, Extras { toolkit: Some("- x"), ..Default::default() }), None);
 
-    let codex = agent_command(Kind::Codex, Path::new("/p"), Some(&msg), Some(shot), None);
+    let codex = agent_command(Kind::Codex, Path::new("/p"), Some(&msg), Some(shot), None, None);
     let (flags, prompt) = codex.split_once(" -- ").unwrap();
     assert!(flags.contains("--image") && flags.contains("s1.png"), "{codex}");
     assert!(prompt.contains("fix the layout"));
-    let claude = agent_command(Kind::Claude, Path::new("/p"), Some(&msg), Some(shot), None);
+    let claude = agent_command(Kind::Claude, Path::new("/p"), Some(&msg), Some(shot), None, None);
     assert!(claude.split_once(" -- ").unwrap().0.contains("--add-dir"), "{claude}");
-    let gemini = agent_command(Kind::Gemini, Path::new("/p"), Some(&msg), Some(shot), None);
+    let gemini = agent_command(Kind::Gemini, Path::new("/p"), Some(&msg), Some(shot), None, None);
     assert!(gemini.contains("--include-directories"));
-    assert!(!agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None, None).contains("--add-dir"));
+    assert!(!agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None, None, None).contains("--add-dir"));
 }
 
 #[test]
@@ -580,7 +580,7 @@ fn models_are_listed_and_passed() {
     assert_eq!(parse_slashed("opencode/big-pickle\nnoise line\n").len(), 1);
     assert!(valid("claude-opus-5-5[1m]") && valid("sonnet") && !valid("--dangerous") && !valid("a b") && !valid("x;rm"));
 
-    let cmd = crate::launch::agent_command(Kind::Claude, std::path::Path::new("/p"), Some("hi"), None, Some("opus"));
+    let cmd = crate::launch::agent_command(Kind::Claude, std::path::Path::new("/p"), Some("hi"), None, Some("opus"), None);
     let (flags, _) = cmd.split_once(" -- ").unwrap();
     assert!(flags.contains("--model") && flags.contains("opus"), "{cmd}");
 }
@@ -592,12 +592,12 @@ fn first_messages_go_on_the_command_line() {
     use crate::launch::agent_command;
     use std::path::Path;
     for kind in [Kind::Grok, Kind::October, Kind::Pi, Kind::Gemini] {
-        let cmd = agent_command(kind, Path::new("/p"), Some("fix it"), None, None);
+        let cmd = agent_command(kind, Path::new("/p"), Some("fix it"), None, None, None);
         assert!(cmd.contains(" -- ") && cmd.contains("fix it"), "{cmd}");
     }
-    let opencode = agent_command(Kind::Opencode, Path::new("/p"), Some("fix it"), None, None);
+    let opencode = agent_command(Kind::Opencode, Path::new("/p"), Some("fix it"), None, None, None);
     assert!(opencode.contains("--prompt") && !opencode.contains(" -- "), "{opencode}");
-    let claude = agent_command(Kind::Claude, Path::new("/p"), Some("fix it"), None, None);
+    let claude = agent_command(Kind::Claude, Path::new("/p"), Some("fix it"), None, None, None);
     assert!(claude.contains("--session-id"), "{claude}");
 }
 
@@ -662,4 +662,31 @@ fn app_sessions_are_found_in_session_files_and_codex_index() {
     let rows = r#"[{"id":"t1","rollout_path":"/r.jsonl","cwd":"/w","title":"Fix it","updated":1790000000000}]"#;
     let t = crate::apps::parse_codex_threads(rows);
     assert_eq!((t[0].source, t[0].title.as_deref(), t[0].updated_ms), ("Codex app", Some("Fix it"), 1_790_000_000_000));
+}
+
+/// On October Bus: Claude gets an MCP file, OpenCode its config through the environment, the
+/// October harness runs under the Bus's launcher, and the first message says so.
+#[test]
+fn bus_launches_reach_each_agent() {
+    use crate::bus::Attach;
+    use crate::launch::{Extras, agent_command, first_message};
+    use std::path::Path;
+    let claude = Attach {
+        id: "lantern-claude-1".into(),
+        name: "Claude".into(),
+        args: vec!["--mcp-config".into(), "'/b/x.json'".into()],
+        ..Default::default()
+    };
+    let cmd = agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None, None, Some(&claude));
+    let (flags, _) = cmd.split_once(" -- ").unwrap();
+    assert!(flags.contains("--mcp-config"), "{cmd}");
+    let opencode = Attach { env: vec![("OPENCODE_CONFIG".into(), "/b/o.json".into())], ..Default::default() };
+    let cmd = agent_command(Kind::Opencode, Path::new("/p"), None, None, None, Some(&opencode));
+    assert!(cmd.contains("OPENCODE_CONFIG=") && cmd.contains("exec opencode"), "{cmd}");
+    let october = Attach { wrap: vec!["'/b/october-bus'".into(), "agent".into(), "run".into(), "--".into()], ..Default::default() };
+    let cmd = agent_command(Kind::October, Path::new("/p"), None, None, None, Some(&october));
+    assert!(cmd.contains("october-bus'\\'' agent run -- october"), "{cmd}");
+    let note = crate::bus::note("Claude · web");
+    let msg = first_message(Some("fix it"), Extras { bus_note: Some(&note), ..Default::default() }).unwrap();
+    assert!(msg.starts_with("fix it") && msg.contains("October Bus"));
 }

@@ -47,6 +47,9 @@ enum Request {
         /// Add the toolkit list to the first message.
         #[serde(default)]
         toolkit: bool,
+        /// Connect the agent to October Bus with the other agents Lantern started.
+        #[serde(default)]
+        bus: bool,
         background: bool,
     },
     /// Rebuild the toolkit list now (answered with `toolkit`).
@@ -223,16 +226,24 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, context, toolkit, background }) => {
+                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, context, toolkit, bus, background }) => {
                     // Off the loop: it may wait for the agent to start before typing its first message.
                     std::thread::spawn(move || {
                         let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
                         let screenshot = screenshot.map(std::path::PathBuf::from);
                         let toolkit = if toolkit { crate::toolkit::text() } else { None };
-                        let extras =
-                            launch::Extras { screenshot: screenshot.as_deref(), context: context.as_deref(), toolkit: toolkit.as_deref() };
+                        let extras = launch::Extras {
+                            screenshot: screenshot.as_deref(),
+                            context: context.as_deref(),
+                            toolkit: toolkit.as_deref(),
+                            bus,
+                            bus_note: None,
+                        };
                         match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), extras, model.as_deref(), mode) {
-                            Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
+                            Ok(l) => emit(&json!({
+                                "type": "launchResult", "requestId": request_id, "ok": true, "session": l.session,
+                                "warning": l.bus_problem.map(|p| format!("Started without October Bus: {p}"))
+                            })),
                             Err(e) => {
                                 emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}))
                             }

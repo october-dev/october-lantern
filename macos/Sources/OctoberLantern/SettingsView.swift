@@ -46,6 +46,9 @@ struct SettingsView: View {
                 Toggle("Include a screenshot of my screen when starting a session", isOn: $prefs.screenshotNewSessions)
                 Text("The new agent gets a screenshot of the screen you're on (without Lantern) with its first message, for context. It stays on this Mac. Needs Screen Recording permission; you can also switch it per session.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Connect new sessions to October Bus", isOn: $prefs.busForSessions)
+                Text("Agents Lantern starts (Claude Code, Codex, OpenCode, October) can see and message each other and share tasks. Everything stays on this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Also give new sessions the list of tools on this Mac", isOn: $prefs.toolkitInSessions)
                 HStack {
                     Text("Lantern keeps a short list of what this Mac has (tools, apps, local models) for agents it starts. Tasks always get it. You can add your own notes at the end of the list.")

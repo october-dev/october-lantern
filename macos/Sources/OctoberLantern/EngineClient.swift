@@ -158,11 +158,11 @@ final class EngineClient {
     @discardableResult
     func launch(
         requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, model: String?, context: String?, toolkit: Bool,
-        background: Bool
+        bus: Bool, background: Bool
     ) -> Bool {
         var request: [String: Any] = [
             "type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background,
-            "toolkit": toolkit,
+            "toolkit": toolkit, "bus": bus,
         ]
         if let context { request["context"] = context }
         if let screenshot { request["screenshot"] = screenshot }

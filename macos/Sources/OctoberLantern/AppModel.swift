@@ -391,7 +391,7 @@ final class AppModel: ObservableObject {
             id, .launch,
             sent: engine.launch(
                 requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, context: context,
-                toolkit: toolkit, background: background
+                toolkit: toolkit, bus: prefs.busForSessions, background: background
             )
         )
     }
@@ -557,10 +557,10 @@ final class AppModel: ObservableObject {
         switch request {
         case .launch:
             launching = false
-            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot, "model": launchingModel, "task": launchingTask])
+            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot, "model": launchingModel, "task": launchingTask, "bus": prefs.busForSessions])
             if ok {
                 panel = .agents
-                show("Session started")
+                show(message.map { "Session started. \($0)" } ?? "Session started")
             } else {
                 launchError = message ?? "unknown error"
             }

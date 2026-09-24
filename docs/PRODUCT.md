@@ -67,7 +67,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Amber glow with a number:** that many agents have finished or are asking you something since you last looked.
 - **Amber glow, no number:** agents are still waiting, but you've already seen them.
 
-**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting**, **Agents**, **New session (+)**, **Task** (the wand), **Dictate** and **More**, then the **October** logo. It tucks back in when the mouse leaves. Drag the lantern to move it; it snaps to the nearest screen edge.
+**Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting**, **Agents**, **New session (+)**, **Dictate** and **More**, then the **October** logo. It tucks back in when the mouse leaves. Drag the lantern to move it; it snaps to the nearest screen edge.
 
 **The panel** opens beside the lantern:
 - **Waiting:** a card for each agent that finished or needs you since you last looked, showing its logo, handle (e.g. `@claude-2`), project, the terminal it runs in, how long ago, the session title and its last message. Cards have **Reply**, **Open** (jumps to the agent's own tab) and **Dismiss** buttons. A permission prompt ("Permission to run Bash · npm test") gets **Allow** and **Deny** buttons, and **Show full request** shows every line of the command. Below the cards, an **Earlier** list holds agents that are still waiting but that you've seen, with **Clear all**.
@@ -75,7 +75,9 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
 - **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
 - **New session:** a grid of the agents installed on this Mac (with "more agents Lantern works with…" showing the rest, dimmed, each linking to where to get it), a **Model** menu (Default, the models the agent offers, a search for long lists such as October's, or any model id you type; the last choice per agent is remembered), a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Context** (include a screenshot of your screen, with a preview and Retake), **Open in** *Terminal window* or *Background*, and **Start**.
-- **Task:** the same form, started from the app you're in. Click the wand while you're in DaVinci Resolve, Preview, Keynote or any app: the panel shows that app (and, with Accessibility allowed, its window and open document), asks "What should it do in DaVinci Resolve?", starts in the document's folder (or where the last task for that app ran), and turns the screenshot on. The agent's first message says which app, window and document you're in, and includes the toolkit list.
+- **Task:** the same form, when you click **+** while you're in DaVinci Resolve, Preview, Keynote or any app other than a terminal: the panel shows that app (and, with Accessibility allowed, its window and open document), asks "What should it do in DaVinci Resolve?", starts in the document's folder (or where the last task for that app ran), and turns the screenshot on. The agent's first message says which app, window and document you're in, and includes the toolkit list. ✕ on the app's card turns it back into a plain session.
+- **October Bus:** agents Lantern starts (Claude Code, Codex, OpenCode, October) are connected to the public [October Bus](https://github.com/october-dev/october-bus) and linked with each other, so they can see their peers, message them and share tasks. Their first message says so. Lantern ships the Bus, starts it when needed, and keeps its agents in one scope, `lantern`; nothing is sent off the Mac. Settings › General can turn it off.
+- **App sessions:** Claude Desktop (its Code tab), Cowork and the Codex app's sessions are listed too, labeled with their app. Running ones show live; ones from the last three days show as **Recent**, and **Open** opens the app. They can't be typed into from Lantern.
 - **October:** three cards. **Connect to October** signs in (Google, GitHub, Apple or email) and then shows the account and plan. **Connect to October Desktop** shows whether October is running, and once you click **Connect** and allow Lantern in October (matching a 6-digit code), it's fully connected. **October phone app** pairs a phone by QR after you sign in, then lists paired phones with Revoke.
 
 **Welcome.** The first launch shows a short, four-page welcome:
@@ -90,7 +92,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Agents:** which agents count toward Waiting and notifications.
 - **About:** version, check for updates, report a problem, the welcome guide, and uninstall.
 
-**Menu bar.** A small lantern icon: Waiting, Agents, New Session, Task for the App in Front, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Welcome Guide, Quit.
+**Menu bar.** A small lantern icon: Waiting, Agents, New Session or Task, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Welcome Guide, Quit.
 
 **Look and feel.** Dark, translucent glass (Apple's Liquid Glass on macOS 26, a frosted blur on earlier versions) with a light rim. Amber means "needs you", green means "working" and grey means "idle". Each agent is shown with its official logo.
 

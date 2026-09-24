@@ -43,6 +43,17 @@ const ALL: [Kind; 17] = [
     Kind::October,
 ];
 
+/// How an agent is named on October Bus.
+fn display_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Claude => "Claude Code",
+        Kind::Codex => "Codex",
+        Kind::Opencode => "OpenCode",
+        Kind::October => "October",
+        other => other.as_str(),
+    }
+}
+
 pub fn program(kind: Kind) -> &'static str {
     match kind {
         Kind::Cursor => "cursor-agent",
@@ -92,6 +103,8 @@ pub enum Mode {
 
 pub struct Launched {
     pub session: Option<String>,
+    /// Why the agent started without October Bus, when it was asked for.
+    pub bus_problem: Option<String>,
 }
 
 /// How a harness takes its first message on the command line: as the last argument (after
@@ -129,6 +142,10 @@ pub struct Extras<'a> {
     pub context: Option<&'a str>,
     /// The toolkit list (toolkit.md).
     pub toolkit: Option<&'a str>,
+    /// Connect the agent to October Bus with the other agents Lantern started.
+    pub bus: bool,
+    /// What the first message says about October Bus (set by `launch`).
+    pub bus_note: Option<&'a str>,
 }
 
 /// The first message: your words, then the context, the screenshot's path and the toolkit list.
@@ -146,14 +163,31 @@ pub fn first_message(prompt: Option<&str>, extras: Extras) -> Option<String> {
     if let Some(s) = extras.screenshot {
         out.push_str(&format!("\n\nFor context, a screenshot of my screen when I started this session: {}", s.display()));
     }
+    if let Some(n) = extras.bus_note {
+        out.push_str(&format!("\n\n{n}"));
+    }
     if let Some(t) = extras.toolkit.map(str::trim).filter(|t| !t.is_empty()) {
         out.push_str(&format!("\n\nWhat this Mac already has (from Lantern's toolkit list; prefer these over installing new tools):\n{t}"));
     }
     Some(out)
 }
 
-pub(crate) fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>, model: Option<&str>) -> String {
-    let mut cmd = format!("cd {} && exec {}", quote(&cwd.to_string_lossy()), program(kind));
+pub(crate) fn agent_command(
+    kind: Kind,
+    cwd: &Path,
+    prompt: Option<&str>,
+    screenshot: Option<&Path>,
+    model: Option<&str>,
+    bus: Option<&crate::bus::Attach>,
+) -> String {
+    // On October Bus: its environment, a wrapper command (the October harness), or arguments.
+    let env: String = bus.map(|b| b.env.iter().map(|(k, v)| format!("{k}={} ", quote(v))).collect()).unwrap_or_default();
+    let wrap: String = bus.map(|b| b.wrap.iter().map(|w| format!("{w} ")).collect()).unwrap_or_default();
+    let mut cmd = format!("cd {} && {env}exec {wrap}{}", quote(&cwd.to_string_lossy()), program(kind));
+    for arg in bus.map(|b| b.args.as_slice()).unwrap_or_default() {
+        cmd.push(' ');
+        cmd.push_str(arg);
+    }
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         cmd.push_str(&format!(" {flag} {}", quote(m)));
     }
@@ -219,6 +253,24 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
             bail!("\"{m}\" doesn't look like a model id");
         }
     }
+    // October Bus: a new identity for this agent, and the tools to reach the others.
+    let mut bus_problem = None;
+    let bus = if extras.bus && crate::bus::supported(kind) {
+        let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = format!("{} · {project}", display_name(kind));
+        let id = crate::bus::new_id(kind);
+        match crate::bus::ensure_ready().and_then(|_| crate::bus::attach(kind, &id, &name)) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                bus_problem = Some(format!("{e:#}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let note = bus.as_ref().map(|b| crate::bus::note(&b.name));
+    let extras = Extras { bus_note: note.as_deref(), ..extras };
     let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), extras);
     let prompt = message.as_deref();
 
@@ -230,8 +282,11 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
             bail!("Without tmux, Lantern can't hand {} a first message. Leave the message empty, or install tmux.", program(kind));
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
-        open_in_terminal(&name, &agent_command(kind, cwd, prompt, screenshot, model))?;
-        return Ok(Launched { session: None });
+        open_in_terminal(&name, &agent_command(kind, cwd, prompt, screenshot, model, bus.as_ref()))?;
+        if let Some(b) = &bus {
+            crate::bus::link_when_ready(b.id.clone());
+        }
+        return Ok(Launched { session: None, bus_problem });
     }
 
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
@@ -241,10 +296,14 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
     let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
-        .arg(agent_command(kind, cwd, prompt, screenshot, model));
+        .arg(agent_command(kind, cwd, prompt, screenshot, model, bus.as_ref()));
     let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
         bail!("tmux couldn't start the session");
+    }
+
+    if let Some(b) = &bus {
+        crate::bus::link_when_ready(b.id.clone());
     }
 
     if mode == Mode::Terminal {
@@ -257,7 +316,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
         let pane = TmuxPane { socket: Some(LANTERN_SOCKET.into()), target: session.clone(), pane_id: format!("{session}:0.0") };
         type_first_prompt(&pane, kind, p).context("the session started, but its first message wasn't sent")?;
     }
-    Ok(Launched { session: Some(session) })
+    Ok(Launched { session: Some(session), bus_problem })
 }
 
 /// Waits until something other than a shell runs on the pane's terminal (the agent, even when a

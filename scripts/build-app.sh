@@ -39,6 +39,32 @@ else
   ENGINE="$ROOT/engine/target/$PROFILE/lantern-engine"
 fi
 
+# October Bus (github.com/october-dev/october-bus, Apache-2.0), built from a pinned commit so every
+# release ships the same Bus. Needs Go; without it the app is built without the Bus.
+BUS_COMMIT="${BUS_COMMIT:-20b745682818f33b7d03dc7a3e65d32a71ded35b}"
+BUS_SRC="${OCTOBER_BUS_SRC:-$ROOT/build/october-bus-src}"
+BUS_BIN=""
+if command -v go >/dev/null 2>&1; then
+  echo "==> October Bus ${BUS_COMMIT:0:7}"
+  if [[ ! -d "$BUS_SRC/.git" ]]; then
+    git clone -q https://github.com/october-dev/october-bus.git "$BUS_SRC"
+  fi
+  git -C "$BUS_SRC" cat-file -e "$BUS_COMMIT^{commit}" 2>/dev/null || git -C "$BUS_SRC" fetch -q origin
+  BUS_BUILD="$(mktemp -d)"
+  (cd "$BUS_SRC" && git archive "$BUS_COMMIT" | tar -x -C "$BUS_BUILD")
+  if [[ "${UNIVERSAL:-}" == 1 ]]; then
+    for arch in arm64 amd64; do
+      (cd "$BUS_BUILD" && CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -o "$BUS_BUILD/october-bus-$arch" ./cmd/october-bus)
+    done
+    lipo -create -output "$BUS_BUILD/october-bus" "$BUS_BUILD/october-bus-arm64" "$BUS_BUILD/october-bus-amd64"
+  else
+    (cd "$BUS_BUILD" && CGO_ENABLED=0 go build -trimpath -o "$BUS_BUILD/october-bus" ./cmd/october-bus)
+  fi
+  BUS_BIN="$BUS_BUILD/october-bus"
+else
+  echo "==> October Bus: skipped (Go isn't installed)"
+fi
+
 echo "==> app ($PROFILE)"
 (cd "$ROOT/macos" && swift build -c "$PROFILE" ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"})
 BIN_DIR="$(cd "$ROOT/macos" && swift build -c "$PROFILE" ${SWIFT_ARCHS[@]+"${SWIFT_ARCHS[@]}"} --show-bin-path)"
@@ -48,6 +74,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN_DIR/OctoberLantern" "$APP/Contents/MacOS/OctoberLantern"
 cp "$ENGINE" "$APP/Contents/MacOS/lantern-engine"
+if [[ -n "$BUS_BIN" ]]; then cp "$BUS_BIN" "$APP/Contents/MacOS/october-bus"; fi
 cp -R "$ROOT/macos/Resources/." "$APP/Contents/Resources/"
 cp "$ROOT/logo.png" "$APP/Contents/Resources/logo.png"
 ditto "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
@@ -94,6 +121,9 @@ if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     codesign --force --options runtime --timestamp --preserve-metadata=entitlements --sign "$SIGN_IDENTITY" "$SPARKLE/$part"
   done
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
+  if [[ -f "$APP/Contents/MacOS/october-bus" ]]; then
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/october-bus"
+  fi
   codesign --force --options runtime --timestamp --entitlements "$ROOT/macos/Engine.entitlements" \
     --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/lantern-engine"
   codesign --force --options runtime --timestamp --entitlements "$ROOT/macos/OctoberLantern.entitlements" \
@@ -102,6 +132,7 @@ else
   # Ad-hoc signature for local runs.
   codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
   codesign --force --sign - "$APP/Contents/MacOS/lantern-engine"
+  if [[ -f "$APP/Contents/MacOS/october-bus" ]]; then codesign --force --sign - "$APP/Contents/MacOS/october-bus"; fi
   codesign --force --sign - "$APP"
 fi
 echo "==> $APP"

@@ -8,6 +8,7 @@
 
 mod actions;
 mod apps;
+mod bus;
 mod deliver;
 mod history;
 mod hooks;

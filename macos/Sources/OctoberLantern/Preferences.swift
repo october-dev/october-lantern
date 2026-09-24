@@ -18,6 +18,8 @@ final class Preferences: ObservableObject {
     @Published var screenshotNewSessions: Bool { didSet { d.set(screenshotNewSessions, forKey: "screenshotNewSessions") } }
     /// Also give the toolkit list to plain new sessions (Tasks always get it).
     @Published var toolkitInSessions: Bool { didSet { d.set(toolkitInSessions, forKey: "toolkitInSessions") } }
+    /// Connect agents Lantern starts to October Bus, so they can message each other.
+    @Published var busForSessions: Bool { didSet { d.set(busForSessions, forKey: "busForSessions") } }
 
     private init() {
         d.register(defaults: ["notificationsEnabled": true, "notifyOnFinish": true])
@@ -28,6 +30,8 @@ final class Preferences: ObservableObject {
         edge = d.string(forKey: "pillEdge") ?? "right"
         screenshotNewSessions = d.bool(forKey: "screenshotNewSessions")
         toolkitInSessions = d.bool(forKey: "toolkitInSessions")
+        d.register(defaults: ["busForSessions": true])
+        busForSessions = d.bool(forKey: "busForSessions")
     }
 
     func counts(_ kind: AgentKind) -> Bool { !mutedKinds.contains(kind.rawValue) }

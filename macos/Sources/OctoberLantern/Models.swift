@@ -195,7 +195,7 @@ enum EngineMessage: Decodable {
     }
 
     private enum Keys: String, CodingKey {
-        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session
+        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning
     }
 
     init(from decoder: Decoder) throws {
@@ -232,7 +232,8 @@ enum EngineMessage: Decodable {
         case "launchResult", "attachResult":
             let id = try c.decode(String.self, forKey: .requestId)
             let ok = try c.decode(Bool.self, forKey: .ok)
-            let message = try c.decodeIfPresent(String.self, forKey: .message)
+            // A launch that worked can still carry a warning (e.g. it started without October Bus).
+            let message = try c.decodeIfPresent(String.self, forKey: .message) ?? c.decodeIfPresent(String.self, forKey: .warning)
             self = try c.decode(String.self, forKey: .type) == "launchResult"
                 ? .launchResult(requestId: id, ok: ok, message: message, session: try c.decodeIfPresent(String.self, forKey: .session))
                 : .attachResult(requestId: id, ok: ok, message: message)
