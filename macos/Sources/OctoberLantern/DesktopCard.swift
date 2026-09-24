@@ -20,6 +20,10 @@ struct DesktopCard: View {
                 Spacer(minLength: 8)
                 action(link).fixedSize()
             }
+            // What this is, for someone seeing it for the first time; then the next step.
+            Text("October Desktop is October's app for running teams of agents on a shared canvas. Connect it and the agents on your canvas show up in Lantern with their names and questions, and your replies reach them through October.")
+                .font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.8))
+                .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             Text(detail(link)).font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             if let code = link?.pairingCode {
@@ -67,13 +71,13 @@ struct DesktopCard: View {
     private func detail(_ link: OctoberLink?) -> String {
         switch link?.status {
         case "connected":
-            return "\(link!.agentCount) agent\(link!.agentCount == 1 ? "" : "s") in October. Replies go through October, and Open shows them on the canvas."
+            return "Connected: \(link!.agentCount) agent\(link!.agentCount == 1 ? "" : "s") from October. Open on one shows it on the canvas."
         case "readOnly":
-            return "October is running. Lantern lists its terminals; connect to reply through October and see agents' names and questions."
+            return "October is running. Click Connect, then allow Lantern in October and check the 6-digit code matches."
         case "pairing": return "Waiting for you to allow Lantern in October…"
-        case "notRunning": return "Open October Desktop to connect."
+        case "notRunning": return "Open October Desktop, then connect from here."
         case "error": return link?.message.map { "Couldn't talk to October: \($0)" } ?? "Couldn't talk to October."
-        default: return "Get October Desktop to run teams of agents on a canvas."
+        default: return "October Desktop isn't on this Mac yet. Get it from october.dev."
         }
     }
 
