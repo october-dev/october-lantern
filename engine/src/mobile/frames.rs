@@ -98,6 +98,8 @@ impl Kind {
 pub const MAX_CHUNK: usize = 65_503;
 const MAX_BUFFERED: usize = 8 * 1024 * 1024;
 const MAX_IN_FLIGHT: usize = 16;
+/// Bytes announced by all partly received messages together.
+const MAX_TOTAL_BUFFERED: usize = 16 * 1024 * 1024;
 
 /// One message as one or more plaintext chunks (each to be encrypted separately).
 pub fn encode_message(kind: Kind, data: &[u8], message_id: u32) -> Vec<Vec<u8>> {
@@ -166,6 +168,9 @@ impl Assembler {
             if self.partial.len() >= MAX_IN_FLIGHT || self.partial.contains_key(&message_id) {
                 bail!("too many messages in flight");
             }
+            if self.partial.values().map(|p| p.total_bytes).sum::<usize>() + total_bytes > MAX_TOTAL_BUFFERED {
+                bail!("too much data in flight");
+            }
             self.partial.insert(message_id, Partial { kind, total_chunks, total_bytes, next: 0, data: Vec::new() });
         }
         let p = self.partial.get_mut(&message_id).ok_or_else(|| anyhow::anyhow!("chunk without a start"))?;
@@ -218,5 +223,16 @@ mod tests {
         assert_eq!((o.kind, o.bind.as_str(), o.connection_id, o.payload.as_slice()), (OUTER_DATA, bind, 0x0102030405060708, &b"hi"[..]));
         assert_eq!(host_ack(5, 27), vec![4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 27]);
         assert_eq!(&encode_response(200, 1, b"{}")[..10], &[0, 200, 0, 0, 0, 0, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn partly_received_messages_share_one_budget() {
+        let mut a = Assembler::default();
+        let big = vec![0u8; MAX_BUFFERED];
+        // Only the first chunk of each: three 8 MiB messages announced, the third is refused.
+        for id in 0..2 {
+            assert!(a.push(&encode_message(Kind::Req, &big, id)[0]).unwrap().is_none());
+        }
+        assert!(a.push(&encode_message(Kind::Req, &big, 2)[0]).is_err());
     }
 }

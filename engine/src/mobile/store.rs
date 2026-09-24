@@ -103,8 +103,12 @@ pub fn hash_credential(credential: &str) -> String {
     Sha256::digest(credential.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+pub fn devices_path() -> std::path::PathBuf {
+    dir().join("devices.json")
+}
+
 pub fn load_devices() -> Vec<Device> {
-    fs::read(dir().join("devices.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    fs::read(devices_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 fn save_devices(devices: &[Device]) -> Result<()> {

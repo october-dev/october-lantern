@@ -23,12 +23,22 @@ pub struct ProcTable {
     pub procs: HashMap<u32, Proc>,
 }
 
-/// Command lines and executable paths, remembered per process so each process is only asked once
-/// (they don't change). Keyed by pid and start time, so a reused pid is asked again.
+/// Command lines and executable paths, remembered per process so each process is only asked once.
+/// Keyed by pid, start time and the kernel's name for it: a reused pid, or a process that `exec`ed
+/// another program (same pid and start time, new name), is asked again.
 #[derive(Default)]
 pub struct ProcCache {
-    entries: HashMap<u32, (u64, String, Option<PathBuf>, Vec<String>)>,
+    entries: HashMap<u32, Cached>,
     captures: u32,
+}
+
+struct Cached {
+    start: u64,
+    /// The kernel's name when asked; a different one means the process ran another program.
+    comm: String,
+    name: String,
+    exe: Option<PathBuf>,
+    cmd: Vec<String>,
 }
 
 impl ProcTable {
@@ -39,7 +49,7 @@ impl ProcTable {
 
         let new: Vec<sysinfo::Pid> = rows
             .iter()
-            .filter(|r| cache.entries.get(&r.pid).is_none_or(|e| e.0 != r.start))
+            .filter(|r| cache.entries.get(&r.pid).is_none_or(|e| e.start != r.start || e.comm != r.comm))
             .map(|r| sysinfo::Pid::from_u32(r.pid))
             .collect();
         if !new.is_empty() {
@@ -49,7 +59,8 @@ impl ProcTable {
                 ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_exe(UpdateKind::Always),
             );
             for pid in &new {
-                let start = rows.iter().find(|r| r.pid == pid.as_u32()).map(|r| r.start).unwrap_or(0);
+                let row = rows.iter().find(|r| r.pid == pid.as_u32());
+                let (start, comm) = row.map(|r| (r.start, r.comm.clone())).unwrap_or_default();
                 let (name, exe, cmd) = match sys.process(*pid) {
                     Some(p) => (
                         p.name().to_string_lossy().into_owned(),
@@ -58,7 +69,7 @@ impl ProcTable {
                     ),
                     None => (String::new(), None, Vec::new()),
                 };
-                cache.entries.insert(pid.as_u32(), (start, name, exe, cmd));
+                cache.entries.insert(pid.as_u32(), Cached { start, comm, name, exe, cmd });
             }
         }
         let live: std::collections::HashSet<u32> = rows.iter().map(|r| r.pid).collect();
@@ -73,14 +84,14 @@ impl ProcTable {
             .into_iter()
             .map(|row| {
                 let cached = cache.entries.get(&row.pid);
-                let name = cached.map(|c| c.1.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| basename(&row.comm).to_string());
-                let exe = cached.and_then(|c| c.2.clone()).or_else(|| Some(PathBuf::from(&row.comm)));
+                let name = cached.map(|c| c.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| basename(&row.comm).to_string());
+                let exe = cached.and_then(|c| c.exe.clone()).or_else(|| Some(PathBuf::from(&row.comm)));
                 let proc = Proc {
                     pid: row.pid,
                     ppid: Some(row.ppid),
                     name,
                     exe,
-                    cmd: cached.map(|c| c.3.clone()).unwrap_or_default(),
+                    cmd: cached.map(|c| c.cmd.clone()).unwrap_or_default(),
                     cwd: None,
                     start_time: row.start,
                     tty: row.tty,
@@ -143,12 +154,34 @@ pub struct Live {
     pub tty: Option<String>,
     /// Seconds since the epoch.
     pub start: u64,
+    /// The program it runs now, and the kernel's short name for it (both change when the process
+    /// `exec`s another program).
+    pub exe: Option<String>,
+    pub comm: String,
 }
 
 /// `None` when the process is gone (or belongs to another user, which agents never do).
 pub fn live(pid: u32) -> Option<Live> {
     let info = bsd_info(pid as i32)?;
-    Some(Live { pgid: info.pbi_pgid, tpgid: info.e_tpgid, tty: tty_name(info.e_tdev), start: info.pbi_start_tvsec })
+    Some(Live {
+        pgid: info.pbi_pgid,
+        tpgid: info.e_tpgid,
+        tty: tty_name(info.e_tdev),
+        start: info.pbi_start_tvsec,
+        exe: exe_path(pid),
+        comm: c_str(&info.pbi_comm),
+    })
+}
+
+/// The executable a process is running right now, from the kernel.
+pub fn exe_path(pid: u32) -> Option<String> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let n = unsafe { libc::proc_pidpath(pid as i32, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if n <= 0 {
+        return None;
+    }
+    buf.truncate(n as usize);
+    String::from_utf8(buf).ok()
 }
 
 /// Parent pid of `pid`, including root-owned processes; `None` when it's gone.

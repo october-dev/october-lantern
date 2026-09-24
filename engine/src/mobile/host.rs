@@ -6,9 +6,10 @@
 //! responds, the phone's key is pinned to October's records), pairing shows a 6-digit code to
 //! compare, and paired phones authenticate with a credential Lantern issued and then send
 //! October core requests, answered from Lantern's agents (`api.rs`). Replies are typed by the
-//! serve loop (the one place that delivers), and the phone hears the real result.
+//! serve loop's delivery workers (the one place that delivers). The phone hears delivered, not
+//! delivered (canceled before typing), or not confirmed; see `deliver_and_wait`.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
@@ -27,6 +28,7 @@ use super::control::{self, Binding, ControlError};
 use super::frames::{self, Assembler, Kind};
 use super::noise::{self, Channel, Responder, Step};
 use super::store::{self, HostIdentity};
+use crate::actions::{Outcome, Ticket};
 use crate::model::Agent;
 use crate::serve::{Deliver, Incoming};
 
@@ -35,6 +37,8 @@ pub enum Cmd {
     Token(String),
     /// Start pairing a phone: creates a pairing and shows its QR.
     Pair,
+    /// Stop pairing (the QR stops working; a phone mid-pairing is dropped).
+    CancelPair,
     /// Allow or deny the phone showing the pairing code.
     Decide(bool),
     Revoke(String),
@@ -46,8 +50,13 @@ pub struct MobileHost {
     agents: Arc<Mutex<Vec<Agent>>>,
 }
 
-/// How long a phone's reply may take to reach the terminal before the phone is told it failed.
+/// How long a phone's reply may wait to start typing (less when the phone's own deadline is
+/// sooner). Replies that haven't started by then are canceled.
 const DELIVER_TIMEOUT: Duration = Duration::from_secs(20);
+/// Once typing has started, how long to wait for its outcome before calling it uncertain.
+const STARTED_GRACE: Duration = Duration::from_secs(15);
+/// Connecting to the relay, its TLS and WebSocket handshakes, and any single write.
+const CONNECT_LIMIT: Duration = Duration::from_secs(10);
 /// Answers remembered per (phone, idempotency key), so a retried mutation isn't typed twice.
 const REMEMBERED_ANSWERS: usize = 256;
 
@@ -111,6 +120,8 @@ struct Host {
     emit: fn(&Value),
     deliver: Sender<Incoming>,
     ws: Option<WebSocket<MaybeTlsStream<TcpStream>>>,
+    /// devices.json's modification time when last read, and whether it listed any phone.
+    devices_seen: (Option<std::time::SystemTime>, bool),
     sessions: HashMap<String, Session>,
     pairing: Option<PairingState>,
     status: &'static str,
@@ -124,8 +135,8 @@ struct Host {
     process_start: String,
     last_digest: String,
     last_heartbeat: Instant,
-    /// (bind|idempotencyKey) → the answer already given.
-    answered: VecDeque<(String, Vec<u8>)>,
+    /// Answers already given to mutations, by (phone, idempotency key).
+    answered: api::Answers,
 }
 
 impl Host {
@@ -139,6 +150,7 @@ impl Host {
             emit,
             deliver,
             ws: None,
+            devices_seen: (None, false),
             sessions: HashMap::new(),
             pairing: None,
             status: "offline",
@@ -151,7 +163,7 @@ impl Host {
             process_start: control::now_iso(),
             last_digest: String::new(),
             last_heartbeat: Instant::now(),
-            answered: VecDeque::new(),
+            answered: api::Answers::new(REMEMBERED_ANSWERS),
         })
     }
 
@@ -190,7 +202,7 @@ impl Host {
             }
             self.expire_pairing();
             // Connect while there is a phone to serve or one being paired.
-            let wanted = !self.parked && ((self.id.registered && !store::load_devices().is_empty()) || self.pairing.is_some());
+            let wanted = !self.parked && ((self.id.registered && self.has_devices()) || self.pairing.is_some());
             if self.ws.is_none() && wanted && Instant::now() >= self.next_attempt {
                 self.connect();
                 self.publish();
@@ -204,6 +216,15 @@ impl Host {
         }
     }
 
+    /// Whether any phone is paired; the file is only read again when it changes.
+    fn has_devices(&mut self) -> bool {
+        let modified = std::fs::metadata(store::devices_path()).and_then(|m| m.modified()).ok();
+        if self.devices_seen.0 != modified || modified.is_none() {
+            self.devices_seen = (modified, !store::load_devices().is_empty());
+        }
+        self.devices_seen.1
+    }
+
     // MARK: Commands from the app
 
     fn command(&mut self, cmd: Cmd) -> Result<()> {
@@ -215,6 +236,13 @@ impl Host {
                 }
             }
             Cmd::Pair => self.start_pairing()?,
+            Cmd::CancelPair => {
+                if let Some(bind) = self.pairing.take().and_then(|p| p.awaiting_ack.map(|(bind, _, _)| bind)) {
+                    let _ = store::remove_device(&bind);
+                    self.close_session(&bind, frames::CLOSE_ENDED);
+                }
+                self.message = None;
+            }
             Cmd::Decide(allow) => self.decide(allow)?,
             Cmd::Revoke(bind) => {
                 let body = json!({"hostId": self.id.host_id, "bind": bind});
@@ -314,13 +342,26 @@ impl Host {
             let ticket = control::relay_ticket(&self.id, &self.token)?;
             let mut request = format!("{}/v1/host/{}", control::RELAY, self.id.host_id).into_client_request()?;
             request.headers_mut().insert("Sec-WebSocket-Protocol", format!("october-ticket.{ticket}").parse()?);
-            let (mut ws, _) = tungstenite::connect(request)?;
-            let timeout = Some(Duration::from_millis(200));
-            match ws.get_mut() {
-                MaybeTlsStream::Plain(s) => s.set_read_timeout(timeout)?,
-                MaybeTlsStream::Rustls(s) => s.get_mut().set_read_timeout(timeout)?,
-                _ => {}
-            }
+            // Every step has a time limit: a relay that accepts the connection and then says
+            // nothing must not hold up the host.
+            let uri = request.uri();
+            let host = uri.host().ok_or_else(|| anyhow::anyhow!("relay address has no host"))?;
+            let port = uri.port_u16().unwrap_or(443);
+            let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("couldn't resolve {host}"))?;
+            let stream = TcpStream::connect_timeout(&addr, CONNECT_LIMIT)?;
+            stream.set_read_timeout(Some(CONNECT_LIMIT))?;
+            stream.set_write_timeout(Some(CONNECT_LIMIT))?;
+            let (mut ws, _) = tungstenite::client_tls(request, stream).map_err(|e| anyhow::anyhow!("connecting to the relay: {e}"))?;
+            // Short reads keep the loop responsive; writes that stall past the limit drop the socket.
+            let tcp = match ws.get_mut() {
+                MaybeTlsStream::Plain(s) => s,
+                MaybeTlsStream::Rustls(s) => s.get_mut(),
+                _ => bail!("unexpected relay stream"),
+            };
+            tcp.set_read_timeout(Some(Duration::from_millis(200)))?;
+            tcp.set_write_timeout(Some(CONNECT_LIMIT))?;
             Ok(ws)
         })();
         match result {
@@ -544,8 +585,10 @@ impl Host {
             Kind::Req => {
                 let request: Value = serde_json::from_slice(&data)?;
                 let remembered = request["idempotencyKey"].as_str().map(|k| format!("{bind}|{k}"));
-                if let Some(res) = remembered.as_ref().and_then(|k| self.answered.iter().find(|(key, _)| key == k)).map(|(_, r)| r.clone())
-                {
+                // A retry gets the first answer (in a fresh envelope for this request) and nothing
+                // is typed again; the same key on a different request is refused.
+                if let Some((status, body)) = remembered.as_ref().and_then(|k| self.answered.replay(k, &request)) {
+                    let res = frames::encode_response(status, crate::hooks::now_ms(), &serde_json::to_vec(&body)?);
                     self.send_frame(bind, Kind::Res, &res, id);
                     return Ok(());
                 }
@@ -559,20 +602,11 @@ impl Host {
                     credential: &credential,
                 };
                 let deliver = &self.deliver;
-                let mut typed = |a: &Agent, text: &str| -> Result<(), String> {
-                    let (done, wait) = channel();
-                    deliver
-                        .send(Incoming::Deliver(Deliver { agent_id: a.id.clone(), text: text.to_string(), done }))
-                        .map_err(|_| "Lantern is shutting down")?;
-                    wait.recv_timeout(DELIVER_TIMEOUT).map_err(|_| "Lantern didn't manage to type it in time".to_string())?
-                };
+                let mut typed = |a: &Agent, text: &str, deadline_ms: Option<u64>| deliver_and_wait(deliver, a, text, deadline_ms);
                 let (status, body) = api::handle(&ctx, &request, &mut typed);
                 let res = frames::encode_response(status, crate::hooks::now_ms(), &serde_json::to_vec(&body)?);
                 if let Some(key) = remembered {
-                    if self.answered.len() >= REMEMBERED_ANSWERS {
-                        self.answered.pop_front();
-                    }
-                    self.answered.push_back((key, res.clone()));
+                    self.answered.remember(key, &request, status, body);
                 }
                 self.send_frame(bind, Kind::Res, &res, id);
             }
@@ -663,6 +697,32 @@ impl Host {
             self.close_session(&b, frames::CLOSE_ENDED);
         }
     }
+}
+
+/// Hands a reply to the serve loop and waits for it. If typing hasn't started when the wait runs
+/// out, the reply is canceled (it will never be typed); if it has, Lantern waits for its outcome
+/// a little longer and otherwise reports it as uncertain.
+pub(crate) fn deliver_and_wait(deliver: &Sender<Incoming>, a: &Agent, text: &str, deadline_ms: Option<u64>) -> Outcome {
+    let now = crate::hooks::now_ms();
+    let wait_for = deadline_ms.map(|d| Duration::from_millis(d.saturating_sub(now))).unwrap_or(DELIVER_TIMEOUT).min(DELIVER_TIMEOUT);
+    let ticket = Ticket::new();
+    let (done, wait) = channel();
+    let sent = deliver.send(Incoming::Deliver(Deliver {
+        agent_id: a.id.clone(),
+        text: text.to_string(),
+        deadline: Instant::now() + wait_for,
+        ticket: ticket.clone(),
+        done,
+    }));
+    if sent.is_err() {
+        return Outcome::failed("send_failed", "Lantern is shutting down");
+    }
+    wait.recv_timeout(wait_for + Duration::from_millis(500)).unwrap_or_else(|_| {
+        if ticket.cancel() {
+            return Outcome::failed("expired", "Lantern couldn't type it in time. Nothing was typed.");
+        }
+        wait.recv_timeout(STARTED_GRACE).unwrap_or_else(|_| Outcome::Uncertain("typing started but didn't finish in time".into()))
+    })
 }
 
 fn describe(e: &anyhow::Error) -> String {

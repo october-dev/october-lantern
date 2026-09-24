@@ -6,6 +6,7 @@
 //!   lantern-engine hook claude|codex      hook entry point (called by the agents)
 //!   lantern-engine hooks install|uninstall|status|remove-all
 
+mod actions;
 mod deliver;
 mod history;
 mod hooks;

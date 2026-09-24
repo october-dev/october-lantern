@@ -1,6 +1,7 @@
 //! The stdio protocol the app talks to. See `protocol/README.md`.
 
 use std::io::{BufRead, Write};
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -8,15 +9,18 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::actions::{Action, Executor, Op, Outcome, Ticket};
 use crate::deliver;
 use crate::hooks::now_ms;
 use crate::launch;
-use crate::model::{Agent, Kind, Route};
-use crate::october_link::{self, Link};
+use crate::model::{Agent, Kind, QuestionKind, Route};
+use crate::october_link;
 use crate::scanner::Scanner;
 
 const SCAN_EVERY: Duration = Duration::from_millis(1500);
 const HEARTBEAT: Duration = Duration::from_secs(10);
+/// Typing for the app must start within this (the app gives up waiting after 20 s).
+const APP_DEADLINE: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -41,12 +45,15 @@ enum Request {
         request_id: String,
         agent_id: String,
     },
-    /// Single keypresses, e.g. "1" or "Escape" to answer a permission prompt.
+    /// Single keypresses, e.g. "1" or "Escape" to answer a permission prompt. `promptId` names the
+    /// prompt they answer; keys for a permission prompt without it, or for one that has since
+    /// changed, are refused.
     #[serde(rename_all = "camelCase")]
     Keys {
         request_id: String,
         agent_id: String,
         keys: Vec<String>,
+        prompt_id: Option<String>,
     },
     /// Ask October Desktop to allow Lantern (it shows a code to compare), cancel that, or forget it.
     #[serde(rename = "october.pair")]
@@ -77,6 +84,8 @@ enum Request {
     },
     #[serde(rename = "phone.pair")]
     PhonePair,
+    #[serde(rename = "phone.cancelPair")]
+    PhoneCancelPair,
     #[serde(rename = "phone.decide")]
     PhoneDecide {
         allow: bool,
@@ -89,11 +98,14 @@ enum Request {
     PhoneStop,
 }
 
-/// A reply from the phone, typed by the serve loop like a reply from the app.
+/// A reply from the phone, typed like a reply from the app. The phone host keeps `ticket` to
+/// cancel it if it gives up waiting.
 pub struct Deliver {
     pub agent_id: String,
     pub text: String,
-    pub done: Sender<Result<(), String>>,
+    pub deadline: Instant,
+    pub ticket: Arc<Ticket>,
+    pub done: Sender<Outcome>,
 }
 
 /// Everything the serve loop reacts to.
@@ -133,6 +145,7 @@ pub fn run() -> Result<()> {
     std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));
 
     let link = october_link::start();
+    let mut executor = Executor::new(link.clone());
     let mut last_october = String::new();
     let mut scanner = Scanner::new();
     let mut agents: Vec<Agent> = Vec::new();
@@ -155,6 +168,7 @@ pub fn run() -> Result<()> {
             }
             if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
                 agents = fresh;
+                executor.retain(&agents);
                 emit(&json!({"type": "snapshot", "generatedAt": now_ms(), "agents": agents}));
                 last_emit = Instant::now();
             }
@@ -164,28 +178,43 @@ pub fn run() -> Result<()> {
         let wait = next_scan.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
             Ok(Incoming::Deliver(d)) => {
-                let result = deliver_to(&agents, &link, &d.agent_id, &d.text).map_err(|(_, m)| m);
-                let _ = d.done.send(result);
+                let done = d.done;
+                match reachable(&agents, &d.agent_id) {
+                    Ok(agent) => executor.submit(Action {
+                        agent: agent.clone(),
+                        op: Op::Text(d.text),
+                        deadline: d.deadline,
+                        ticket: d.ticket,
+                        done: Box::new(move |o| {
+                            let _ = done.send(o);
+                        }),
+                    }),
+                    Err(o) => {
+                        let _ = done.send(o);
+                    }
+                }
                 next_scan = Instant::now() + Duration::from_millis(300);
             }
             Ok(Incoming::Line(line)) => match serde_json::from_str::<Request>(&line) {
                 Ok(Request::Refresh) => next_scan = Instant::now(),
                 Ok(Request::Reply { request_id, agent_id, text }) => {
-                    match deliver_to(&agents, &link, &agent_id, &text) {
-                        Ok(()) => emit(&json!({"type": "replyResult", "requestId": request_id, "ok": true})),
-                        Err((code, message)) => emit(&json!({
-                            "type": "replyResult", "requestId": request_id, "ok": false,
-                            "error": code, "message": message
-                        })),
+                    match reachable(&agents, &agent_id) {
+                        Ok(agent) => executor.submit(app_action(agent, Op::Text(text), "replyResult", request_id)),
+                        Err(o) => emit(&result_json("replyResult", &request_id, &o)),
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
                 Ok(Request::Launch { request_id, kind, cwd, prompt, background }) => {
-                    let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
-                    match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), mode) {
-                        Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
-                        Err(e) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")})),
-                    }
+                    // Off the loop: it may wait for the agent to start before typing its first message.
+                    std::thread::spawn(move || {
+                        let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
+                        match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), mode) {
+                            Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
+                            Err(e) => {
+                                emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}))
+                            }
+                        }
+                    });
                     next_scan = Instant::now() + Duration::from_millis(1500);
                 }
                 Ok(Request::History { request_id, agent_id }) => {
@@ -195,35 +224,27 @@ pub fn run() -> Result<()> {
                         "supported": messages.is_some(), "messages": messages.unwrap_or_default()
                     }));
                 }
-                Ok(Request::Keys { request_id, agent_id, keys }) => {
-                    let result = match agents.iter().find(|a| a.id == agent_id) {
-                        None => Err(format!("no agent {agent_id}")),
-                        Some(a) => keys
-                            .iter()
-                            .try_for_each(|k| {
-                                let key = deliver::Key::parse(k).ok_or_else(|| anyhow::anyhow!("unknown key {k}"))?;
-                                std::thread::sleep(Duration::from_millis(40));
-                                deliver::send_key(a, key)
-                            })
-                            .map_err(|e| format!("{e:#}")),
-                    };
-                    emit(&json!({"type": "replyResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
+                Ok(Request::Keys { request_id, agent_id, keys, prompt_id }) => {
+                    let parsed: Option<Vec<deliver::Key>> = keys.iter().map(|k| deliver::Key::parse(k)).collect();
+                    let checked = reachable(&agents, &agent_id).and_then(|a| match parsed {
+                        None => Err(Outcome::failed("bad_request", "unknown key")),
+                        Some(keys) => keys_for(a, keys, prompt_id).map(|op| (a, op)),
+                    });
+                    match checked {
+                        Ok((agent, op)) => executor.submit(app_action(agent, op, "replyResult", request_id)),
+                        Err(o) => emit(&result_json("replyResult", &request_id, &o)),
+                    }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
                 Ok(Request::OctoberPair) => link.send(october_link::Command::Pair),
                 Ok(Request::OctoberCancelPair) => link.send(october_link::Command::CancelPair),
                 Ok(Request::OctoberForget) => link.send(october_link::Command::Forget),
-                Ok(Request::Focus { request_id, agent_id }) => {
-                    let result = match agents.iter().find(|a| a.id == agent_id) {
-                        None => Err(format!("no agent {agent_id}")),
-                        Some(a) => match link.focus(a) {
-                            Ok(true) => Ok(()),
-                            Ok(false) => deliver::focus(a).map_err(|e| format!("{e:#}")),
-                            Err(e) => Err(e),
-                        },
-                    };
-                    emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
-                }
+                Ok(Request::Focus { request_id, agent_id }) => match agents.iter().find(|a| a.id == agent_id) {
+                    Some(a) => executor.submit(app_action(a, Op::Focus, "attachResult", request_id)),
+                    None => {
+                        emit(&result_json("attachResult", &request_id, &Outcome::failed("unknown_agent", format!("no agent {agent_id}"))))
+                    }
+                },
                 Ok(Request::Attach { request_id, agent_id }) => {
                     let result = match agents.iter().find(|a| a.id == agent_id).and_then(|a| a.tmux.as_ref()) {
                         Some(pane) => launch::attach_in_terminal(pane).map_err(|e| format!("{e:#}")),
@@ -243,6 +264,11 @@ pub fn run() -> Result<()> {
                 Ok(Request::PhonePair) => {
                     if let Some(p) = &phone {
                         p.send(crate::mobile::host::Cmd::Pair);
+                    }
+                }
+                Ok(Request::PhoneCancelPair) => {
+                    if let Some(p) = &phone {
+                        p.send(crate::mobile::host::Cmd::CancelPair);
                     }
                 }
                 Ok(Request::PhoneDecide { allow }) => {
@@ -269,13 +295,47 @@ pub fn run() -> Result<()> {
     }
 }
 
-/// The one place replies are typed, whoever asked (the app or a phone): picks the route and
-/// checks the target is still the agent Lantern saw.
-fn deliver_to(agents: &[Agent], link: &Link, agent_id: &str, text: &str) -> Result<(), (&'static str, String)> {
+/// The agent, if Lantern can type into it at all.
+fn reachable<'a>(agents: &'a [Agent], agent_id: &str) -> Result<&'a Agent, Outcome> {
     match agents.iter().find(|a| a.id == agent_id) {
-        None => Err(("unknown_agent", format!("no agent {agent_id}"))),
-        Some(a) if !a.can_reply => Err(("not_reachable", "Lantern can't type into this terminal yet".to_string())),
-        Some(a) if matches!(a.route, Route::October { .. }) => link.send_text(a, text).map_err(|m| ("send_failed", m)),
-        Some(a) => deliver::send_text(a, text).map_err(|e| ("send_failed", format!("{e:#}"))),
+        None => Err(Outcome::failed("unknown_agent", format!("no agent {agent_id}"))),
+        Some(a) if !a.can_reply || a.route == Route::None => {
+            Err(Outcome::failed("not_reachable", "Lantern can't type into this terminal yet"))
+        }
+        Some(a) => Ok(a),
+    }
+}
+
+/// Keys for a permission prompt must name the prompt the person saw, and it must still be the
+/// agent's current one.
+pub(crate) fn keys_for(agent: &Agent, keys: Vec<deliver::Key>, prompt_id: Option<String>) -> Result<Op, Outcome> {
+    let changed = || Outcome::failed("prompt_changed", "That prompt was already answered or replaced. Check the terminal.");
+    match (&agent.question_kind, prompt_id) {
+        (Some(QuestionKind::Permission), None) => Err(Outcome::failed("bad_request", "keys for a permission prompt must name the prompt")),
+        (_, Some(id)) if agent.prompt_id.as_ref() != Some(&id) => Err(changed()),
+        (_, prompt) => Ok(Op::Keys { keys, prompt }),
+    }
+}
+
+/// An action for the app: answered with `<kind>` carrying the request id.
+fn app_action(agent: &Agent, op: Op, kind: &'static str, request_id: String) -> Action {
+    Action {
+        agent: agent.clone(),
+        op,
+        deadline: Instant::now() + APP_DEADLINE,
+        ticket: Ticket::new(),
+        done: Box::new(move |o| emit(&result_json(kind, &request_id, &o))),
+    }
+}
+
+/// `ok`, or `error` with a code (`uncertain` when it may have gone in) and a message.
+fn result_json(kind: &str, request_id: &str, outcome: &Outcome) -> Value {
+    match outcome {
+        Outcome::Done => json!({"type": kind, "requestId": request_id, "ok": true}),
+        Outcome::Failed { code, message } => json!({"type": kind, "requestId": request_id, "ok": false, "error": code, "message": message}),
+        Outcome::Uncertain(message) => json!({
+            "type": kind, "requestId": request_id, "ok": false, "error": "uncertain",
+            "message": format!("Not sure it went in: {message}. Check the terminal before sending again.")
+        }),
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::model::TmuxPane;
 use crate::procs::{ProcTable, basename};
@@ -15,13 +15,23 @@ pub struct TmuxInfo {
     pub clients: HashMap<(Option<String>, String), u32>,
 }
 
+/// tmux from Homebrew, MacPorts, Nix or the system; "tmux" (not absolute: not installed) otherwise.
 pub fn tmux_bin() -> &'static str {
-    for p in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
-        if std::path::Path::new(p).exists() {
-            return p;
-        }
-    }
-    "tmux"
+    static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIN.get_or_init(|| {
+        let home = crate::transcripts::home();
+        let user = std::env::var("USER").unwrap_or_default();
+        let candidates = [
+            "/opt/homebrew/bin/tmux".to_string(),
+            "/usr/local/bin/tmux".into(),
+            "/opt/local/bin/tmux".into(),
+            home.join(".nix-profile/bin/tmux").to_string_lossy().into_owned(),
+            format!("/etc/profiles/per-user/{user}/bin/tmux"),
+            "/run/current-system/sw/bin/tmux".into(),
+            "/usr/bin/tmux".into(),
+        ];
+        candidates.into_iter().find(|p| std::path::Path::new(p).exists()).unwrap_or_else(|| "tmux".into())
+    })
 }
 
 fn base_command(socket: &Option<String>) -> Command {
@@ -94,36 +104,42 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
     info
 }
 
-/// Runs a tmux command against the pane's server.
-pub fn run(pane: &TmuxPane, args: &[&str]) -> Result<()> {
-    let status = base_command(&pane.socket).args(args).status().context("running tmux")?;
-    if !status.success() {
-        bail!("tmux {} failed", args.first().unwrap_or(&""));
+/// Runs a tmux command against the pane's server, with a time limit.
+pub fn output(pane: &TmuxPane, args: &[&str]) -> Result<std::process::Output> {
+    let out = crate::deliver::output_within(base_command(&pane.socket).args(args), LIMIT, false)?;
+    if !out.status.success() {
+        bail!("tmux {} failed: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim());
     }
-    Ok(())
+    Ok(out)
 }
+
+pub fn run(pane: &TmuxPane, args: &[&str]) -> Result<()> {
+    output(pane, args).map(|_| ())
+}
+
+const LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Presses one key (a tmux key name such as `Escape`, or a single character).
 pub fn send_key(pane: &TmuxPane, key: &str) -> Result<()> {
-    run(pane, &["send-keys", "-t", &pane.pane_id, key])
+    typing(pane, &["send-keys", "-t", &pane.pane_id, key])
 }
 
 /// Type `text` into the pane and press Enter.
 pub fn send(pane: &TmuxPane, text: &str) -> Result<()> {
     // A newline would submit early in most agent TUIs, so send one line.
     let line = text.replace(['\r', '\n'], " ");
-    let status = base_command(&pane.socket)
-        .args(["send-keys", "-t", &pane.pane_id, "-l", "--", &line])
-        .status()
-        .context("running tmux send-keys")?;
-    if !status.success() {
-        bail!("tmux send-keys failed for {}", pane.pane_id);
-    }
+    typing(pane, &["send-keys", "-t", &pane.pane_id, "-l", "--", &line])?;
     // Give the TUI a moment to take the pasted text before Enter.
     std::thread::sleep(std::time::Duration::from_millis(60));
-    let status = base_command(&pane.socket).args(["send-keys", "-t", &pane.pane_id, "Enter"]).status().context("running tmux send-keys")?;
-    if !status.success() {
-        bail!("tmux send-keys Enter failed for {}", pane.pane_id);
+    typing(pane, &["send-keys", "-t", &pane.pane_id, "Enter"])
+        .map_err(|e| crate::deliver::Uncertain(format!("the text went in but Enter didn't ({e:#})")).into())
+}
+
+/// A tmux command that types: running out of time means it may have typed.
+fn typing(pane: &TmuxPane, args: &[&str]) -> Result<()> {
+    let out = crate::deliver::output_within(base_command(&pane.socket).args(args), LIMIT, true)?;
+    if !out.status.success() {
+        bail!("tmux send-keys failed for {}: {}", pane.pane_id, String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
 }

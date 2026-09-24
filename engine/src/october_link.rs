@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::actions::{Outcome, Ticket};
 use crate::hooks::support_dir;
 use crate::model::{Agent, Route, State};
 use crate::october_core::{self, Client, OctoberAgent};
@@ -31,7 +32,7 @@ pub enum Command {
     Pair,
     CancelPair,
     Forget,
-    Send { agent: OctoberAgent, text: String, done: Sender<Result<String, String>> },
+    Send { agent: OctoberAgent, text: String, ticket: Arc<Ticket>, done: Sender<Result<String, String>> },
     Focus { agent: OctoberAgent, done: Sender<Result<(), String>> },
 }
 
@@ -58,23 +59,45 @@ impl Link {
         match_october(&state, a).cloned()
     }
 
-    /// Types a reply through October's safe delivery.
-    pub fn send_text(&self, a: &Agent, text: &str) -> Result<(), String> {
-        let agent = self.agent_for(a).ok_or("October no longer lists this agent")?;
+    /// Types a reply through October's safe delivery. A request that October hasn't answered in
+    /// time is canceled if it hasn't gone out yet, and reported as uncertain if it has.
+    pub fn send_text(&self, a: &Agent, text: &str) -> Result<(), Outcome> {
+        let agent = self.agent_for(a).ok_or_else(|| Outcome::failed("send_failed", "October no longer lists this agent"))?;
         let (done, wait) = channel();
-        self.tx.send(Command::Send { agent, text: text.to_string(), done }).map_err(|_| "October link stopped")?;
-        wait.recv_timeout(Duration::from_secs(15)).map_err(|_| "October didn't answer in time".to_string())?.map(|_| ())
+        let ticket = Ticket::new();
+        self.tx
+            .send(Command::Send { agent, text: text.to_string(), ticket: ticket.clone(), done })
+            .map_err(|_| Outcome::failed("send_failed", "October link stopped"))?;
+        let answer = wait.recv_timeout(Duration::from_secs(10)).or_else(|_| {
+            if ticket.cancel() {
+                return Err(Outcome::failed("send_failed", "October was busy. Nothing was sent."));
+            }
+            wait.recv_timeout(Duration::from_secs(20)).map_err(|_| Outcome::Uncertain("October didn't confirm the message".into()))
+        })?;
+        answer.map(|_| ()).map_err(|e| {
+            if e.contains("timed out") || e.contains("Timeout") || e.contains("timeout") {
+                Outcome::Uncertain(format!("October didn't confirm the message ({e})"))
+            } else {
+                Outcome::failed("send_failed", e)
+            }
+        })
     }
 
     /// Shows the agent on October's canvas. `Ok(false)` when October doesn't list the agent.
-    pub fn focus(&self, a: &Agent) -> Result<bool, String> {
+    pub fn focus(&self, a: &Agent) -> Result<bool, Outcome> {
         let Some(agent) = self.agent_for(a) else { return Ok(false) };
         let (done, wait) = channel();
-        self.tx.send(Command::Focus { agent, done }).map_err(|_| "October link stopped")?;
-        wait.recv_timeout(Duration::from_secs(8)).map_err(|_| "October didn't answer in time".to_string())?.map(|_| true)
+        self.tx.send(Command::Focus { agent, done }).map_err(|_| Outcome::failed("send_failed", "October link stopped"))?;
+        wait.recv_timeout(Duration::from_secs(8))
+            .map_err(|_| Outcome::failed("send_failed", "October didn't answer in time"))?
+            .map(|_| true)
+            .map_err(|e| Outcome::failed("send_failed", e))
     }
 }
 
+/// Exactly one October node in the agent's folder running its harness; a node whose harness
+/// October doesn't report counts only when it's the only node in that folder. Anything else is
+/// ambiguous, and an ambiguous match must not route a reply.
 fn match_october<'a>(link: &'a LinkState, a: &Agent) -> Option<&'a OctoberAgent> {
     if a.host.as_ref().is_none_or(|h| h.app != "October") {
         return None;
@@ -83,9 +106,9 @@ fn match_october<'a>(link: &'a LinkState, a: &Agent) -> Option<&'a OctoberAgent>
     let same_dir: Vec<_> = link.agents.iter().filter(|o| o.cwd.as_deref() == Some(cwd)).collect();
     let by_harness: Vec<_> =
         same_dir.iter().filter(|o| o.harness.as_deref().is_some_and(|h| h.contains(a.kind.as_str()))).copied().collect();
-    match (by_harness.len(), same_dir.len()) {
+    match (by_harness.len(), same_dir.as_slice()) {
         (1, _) => Some(by_harness[0]),
-        (0, 1) => Some(same_dir[0]),
+        (0, [only]) if only.harness.is_none() => Some(only),
         _ => None,
     }
 }
@@ -140,6 +163,13 @@ fn client_id() -> String {
     load_saved().map(|s| s.client_id).unwrap_or_else(|| uuid::Uuid::new_v4().hyphenated().to_string())
 }
 
+/// A link that never connects, for tests.
+#[cfg(test)]
+pub fn detached() -> Link {
+    let (tx, _) = channel();
+    Link { state: Arc::new(Mutex::new(LinkState { status: "notRunning".into(), ..Default::default() })), tx }
+}
+
 pub fn start() -> Link {
     let state = Arc::new(Mutex::new(LinkState { status: "notRunning".into(), ..Default::default() }));
     let (tx, rx) = channel();
@@ -182,8 +212,10 @@ fn run(state: Arc<Mutex<LinkState>>, rx: Receiver<Command>) {
                     client = None;
                     next_poll = Instant::now();
                 }
-                Command::Send { agent, text, done } => {
+                Command::Send { agent, text, ticket, done } => {
+                    // Skipped when the caller gave up waiting before it went out.
                     let r = match client.as_mut() {
+                        _ if !ticket.start() => continue,
                         Some(c) => c.send(&agent, &text).map_err(|e| format!("{e:#}")),
                         None => Err("October isn't running".into()),
                     };
@@ -311,6 +343,7 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
             }
             update(state, |s| {
                 s.status = "error".into();
+                s.paired = false;
                 s.agents.clear();
                 s.agent_count = 0;
                 s.message = Some(msg);

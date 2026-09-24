@@ -1,4 +1,5 @@
 import AVFoundation
+import LanternCore
 import Speech
 
 /// Dictation with Apple's on-device speech recognizer. Audio never leaves the Mac: when the
@@ -7,8 +8,12 @@ import Speech
 @MainActor
 final class Dictation: ObservableObject {
     @Published private(set) var isRecording = false
+    /// Waiting for Microphone and Speech Recognition permission. Pressing again cancels.
+    @Published private(set) var isAuthorizing = false
     @Published private(set) var level: Float = 0
-    var onText: ((String) -> Void)?
+    /// Recognized text (with the prefix) and the draft it belongs to: the recipient id given to
+    /// `start`, so text never lands in another conversation's draft.
+    var onText: ((String, String) -> Void)?
     var onError: ((String) -> Void)?
 
     private let recognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -16,25 +21,39 @@ final class Dictation: ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var prefix = ""
-    /// Authorization is in progress: a second press waits for it rather than starting twice.
-    private var authorizing = false
+    private var owner = ""
+    /// One press of the mic: stopping (or sending, or switching conversation) cancels it, so a
+    /// permission answer that arrives later starts nothing.
+    private var attempts = Attempts()
 
-    func start(prefix: String) {
-        guard !isRecording, !authorizing else { return }
+    var isActive: Bool { isRecording || isAuthorizing }
+
+    /// Starts dictating into the draft of `owner` (a recipient id, or "" for no recipient).
+    func start(prefix: String, owner: String) {
+        guard !isActive else { return }
         self.prefix = prefix.isEmpty || prefix.hasSuffix(" ") ? prefix : prefix + " "
-        authorizing = true
+        self.owner = owner
+        let attempt = attempts.begin()
+        isAuthorizing = true
         Task {
             let allowed = await Self.authorize()
-            authorizing = false
+            guard attempts.isCurrent(attempt) else { return }
+            isAuthorizing = false
             guard allowed else {
+                attempts.finish(attempt)
                 onError?("Lantern needs Microphone and Speech Recognition access. Turn them on in System Settings › Privacy & Security.")
                 return
             }
-            begin()
+            begin(attempt)
         }
     }
 
+    /// The draft this dictation writes to, while it's active.
+    var target: String? { isActive ? owner : nil }
+
     func stop() {
+        attempts.cancel()
+        isAuthorizing = false
         guard isRecording else { return }
         audio.inputNode.removeTap(onBus: 0)
         audio.stop()
@@ -55,13 +74,15 @@ final class Dictation: ObservableObject {
         return speech && mic
     }
 
-    private func begin() {
+    private func begin(_ attempt: Int) {
         guard let recognizer, recognizer.isAvailable else {
+            attempts.finish(attempt)
             onError?("Speech recognition isn't available right now.")
             return
         }
         guard recognizer.supportsOnDeviceRecognition else {
             let language = Locale.current.localizedString(forIdentifier: recognizer.locale.identifier) ?? recognizer.locale.identifier
+            attempts.finish(attempt)
             onError?("On-device dictation isn't available for \(language) on this Mac, and Lantern doesn't send audio to Apple.")
             return
         }
@@ -82,6 +103,7 @@ final class Dictation: ObservableObject {
             try audio.start()
         } catch {
             input.removeTap(onBus: 0)
+            attempts.finish(attempt)
             onError?("Couldn't start the microphone: \(error.localizedDescription)")
             return
         }
@@ -90,8 +112,8 @@ final class Dictation: ObservableObject {
             let text = result?.bestTranscription.formattedString
             let final = result?.isFinal ?? false
             Task { @MainActor in
-                guard let self, self.request === request else { return }
-                if let text { self.onText?(self.prefix + text) }
+                guard let self, self.request === request, self.attempts.isCurrent(attempt) else { return }
+                if let text { self.onText?(self.prefix + text, self.owner) }
                 if final || error != nil { self.stop() }
             }
         }

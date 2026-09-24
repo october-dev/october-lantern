@@ -108,6 +108,22 @@ pub enum QuestionKind {
     Other,
 }
 
+/// How Lantern knows which session file belongs to an agent process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionMatch {
+    /// From a hook, the command line (`--session-id`, `--resume`) or the open file (Codex).
+    Exact,
+    /// The newest session in the agent's folder that started after it. Right unless another
+    /// agent of the same kind works in the same folder.
+    Guessed,
+    /// Another agent of the same kind works in the same folder and neither is matched exactly:
+    /// Lantern won't show a conversation that may belong to the other one.
+    Ambiguous,
+    /// No session file (yet), or a harness Lantern can't read.
+    None,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HostApp {
@@ -159,6 +175,12 @@ pub struct Agent {
     pub pid: u32,
     /// Seconds since the epoch when the process started; delivery checks it before typing.
     pub start_time: u64,
+    /// The program the process ran when Lantern saw it; delivery refuses if it has changed
+    /// (e.g. the agent `exec`ed a shell).
+    #[serde(skip)]
+    pub exe: Option<String>,
+    #[serde(skip)]
+    pub comm: String,
     pub tty: Option<String>,
     pub cwd: Option<String>,
     pub project: Option<String>,
@@ -169,6 +191,12 @@ pub struct Agent {
     pub last_message: Option<String>,
     pub question: Option<String>,
     pub question_kind: Option<QuestionKind>,
+    /// Everything the question is about, e.g. a permission prompt's full command, when the
+    /// one-line `question` leaves some of it out.
+    pub question_detail: Option<String>,
+    /// Identifies one permission prompt; Allow/Deny carry it so they can't answer a different one.
+    pub prompt_id: Option<String>,
+    pub session_match: SessionMatch,
     pub host: Option<HostApp>,
     pub tmux: Option<TmuxPane>,
     pub can_reply: bool,
@@ -186,6 +214,8 @@ pub struct SessionStatus {
     pub last_message: Option<String>,
     pub question: Option<String>,
     pub question_kind: Option<QuestionKind>,
+    pub question_detail: Option<String>,
+    pub prompt_id: Option<String>,
     pub title: Option<String>,
     pub session_id: Option<String>,
 }

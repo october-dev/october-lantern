@@ -13,7 +13,12 @@ PROFILE=release
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/engine/Cargo.toml" | head -1)"
 APP="$ROOT/build/October Lantern.app"
 
-if [[ -d /opt/homebrew/opt/rustup/bin ]]; then export PATH="/opt/homebrew/opt/rustup/bin:$PATH"; fi
+# Rust from Homebrew's rustup or a plain rustup install, when cargo isn't already on PATH.
+if ! command -v cargo >/dev/null; then
+  for dir in /opt/homebrew/opt/rustup/bin "$HOME/.cargo/bin" "$HOME"/.rustup/toolchains/stable-*/bin; do
+    if [[ -x "$dir/cargo" ]]; then export PATH="$dir:$PATH"; break; fi
+  done
+fi
 
 CARGO_FLAGS=()
 [[ $PROFILE == release ]] && CARGO_FLAGS+=(--release)

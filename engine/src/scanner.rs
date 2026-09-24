@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use sysinfo::{Pid, System};
 
 use crate::hooks::{HookEvent, read_events};
-use crate::model::{Agent, HostApp, Kind, Route, SessionStatus, State, StateSource};
+use crate::model::{Agent, HostApp, Kind, Route, SessionMatch, SessionStatus, State, StateSource};
 use crate::procs::{Proc, ProcCache, ProcTable, basename};
 use crate::tmux;
 use crate::transcripts::Transcripts;
@@ -17,8 +17,9 @@ pub struct Scanner {
     /// Agent pid → the child process that holds its session file open (Codex's native binary).
     children: HashMap<u32, u32>,
     transcripts: Transcripts,
-    /// Remember the transcript each Claude process was matched to, so guesses stay stable.
-    claude_paths: HashMap<u32, PathBuf>,
+    /// Remember the transcript each Claude process was matched to (and whether exactly), so
+    /// guesses stay stable.
+    claude_paths: HashMap<u32, (PathBuf, bool)>,
     /// Handle numbers stay with an agent for its whole life; a new agent takes the lowest free one.
     handles: HashMap<u32, (Kind, usize)>,
     opencode_cache: HashMap<u32, ((u64, u64), SessionStatus)>,
@@ -120,10 +121,11 @@ impl Scanner {
         let mut out = Vec::new();
         for (p, kind) in agents {
             let n = self.handle_number(p.pid, kind);
+            let now = crate::procs::live(p.pid);
             let args = p.cmd.get(1..).unwrap_or(&[]);
 
             let hook = events.iter().filter(|e| e.source == kind.as_str()).filter(|e| e.ancestors.contains(&p.pid)).max_by_key(|e| e.at);
-            let transcript = self.transcript_status(p, kind, args, hook);
+            let (transcript, session_match) = self.transcript_status(p, kind, args, hook);
             let (status, source) = merge(hook, transcript);
 
             let tmux_pane = tmux.as_ref().and_then(|t| p.tty.as_ref().and_then(|tty| t.panes_by_tty.get(tty))).cloned();
@@ -142,6 +144,8 @@ impl Scanner {
                 handle: format!("{}-{n}", kind.as_str()),
                 pid: p.pid,
                 start_time: p.start_time,
+                exe: now.as_ref().and_then(|l| l.exe.clone()),
+                comm: now.map(|l| l.comm).unwrap_or_default(),
                 tty: p.tty.clone(),
                 project: p.cwd.as_ref().and_then(|c| c.file_name()).map(|f| f.to_string_lossy().into_owned()),
                 cwd,
@@ -152,6 +156,9 @@ impl Scanner {
                 last_message: status.last_message,
                 question: status.question,
                 question_kind: status.question_kind,
+                question_detail: status.question_detail,
+                prompt_id: status.prompt_id,
+                session_match,
                 can_reply: route != Route::None,
                 route,
                 host,
@@ -160,6 +167,7 @@ impl Scanner {
             });
         }
         self.transcripts.prune_stale();
+        hide_ambiguous(&mut out);
         out
     }
 
@@ -193,7 +201,8 @@ impl Scanner {
     /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions.
     pub fn history(&mut self, agent: &Agent) -> Option<Vec<crate::history::ChatMessage>> {
         match agent.kind {
-            Kind::Claude => Some(self.claude_paths.get(&agent.pid).map(|p| crate::history::claude(p)).unwrap_or_default()),
+            _ if agent.session_match == SessionMatch::Ambiguous => None,
+            Kind::Claude => Some(self.claude_paths.get(&agent.pid).map(|(p, _)| crate::history::claude(p)).unwrap_or_default()),
             Kind::Codex => {
                 let path = self
                     .transcripts
@@ -226,59 +235,110 @@ impl Scanner {
         n
     }
 
-    fn transcript_status(&mut self, p: &Proc, kind: Kind, args: &[String], hook: Option<&HookEvent>) -> Option<SessionStatus> {
+    /// The session's state, and how sure Lantern is that the session belongs to this process.
+    fn transcript_status(
+        &mut self,
+        p: &Proc,
+        kind: Kind,
+        args: &[String],
+        hook: Option<&HookEvent>,
+    ) -> (Option<SessionStatus>, SessionMatch) {
+        let found = |status: Option<SessionStatus>, m: SessionMatch| match status {
+            Some(s) => (Some(s), m),
+            None => (None, SessionMatch::None),
+        };
         match kind {
             Kind::Claude => {
                 let from_hook = hook.and_then(|h| h.transcript_path.as_ref()).map(PathBuf::from);
                 let from_args = arg_after(args, &["--session-id", "--resume", "-r"])
                     .filter(|id| looks_like_id(id))
                     .and_then(|id| self.transcripts.claude_path_for_session(id));
-                let path = match from_hook.or(from_args) {
-                    Some(path) => Some(path),
-                    None => match self.claude_paths.get(&p.pid).filter(|p| p.exists()) {
+                let found_path = match from_hook.or(from_args) {
+                    Some(path) => Some((path, true)),
+                    None => match self.claude_paths.get(&p.pid).filter(|(p, _)| p.exists()) {
                         Some(known) => Some(known.clone()),
                         None => {
-                            let claimed: Vec<PathBuf> = self.claude_paths.values().cloned().collect();
-                            p.cwd.as_deref().and_then(|cwd| self.transcripts.claude_guess_path(cwd, p.start_time, &claimed))
+                            let claimed: Vec<PathBuf> = self.claude_paths.values().map(|(p, _)| p.clone()).collect();
+                            p.cwd
+                                .as_deref()
+                                .and_then(|cwd| self.transcripts.claude_guess_path(cwd, p.start_time, &claimed))
+                                .map(|p| (p, false))
                         }
                     },
                 };
-                let path = path?;
-                self.claude_paths.insert(p.pid, path.clone());
-                self.transcripts.claude_status(&path)
+                let Some((path, exact)) = found_path else { return (None, SessionMatch::None) };
+                self.claude_paths.insert(p.pid, (path.clone(), exact));
+                found(self.transcripts.claude_status(&path), if exact { SessionMatch::Exact } else { SessionMatch::Guessed })
             }
             Kind::Codex => {
                 // The node wrapper doesn't hold the file; its native child does.
                 let child = self.children.get(&p.pid).copied();
                 let path =
-                    self.transcripts.codex_path_for_pid(p.pid).or_else(|| child.and_then(|c| self.transcripts.codex_path_for_pid(c)))?;
-                self.transcripts.codex_status(&path)
+                    self.transcripts.codex_path_for_pid(p.pid).or_else(|| child.and_then(|c| self.transcripts.codex_path_for_pid(c)));
+                match path {
+                    Some(path) => found(self.transcripts.codex_status(&path), SessionMatch::Exact),
+                    None => (None, SessionMatch::None),
+                }
             }
             // No session file since the process started means nothing has happened yet.
             Kind::Pi | Kind::October => {
-                let cwd = p.cwd.as_deref()?;
+                let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };
                 match crate::readers::pi::session_file(cwd, p.start_time, kind == Kind::October) {
-                    Some(path) => self.transcripts.cached(&path, crate::readers::pi::parse),
-                    None => Some(idle()),
+                    Some(path) => found(self.transcripts.cached(&path, crate::readers::pi::parse), SessionMatch::Guessed),
+                    None => (Some(idle()), SessionMatch::None),
                 }
             }
-            Kind::Gemini => match crate::readers::gemini::session_file(p.cwd.as_deref()?, p.start_time) {
-                Some(path) => self.transcripts.cached(&path, crate::readers::gemini::parse),
-                None => Some(idle()),
-            },
+            Kind::Gemini => {
+                let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };
+                match crate::readers::gemini::session_file(cwd, p.start_time) {
+                    Some(path) => found(self.transcripts.cached(&path, crate::readers::gemini::parse), SessionMatch::Guessed),
+                    None => (Some(idle()), SessionMatch::None),
+                }
+            }
             Kind::Opencode => {
                 // One database for every session: cache per (process, database change).
-                let stamp = crate::readers::opencode::stamp()?;
+                let (Some(stamp), Some(cwd)) = (crate::readers::opencode::stamp(), p.cwd.as_deref()) else {
+                    return (None, SessionMatch::None);
+                };
                 if let Some((s, status)) = self.opencode_cache.get(&p.pid)
                     && *s == stamp
                 {
-                    return Some(status.clone());
+                    let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
+                    return (Some(status.clone()), m);
                 }
-                let status = crate::readers::opencode::status(p.cwd.as_deref()?, p.start_time).unwrap_or_else(idle);
+                let status = crate::readers::opencode::status(cwd, p.start_time).unwrap_or_else(idle);
                 self.opencode_cache.insert(p.pid, (stamp, status.clone()));
-                Some(status)
+                let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
+                (Some(status), m)
             }
-            _ => None,
+            _ => (None, SessionMatch::None),
+        }
+    }
+}
+
+/// Two agents of one kind in one folder whose sessions were only guessed may each be showing the
+/// other's conversation. Show neither: no state, message or history, until a hook or the command
+/// line says which session is whose. Replies still work: they go to the process's own terminal.
+pub(crate) fn hide_ambiguous(agents: &mut [Agent]) {
+    let mut shared: HashMap<(Kind, String), usize> = HashMap::new();
+    for a in agents.iter().filter(|a| a.session_match != SessionMatch::Exact) {
+        if let Some(cwd) = &a.cwd {
+            *shared.entry((a.kind, cwd.clone())).or_default() += 1;
+        }
+    }
+    for a in agents.iter_mut() {
+        let crowded = a.cwd.as_ref().is_some_and(|c| shared.get(&(a.kind, c.clone())).copied().unwrap_or(0) > 1);
+        if crowded && a.session_match == SessionMatch::Guessed && a.state_source != StateSource::Hook {
+            a.session_match = SessionMatch::Ambiguous;
+            a.state = State::Unknown;
+            a.state_since = None;
+            a.last_message = None;
+            a.question = None;
+            a.question_kind = None;
+            a.question_detail = None;
+            a.prompt_id = None;
+            a.title = None;
+            a.session_id = None;
         }
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import LanternCore
 import SwiftUI
 
 enum PanelMode: Equatable {
@@ -21,13 +22,23 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var pillExpanded = false
+    /// Drafts, one per conversation, and the recipient they're addressed to (see `Drafts`).
+    @Published private(set) var drafts = Drafts()
     /// The agent the composer is addressed to. Once chosen (or once you start typing), it stays
-    /// chosen: a draft never quietly changes recipient because the agent list changed.
-    @Published var targetId: String?
-    @Published var draft = "" {
-        didSet {
-            if !draft.isEmpty, targetId == nil, let t = target { targetId = t.id }
+    /// chosen: a draft never quietly changes recipient because the agent list changed. Setting it
+    /// switches conversation; each agent keeps its own draft.
+    var targetId: String? {
+        get { drafts.recipient }
+        set {
+            guard newValue != drafts.recipient else { return }
+            stopDictationIfAway(from: newValue)
+            drafts.address(newValue)
         }
+    }
+    /// The draft for the current recipient.
+    var draft: String {
+        get { drafts.text }
+        set { drafts.type(newValue, fallback: target?.id) }
     }
     @Published var toast: String?
     @Published var composeFocusToken = 0
@@ -45,10 +56,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var octoberLink: OctoberLink?
     /// Requests the engine hasn't answered yet, by request id.
     @Published private(set) var pending: [String: Pending] = [:]
+    @Published private(set) var engineHealth: EngineHealth = .starting
     let dictation = Dictation()
 
     enum Pending {
-        case reply(agentId: String, text: String)
+        /// The ticket says which draft revision was sent, so only that is cleared when it arrives.
+        case reply(Drafts.Ticket)
         case keys(agentId: String)
         case launch
         case focus(agentId: String)
@@ -59,6 +72,10 @@ final class AppModel: ObservableObject {
     private var toastTask: Task<Void, Never>?
     private var firstSnapshot = true
     private var knownTurns: Set<String> = []
+    /// When each pending request was sent; unanswered after `requestDeadline`, it fails.
+    private var pendingSince: [String: Date] = [:]
+    private var deadlineTask: Task<Void, Never>?
+    static let requestDeadline: TimeInterval = 20
     private let prefs = Preferences.shared
     var onNotify: ((Agent) -> Void)?
 
@@ -83,7 +100,9 @@ final class AppModel: ObservableObject {
         }
         engine.onReady = { OctoberAccount.shared.engineReady() }
         engine.onStopped = { [weak self] message in self?.engineStopped(message) }
-        dictation.onText = { [weak self] text in self?.draft = text }
+        engine.onHealth = { [weak self] health in self?.engineHealth = health }
+        // Dictated text goes to the draft it was started in, whichever conversation is showing.
+        dictation.onText = { [weak self] text, owner in self?.drafts.set(text, for: owner) }
         dictation.onError = { [weak self] message in self?.show(message) }
     }
 
@@ -133,7 +152,7 @@ final class AppModel: ObservableObject {
 
     /// A reply is on its way to the current target; Send waits for the answer.
     var sending: Bool {
-        pending.values.contains { if case .reply(let agentId, _) = $0 { agentId == target?.id } else { false } }
+        pending.values.contains { if case .reply(let ticket) = $0 { ticket.recipient == target?.id } else { false } }
     }
 
     // MARK: Actions
@@ -158,7 +177,7 @@ final class AppModel: ObservableObject {
         }
         if !(panel?.isList ?? false) { panel = .inbox }
         chatAgentId = agent.id
-        targetId = agent.id
+        targetId = agent.id  // the composer switches to this agent's own draft
         engine.history(agentId: agent.id)
         composeFocusToken += 1
     }
@@ -189,10 +208,16 @@ final class AppModel: ObservableObject {
     }
 
     /// Brings the agent's own tab to the front (or opens a Terminal for a background session).
+    /// The recipient menu: sends the draft being written to `agent` instead. The text moves with it
+    /// unless `agent` already has a draft of its own.
+    func readdress(to agent: Agent) {
+        stopDictationIfAway(from: agent.id)
+        drafts.readdress(agent.id)
+    }
+
     func open(_ agent: Agent) {
         let id = request("f")
-        pending[id] = .focus(agentId: agent.id)
-        engine.focus(requestId: id, agentId: agent.id)
+        track(id, .focus(agentId: agent.id), sent: engine.focus(requestId: id, agentId: agent.id))
         if let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) {
             app.activate()
         }
@@ -201,25 +226,26 @@ final class AppModel: ObservableObject {
     /// Answers a permission prompt: "1" allows once, Escape declines.
     func answerPermission(_ agent: Agent, allow: Bool) {
         let id = request("k")
-        pending[id] = .keys(agentId: agent.id)
-        engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"])
+        track(id, .keys(agentId: agent.id), sent: engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"]))
     }
 
     func send() {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let agent = target, !sending else { return }
-        if dictation.isRecording { dictation.stop() }
+        guard let agent = target, !sending else { return }
+        // Lock the recipient (a fallback target becomes the chosen one) before taking the ticket.
+        if drafts.recipient == nil { drafts.readdress(agent.id) }
+        guard let ticket = drafts.ticket(), ticket.recipient == agent.id else { return }
+        let text = ticket.text
+        dictation.stop()
         if agent.canReply {
             let id = request("r")
-            pending[id] = .reply(agentId: agent.id, text: text)
-            engine.reply(requestId: id, agentId: agent.id, text: text)
+            track(id, .reply(ticket), sent: engine.reply(requestId: id, agentId: agent.id, text: text))
         } else {
             // Terminals Lantern can't type into (Ghostty, VS Code, Warp...): copy, and bring it forward.
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
             open(agent)
             show("Copied. Paste into @\(agent.handle) in \(agent.host?.app ?? "its terminal") with ⌘V")
-            draft = ""
+            drafts.sent(ticket)
         }
     }
 
@@ -242,17 +268,22 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(Array(used.prefix(8)), forKey: "recentFolders")
         launching = true
         let id = request("l")
-        pending[id] = .launch
-        engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, background: background)
+        track(id, .launch, sent: engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, background: background))
     }
 
     func toggleDictation() {
-        if dictation.isRecording {
+        if dictation.isActive {
             dictation.stop()
         } else {
             compose(to: nil)
-            dictation.start(prefix: draft)
+            if drafts.recipient == nil, let t = target { drafts.readdress(t.id) }
+            dictation.start(prefix: draft, owner: drafts.recipient ?? "")
         }
+    }
+
+    /// Dictation belongs to one conversation's draft; moving to another conversation ends it.
+    private func stopDictationIfAway(from recipient: String?) {
+        if let owner = dictation.target, owner != (recipient ?? "") { dictation.stop() }
     }
 
     func show(_ message: String) {
@@ -269,6 +300,34 @@ final class AppModel: ObservableObject {
         return "\(prefix)\(nextRequest)"
     }
 
+    /// Records a request as waiting for the engine's answer. One the engine couldn't be given fails
+    /// straight away; one it never answers fails after `requestDeadline`.
+    private func track(_ id: String, _ op: Pending, sent: Bool) {
+        pending[id] = op
+        guard sent else {
+            fail(id, "Lantern's engine isn't running.")
+            return
+        }
+        pendingSince[id] = Date()
+        guard deadlineTask == nil else { return }
+        deadlineTask = Task { @MainActor [weak self] in
+            while let self, !self.pendingSince.isEmpty {
+                try? await Task.sleep(for: .seconds(2))
+                let late = self.pendingSince.filter { -$0.value.timeIntervalSinceNow > Self.requestDeadline }.keys
+                for id in late { self.fail(id, "no answer from Lantern's engine") }
+            }
+            self?.deadlineTask = nil
+        }
+    }
+
+    private func fail(_ id: String, _ message: String) {
+        switch pending[id] {
+        case .reply, .keys: replyFinished(id, ok: false, message: message)
+        case .launch, .focus: actionFinished(id, ok: false, message: message)
+        case nil: pendingSince[id] = nil
+        }
+    }
+
     private func handle(_ agentId: String?) -> String {
         agents.first { $0.id == agentId }?.handle ?? "agent"
     }
@@ -277,6 +336,7 @@ final class AppModel: ObservableObject {
 
     private func update(_ fresh: [Agent]) {
         agents = fresh
+        drafts.prune(keeping: Set(fresh.map(\.id)))
         noticeNewTurns()
         // Keep an open conversation current.
         if let chatAgentId {
@@ -307,12 +367,14 @@ final class AppModel: ObservableObject {
     }
 
     private func replyFinished(_ requestId: String, ok: Bool, message: String?) {
+        pendingSince[requestId] = nil
         guard let request = pending.removeValue(forKey: requestId) else { return }
         switch request {
-        case .reply(let agentId, let text):
+        case .reply(let ticket):
+            let agentId = ticket.recipient
             if ok {
-                // Only the text that was sent is cleared; anything typed since stays.
-                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+                // Only the draft revision that was sent is cleared; anything typed since stays.
+                drafts.sent(ticket)
                 show("Sent to @\(handle(agentId))")
                 if let chatAgentId { engine.history(agentId: chatAgentId) }
             } else {
@@ -326,6 +388,7 @@ final class AppModel: ObservableObject {
     }
 
     private func actionFinished(_ requestId: String, ok: Bool, message: String?) {
+        pendingSince[requestId] = nil
         guard let request = pending.removeValue(forKey: requestId) else { return }
         switch request {
         case .launch:
@@ -342,6 +405,7 @@ final class AppModel: ObservableObject {
     /// The engine is gone: nothing outstanding will be answered, and nothing it reported is current.
     private func engineStopped(_ message: String) {
         pending.removeAll()
+        pendingSince.removeAll()
         launching = false
         firstSnapshot = true
         update([])

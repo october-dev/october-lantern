@@ -19,10 +19,7 @@ fi
 [[ -n "$SIGN_IDENTITY" ]] || { echo "No Developer ID Application identity found" >&2; exit 1; }
 echo "==> signing as: $SIGN_IDENTITY"
 
-echo "==> checks"
-if [[ -d /opt/homebrew/opt/rustup/bin ]]; then export PATH="/opt/homebrew/opt/rustup/bin:$PATH"; fi
-(cd "$ROOT/engine" && cargo fmt --all -- --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked)
-bash -n "$ROOT/scripts/build-app.sh" "$ROOT/scripts/publish.sh"
+"$ROOT/scripts/check.sh"
 
 UNIVERSAL=1 SIGN_IDENTITY="$SIGN_IDENTITY" "$ROOT/scripts/build-app.sh"
 codesign --verify --deep --strict "$APP"

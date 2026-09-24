@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import LanternCore
 import Network
 import Security
 
@@ -63,8 +64,29 @@ final class OctoberAccount: ObservableObject {
     /// network answer checks it before touching the session, so a refresh that finishes after a
     /// sign-out can't sign the old account back in.
     private var generation = 0
+    /// The sign-in in progress. Cancel, sign-out or a new sign-in makes it stale: its listener,
+    /// callback, token exchange and completion check it after every wait, so a cancelled sign-in
+    /// can't finish and sign you in anyway.
+    private var attempts = Attempts()
+    /// Swapped in tests; the real one posts to Supabase's token endpoint.
+    var tokenGrant: (String, [String: String]) async throws -> Session = { grant, body in
+        try await OctoberAccount.requestToken(grant: grant, body: body)
+    }
+    /// Where the session is kept: the Keychain, or nowhere for a detached account.
+    private var store: (save: (Session) -> Void, delete: () -> Void) = (Keychain.save, Keychain.delete)
+    /// A detached account makes no network calls besides `tokenGrant`.
+    private var offline = false
 
-    private init() {
+    /// An account that doesn't touch the Keychain or October's servers (for tests).
+    static func detached() -> OctoberAccount {
+        let a = OctoberAccount(restore: false)
+        a.store = ({ _ in }, {})
+        a.offline = true
+        return a
+    }
+
+    private init(restore: Bool = true) {
+        guard restore else { return }
         session = Keychain.load()
         if session != nil {
             Task { await refreshIfNeeded(force: false); await loadPlan() }
@@ -82,6 +104,7 @@ final class OctoberAccount: ObservableObject {
         guard !signingIn else { return }
         error = nil
         signingIn = true
+        let attempt = attempts.begin()
         let verifier = Self.randomVerifier()
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
         var parts = URLComponents(url: Self.supabaseURL.appendingPathComponent("auth/v1/authorize"), resolvingAgainstBaseURL: false)!
@@ -97,66 +120,68 @@ final class OctoberAccount: ObservableObject {
         callback = listener
         listener.start { [weak self] result in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.attempts.isCurrent(attempt) else { return }
                 self.callback = nil
                 switch result {
-                case .success(let code): await self.exchange(code: code, verifier: verifier)
-                case .failure(let message):
-                    self.error = message
-                    self.signingIn = false
+                case .success(let code): await self.exchange(code: code, verifier: verifier, attempt: attempt)
+                case .failure(let message): self.finish(attempt, error: message)
                 }
             }
-        } onReady: { ok in
+        } onReady: { [weak self] ok in
             Task { @MainActor in
+                guard let self, self.attempts.isCurrent(attempt) else { return }
                 if ok {
                     NSWorkspace.shared.open(parts.url!)
                 } else {
-                    self.error = "Another app is signing in to October right now. Try again in a moment."
-                    self.signingIn = false
+                    self.callback?.stop()
+                    self.callback = nil
+                    self.finish(attempt, error: "Another app is signing in to October right now. Try again in a moment.")
                 }
             }
         }
         // Give up after five minutes, like October Desktop.
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(300))
-            guard let self, self.callback === listener else { return }
+            guard let self, self.attempts.isCurrent(attempt), self.callback === listener else { return }
             listener.stop()
             self.callback = nil
-            self.signingIn = false
-            self.error = "Sign-in timed out."
+            self.finish(attempt, error: "Sign-in timed out.")
         }
     }
 
     func cancelSignIn() {
+        attempts.cancel()
         callback?.stop()
         callback = nil
         signingIn = false
     }
 
     func signIn(email: String, password: String) async {
+        guard !signingIn else { return }
         error = nil
         signingIn = true
-        defer { signingIn = false }
-        let g = generation
-        do {
-            let s = try await token(grant: "password", body: ["email": email, "password": password])
-            guard g == generation else { return }
-            await adopt(s)
-        } catch {
-            guard g == generation else { return }
-            self.error = Self.describe(error)
-        }
+        let attempt = attempts.begin()
+        await complete(attempt, grant: "password", body: ["email": email, "password": password])
+    }
+
+    /// Ends a sign-in attempt, if it's still the current one.
+    private func finish(_ attempt: Int, error message: String? = nil) {
+        guard attempts.isCurrent(attempt) else { return }
+        attempts.finish(attempt)
+        signingIn = false
+        if let message { error = message }
     }
 
     func signOut() {
         let token = session?.accessToken
+        cancelSignIn()
         generation += 1
         session = nil
         plan = nil
         refreshTask?.cancel()
-        Keychain.delete()
+        store.delete()
         PhoneModel.shared.stop()
-        guard let token else { return }
+        guard let token, !offline else { return }
         var req = URLRequest(url: Self.supabaseURL.appendingPathComponent("auth/v1/logout"))
         req.url = URL(string: req.url!.absoluteString + "?scope=local")
         req.httpMethod = "POST"
@@ -173,16 +198,21 @@ final class OctoberAccount: ObservableObject {
         return session?.accessToken
     }
 
-    private func exchange(code: String, verifier: String) async {
-        defer { signingIn = false }
+    private func exchange(code: String, verifier: String, attempt: Int) async {
+        await complete(attempt, grant: "pkce", body: ["auth_code": code, "code_verifier": verifier])
+    }
+
+    /// Asks for a session and adopts it, unless the attempt was cancelled or replaced meanwhile.
+    private func complete(_ attempt: Int, grant: String, body: [String: String]) async {
         let g = generation
         do {
-            let s = try await token(grant: "pkce", body: ["auth_code": code, "code_verifier": verifier])
-            guard g == generation else { return }
+            let s = try await tokenGrant(grant, body)
+            guard attempts.isCurrent(attempt), g == generation else { return }
+            finish(attempt)
             await adopt(s)
         } catch {
             guard g == generation else { return }
-            self.error = Self.describe(error)
+            finish(attempt, error: Self.describe(error))
         }
     }
 
@@ -190,7 +220,7 @@ final class OctoberAccount: ObservableObject {
     private func adopt(_ s: Session) async {
         generation += 1
         session = s
-        Keychain.save(s)
+        store.save(s)
         PhoneModel.shared.token(s.accessToken)
         scheduleRefresh()
         await loadPlan()
@@ -217,10 +247,10 @@ final class OctoberAccount: ObservableObject {
         }
         let g = generation
         do {
-            let fresh = try await token(grant: "refresh_token", body: ["refresh_token": s.refreshToken])
+            let fresh = try await tokenGrant("refresh_token", ["refresh_token": s.refreshToken])
             guard g == generation else { return }
             session = fresh
-            Keychain.save(fresh)
+            store.save(fresh)
             PhoneModel.shared.token(fresh.accessToken)
             scheduleRefresh()
         } catch AuthError.rejected {
@@ -247,7 +277,7 @@ final class OctoberAccount: ObservableObject {
     }
 
     func loadPlan() async {
-        guard let token = session?.accessToken else { return }
+        guard let token = session?.accessToken, !offline else { return }
         let g = generation
         var req = URLRequest(url: Self.planURL)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -263,7 +293,7 @@ final class OctoberAccount: ObservableObject {
         case failed(String)
     }
 
-    private func token(grant: String, body: [String: String]) async throws -> Session {
+    private static func requestToken(grant: String, body: [String: String]) async throws -> Session {
         var req = URLRequest(url: URL(string: Self.supabaseURL.absoluteString + "/auth/v1/token?grant_type=\(grant)")!)
         req.httpMethod = "POST"
         req.timeoutInterval = 15

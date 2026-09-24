@@ -45,9 +45,15 @@ pub struct HookEvent {
     /// What it's asking, for `NeedsInput`.
     pub question: Option<String>,
     pub question_kind: Option<QuestionKind>,
+    /// The full request behind `question` (a permission prompt's whole command).
+    pub question_detail: Option<String>,
+    /// Identifies one permission prompt, so Allow/Deny can't answer a later one.
+    pub prompt_id: Option<String>,
     pub transcript_path: Option<String>,
     /// Process ids above the hook command, nearest first. The agent is one of them.
     pub ancestors: Vec<u32>,
+    /// When the session entered this state. A repeat of the same state (Stop, then Claude's idle
+    /// reminder) keeps the first time, so one finished turn stays one inbox item.
     pub at: u64,
 }
 
@@ -58,6 +64,8 @@ impl HookEvent {
             since: Some(self.at),
             question: self.question.clone(),
             question_kind: self.question_kind,
+            question_detail: self.question_detail.clone(),
+            prompt_id: self.prompt_id.clone(),
             last_message: self.message.clone(),
             session_id: self.session_id.clone(),
             title: None,
@@ -73,7 +81,29 @@ fn event_path(source: &str, session_id: Option<&str>, ancestors: &[u32]) -> Path
 
 fn write_event(ev: &HookEvent) -> Result<()> {
     fs::create_dir_all(events_dir())?;
-    write_atomic(&event_path(&ev.source, ev.session_id.as_deref(), &ev.ancestors), &serde_json::to_vec(ev)?)
+    let path = event_path(&ev.source, ev.session_id.as_deref(), &ev.ancestors);
+    let ev = continue_turn(read_event(&path).as_ref(), ev.clone());
+    write_atomic(&path, &serde_json::to_vec(&ev)?)
+}
+
+/// Claude repeats itself: `Stop` and, a minute later, an idle reminder describe the same finished
+/// turn; a permission prompt is announced by `PermissionRequest` and again by a notification. A
+/// repeat keeps the earlier event's time and prompt id, so it doesn't become a new turn.
+pub(crate) fn continue_turn(prev: Option<&HookEvent>, mut ev: HookEvent) -> HookEvent {
+    let Some(prev) = prev else { return ev };
+    let same = ev.source == "claude"
+        && prev.state == ev.state
+        && prev.question_kind == ev.question_kind
+        && (ev.question.is_none() || prev.question == ev.question)
+        && (ev.message.is_none() || prev.message == ev.message);
+    if same {
+        ev.at = prev.at;
+        ev.question = ev.question.or(prev.question.clone());
+        ev.question_detail = ev.question_detail.or(prev.question_detail.clone());
+        ev.prompt_id = prev.prompt_id.clone().or(ev.prompt_id);
+        ev.message = ev.message.or(prev.message.clone());
+    }
+    ev
 }
 
 fn read_event(path: &Path) -> Option<HookEvent> {
@@ -107,6 +137,8 @@ pub fn run_hook(source: &str, arg: Option<String>) {
                     message: v["last-assistant-message"].as_str().map(|t| truncate(t, 2000)),
                     question: None,
                     question_kind: None,
+                    question_detail: None,
+                    prompt_id: None,
                     transcript_path: None,
                     ancestors: crate::procs::ancestors_of(std::process::id()),
                     at: now_ms(),
@@ -122,17 +154,24 @@ pub fn run_hook(source: &str, arg: Option<String>) {
 
 /// Reduces one Claude Code hook payload to an event, or `None` for events that say nothing about
 /// whether the session needs you.
-fn claude_event(v: &Value) -> Option<HookEvent> {
+pub(crate) fn claude_event(v: &Value) -> Option<HookEvent> {
     let ancestors = crate::procs::ancestors_of(std::process::id());
     let session_id = v["session_id"].as_str().map(String::from);
+    let at = now_ms();
+    let mut detail = None;
     let (state, question, question_kind, message) = match v["hook_event_name"].as_str().unwrap_or("") {
-        // The moment Claude asks, with the exact tool and command.
+        // The moment Claude asks, with the tool and its whole input.
         "PermissionRequest" => {
-            // The command itself, when there is one: that's what the person is approving.
             let tool = v["tool_name"].as_str().unwrap_or("a tool");
             let what = match v["tool_input"]["command"].as_str() {
-                Some(c) => format!("{tool} · {}", truncate(c.lines().next().unwrap_or(c), 200)),
-                None => describe_tool(tool, &v["tool_input"]),
+                Some(c) => {
+                    detail = Some(full_text(c));
+                    format!("{tool} · {}", one_line(c))
+                }
+                None => {
+                    detail = serde_json::to_string_pretty(&v["tool_input"]).ok().filter(|t| t != "null").map(|t| full_text(&t));
+                    describe_tool(tool, &v["tool_input"])
+                }
             };
             (State::NeedsInput, Some(format!("Permission to run {what}")), Some(QuestionKind::Permission), None)
         }
@@ -155,9 +194,14 @@ fn claude_event(v: &Value) -> Option<HookEvent> {
             _ => return None,
         },
         "Stop" => (State::Waiting, None, None, v["last_assistant_message"].as_str().map(|t| truncate(t, 2000))),
-        // UserPromptSubmit, PostToolUse: Claude is at work.
+        // UserPromptSubmit, PostToolUse, PostToolUseFailure: Claude is at work.
         _ => (State::Working, None, None, None),
     };
+    let prompt_id = (question_kind == Some(QuestionKind::Permission)).then(|| {
+        use sha2::Digest;
+        let h = sha2::Sha256::digest(format!("{}|{}|{}|{at}", session_id.as_deref().unwrap_or(""), v["tool_name"], v["tool_input"]));
+        h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+    });
     Some(HookEvent {
         source: "claude".into(),
         state,
@@ -166,10 +210,47 @@ fn claude_event(v: &Value) -> Option<HookEvent> {
         message,
         question,
         question_kind,
+        question_detail: detail,
+        prompt_id,
         transcript_path: v["transcript_path"].as_str().map(String::from),
         ancestors,
-        at: now_ms(),
+        at,
     })
+}
+
+/// The first line of a command, saying how much is left out.
+fn one_line(c: &str) -> String {
+    let c = c.trim();
+    let first = c.lines().next().unwrap_or("");
+    let more = c.lines().count().saturating_sub(1);
+    let line = truncate(first, 200);
+    match more {
+        0 => line,
+        1 => format!("{line} (+1 more line)"),
+        n => format!("{line} (+{n} more lines)"),
+    }
+}
+
+/// A request in full, up to a size that fits in a hook event; says so when it's cut.
+fn full_text(t: &str) -> String {
+    const MAX: usize = 20_000;
+    let n = t.chars().count();
+    if n <= MAX {
+        return t.to_string();
+    }
+    let kept: String = t.chars().take(MAX).collect();
+    format!("{kept}\n… {} more characters not shown. Check the terminal before allowing.", n - MAX)
+}
+
+/// The current permission prompt for the agent with this pid, from its hook events: what
+/// Allow/Deny checks right before pressing a key.
+pub fn current_prompt(pid: u32) -> Option<String> {
+    read_events()
+        .into_iter()
+        .filter(|e| e.ancestors.contains(&pid))
+        .max_by_key(|e| e.at)
+        .filter(|e| e.state == State::NeedsInput && e.question_kind == Some(QuestionKind::Permission))
+        .and_then(|e| e.prompt_id)
 }
 
 /// Latest hook event per session, dropping files older than a day.
@@ -191,7 +272,7 @@ pub fn read_events() -> Vec<HookEvent> {
 
 // ---------- install / uninstall ----------
 
-const CLAUDE_EVENTS: [&str; 5] = ["PermissionRequest", "Notification", "Stop", "UserPromptSubmit", "PostToolUse"];
+const CLAUDE_EVENTS: [&str; 6] = ["PermissionRequest", "Notification", "Stop", "UserPromptSubmit", "PostToolUse", "PostToolUseFailure"];
 
 fn hook_binary() -> PathBuf {
     support_dir().join("bin/lantern-engine")
@@ -245,22 +326,87 @@ fn is_ours(command: &str) -> bool {
     command.contains("lantern-engine") && command.contains(" hook ")
 }
 
-/// Writes through a temporary file in the same folder, so a crash mid-write can't leave a
-/// half-written config, and keeps the original file's permissions.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.lantern-tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
-    fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
-    if let Ok(meta) = fs::metadata(path) {
-        let _ = fs::set_permissions(&tmp, meta.permissions());
+/// Writes through a temporary file of its own in the same folder (so a crash can't leave a
+/// half-written file and two writers never share one), keeping the original's permissions.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let name = path.file_name().context("no file name")?.to_string_lossy();
+    let tmp = path.with_file_name(format!(".{name}.{}.lantern-tmp", uuid::Uuid::new_v4().simple()));
+    let result = (|| -> Result<()> {
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+        f.write_all(bytes).with_context(|| format!("writing {}", tmp.display()))?;
+        if let Ok(meta) = fs::metadata(path) {
+            fs::set_permissions(&tmp, meta.permissions()).with_context(|| format!("copying permissions of {}", path.display()))?;
+        }
+        f.sync_all()?;
+        fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+    result
 }
 
-fn backup(path: &Path) -> Result<()> {
-    if path.exists() {
-        let dest = path.with_file_name(format!("{}.lantern-backup-{}", path.file_name().unwrap().to_string_lossy(), now_ms()));
-        fs::copy(path, &dest).with_context(|| format!("backing up {}", path.display()))?;
-        println!("backed up {} → {}", path.display(), dest.display());
+/// Copies `path` to a new `<name>.lantern-backup-<ms>[-n]` file; never overwrites an earlier one.
+pub(crate) fn backup(path: &Path) -> Result<Option<PathBuf>> {
+    use std::io::Write;
+    let Ok(bytes) = fs::read(path) else { return Ok(None) };
+    let base = format!("{}.lantern-backup-{}", path.file_name().context("no file name")?.to_string_lossy(), now_ms());
+    for n in 0..1000 {
+        let dest = path.with_file_name(if n == 0 { base.clone() } else { format!("{base}-{n}") });
+        match fs::OpenOptions::new().write(true).create_new(true).open(&dest) {
+            Ok(mut f) => {
+                f.write_all(&bytes).with_context(|| format!("backing up {}", path.display()))?;
+                if let Ok(meta) = fs::metadata(path) {
+                    fs::set_permissions(&dest, meta.permissions())?;
+                }
+                println!("backed up {} → {}", path.display(), dest.display());
+                return Ok(Some(dest));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).with_context(|| format!("backing up {}", path.display())),
+        }
+    }
+    bail!("couldn't pick a backup name for {}", path.display())
+}
+
+/// Holds an exclusive lock on Lantern's hook settings for as long as it lives, so two installs
+/// (or an install and an uninstall) can't interleave their edits.
+struct SettingsLock(#[allow(dead_code)] fs::File);
+
+fn lock_settings() -> Result<SettingsLock> {
+    use std::os::fd::AsRawFd;
+    fs::create_dir_all(support_dir())?;
+    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(support_dir().join("hooks.lock"))?;
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        bail!("couldn't lock Lantern's hook settings");
+    }
+    Ok(SettingsLock(f))
+}
+
+/// New contents for up to two config files, written together: if the second write fails, the
+/// first file gets its old contents back.
+fn write_both(changes: &[(PathBuf, Vec<u8>)]) -> Result<()> {
+    let originals: Vec<Option<Vec<u8>>> = changes.iter().map(|(p, _)| fs::read(p).ok()).collect();
+    for (path, _) in changes {
+        backup(path)?;
+    }
+    for (i, (path, bytes)) in changes.iter().enumerate() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Err(e) = write_atomic(path, bytes) {
+            for (j, (done, _)) in changes.iter().enumerate().take(i) {
+                let restored = match &originals[j] {
+                    Some(old) => write_atomic(done, old),
+                    None => fs::remove_file(done).map_err(Into::into),
+                };
+                if let Err(r) = restored {
+                    eprintln!("couldn't restore {}: {r:#} (its backup is next to it)", done.display());
+                }
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -310,6 +456,7 @@ fn codex_notify(doc: &toml_edit::DocumentMut) -> Option<Vec<String>> {
 /// Adds Lantern to both agents' configs. Both files are read and checked before either is
 /// changed, so a broken config in one leaves the other untouched.
 pub fn install() -> Result<()> {
+    let _lock = lock_settings()?;
     let claude_path = claude_settings_path();
     let mut settings: Value = match fs::read(&claude_path) {
         Ok(b) => serde_json::from_slice(&b).context("~/.claude/settings.json is not valid JSON")?,
@@ -323,7 +470,6 @@ pub fn install() -> Result<()> {
     let engine = install_hook_binary()?;
 
     // Claude Code
-    backup(&claude_path)?;
     remove_claude_hooks(&mut settings);
     let command = claude_hook_command(&engine);
     let hooks = settings.as_object_mut().unwrap().entry("hooks").or_insert_with(|| json!({}));
@@ -333,47 +479,48 @@ pub fn install() -> Result<()> {
             .context("hook list is not an array")?
             .push(json!({"hooks": [{"type": "command", "command": command, "timeout": 5}]}));
     }
-    fs::create_dir_all(claude_path.parent().unwrap())?;
-    write_atomic(&claude_path, (serde_json::to_string_pretty(&settings)? + "\n").as_bytes())?;
-    println!("Claude Code: added Lantern to {} hooks in {}", CLAUDE_EVENTS.join(", "), claude_path.display());
 
     // Codex
     if let Some(prev) = codex_notify(&doc)
         && !prev.iter().any(|a| a.contains("lantern-engine"))
     {
-        fs::write(codex_previous_path(), serde_json::to_vec(&prev)?)?;
+        write_atomic(&codex_previous_path(), &serde_json::to_vec(&prev)?)?;
         println!("Codex: your existing notify program will still run: {}", prev.join(" "));
     }
-    backup(&codex_path)?;
     let mut arr = toml_edit::Array::new();
     for part in codex_notify_command(&engine) {
         arr.push(part);
     }
     doc.insert("notify", toml_edit::value(arr));
-    fs::create_dir_all(codex_path.parent().unwrap())?;
-    write_atomic(&codex_path, doc.to_string().as_bytes())?;
+
+    write_both(&[
+        (claude_path.clone(), (serde_json::to_string_pretty(&settings)? + "\n").into_bytes()),
+        (codex_path.clone(), doc.to_string().into_bytes()),
+    ])?;
+    println!("Claude Code: added Lantern to {} hooks in {}", CLAUDE_EVENTS.join(", "), claude_path.display());
     println!("Codex: set notify in {}", codex_path.display());
     println!("Restart running agents for the hooks to take effect.");
     Ok(())
 }
 
 pub fn uninstall() -> Result<()> {
+    let _lock = lock_settings()?;
+    let mut changes = Vec::new();
+    let mut restored_codex = false;
     let path = claude_settings_path();
     if let Ok(b) = fs::read(&path) {
-        let mut settings: Value = serde_json::from_slice(&b)?;
+        let mut settings: Value = serde_json::from_slice(&b).context("~/.claude/settings.json is not valid JSON")?;
         let removed = remove_claude_hooks(&mut settings);
         if removed > 0 {
-            backup(&path)?;
-            write_atomic(&path, (serde_json::to_string_pretty(&settings)? + "\n").as_bytes())?;
+            changes.push((path.clone(), (serde_json::to_string_pretty(&settings)? + "\n").into_bytes()));
         }
-        println!("Claude Code: removed {removed} Lantern hook(s)");
+        println!("Claude Code: removing {removed} Lantern hook(s)");
     }
 
     let path = codex_config_path();
     if let Ok(text) = fs::read_to_string(&path) {
-        let mut doc: toml_edit::DocumentMut = text.parse()?;
+        let mut doc: toml_edit::DocumentMut = text.parse().context("~/.codex/config.toml is not valid TOML")?;
         if codex_notify(&doc).is_some_and(|n| n.iter().any(|a| a.contains("lantern-engine"))) {
-            backup(&path)?;
             let prev: Option<Vec<String>> = fs::read(codex_previous_path()).ok().and_then(|b| serde_json::from_slice(&b).ok());
             match prev {
                 Some(prev) => {
@@ -389,11 +536,15 @@ pub fn uninstall() -> Result<()> {
                     println!("Codex: removed notify");
                 }
             }
-            write_atomic(&path, doc.to_string().as_bytes())?;
-            let _ = fs::remove_file(codex_previous_path());
+            changes.push((path.clone(), doc.to_string().into_bytes()));
+            restored_codex = true;
         } else {
             println!("Codex: Lantern is not installed");
         }
+    }
+    write_both(&changes)?;
+    if restored_codex {
+        let _ = fs::remove_file(codex_previous_path());
     }
     Ok(())
 }
@@ -422,14 +573,15 @@ pub fn status() -> Result<()> {
                     .flatten()
                     .any(|g| g["hooks"].as_array().into_iter().flatten().any(|h| h["command"].as_str().is_some_and(is_ours)))
             };
-            CLAUDE_EVENTS.iter().all(|e| hooked(e))
+            (CLAUDE_EVENTS.iter().all(|e| hooked(e)), CLAUDE_EVENTS.iter().any(|e| hooked(e)))
         })
-        .unwrap_or(false);
+        .unwrap_or((false, false));
     let codex = fs::read_to_string(codex_config_path())
         .ok()
         .and_then(|t| t.parse::<toml_edit::DocumentMut>().ok())
         .and_then(|d| codex_notify(&d))
         .is_some_and(|n| n.iter().any(|a| a.contains("lantern-engine")));
-    println!("{}", json!({"claude": claude, "codex": codex}));
+    // `claudeOutdated`: an older Lantern's hooks, without some of the events this one needs.
+    println!("{}", json!({"claude": claude.0, "claudeOutdated": claude.1 && !claude.0, "codex": codex}));
     Ok(())
 }

@@ -1,4 +1,12 @@
 import Foundation
+import LanternCore
+
+/// Where the engine process is in its life.
+enum EngineHealth: Equatable {
+    case starting, ready, restarting
+    /// Stopped for good, with the reason (missing or incompatible engine).
+    case failed(String)
+}
 
 /// Runs `lantern-engine serve` and speaks its JSON-lines protocol. Restarts it if it dies.
 @MainActor
@@ -19,10 +27,18 @@ final class EngineClient {
     /// The engine process ended; anything outstanding won't be answered.
     var onStopped: ((String) -> Void)?
 
+    /// Where the engine is in its life, for the UI.
+    var onHealth: ((EngineHealth) -> Void)?
+
     private var process: Process?
     private var stdin: FileHandle?
     private var buffer = Data()
-    private var stopping = false
+    private var supervisor = Supervisor()
+    /// The current process said a compatible hello; until then nothing else it says is used and no
+    /// request is sent to it.
+    private var ready = false
+    private var launchedAt = Date()
+    private var restartTask: Task<Void, Never>?
 
     static func engineURL() -> URL? {
         let fm = FileManager.default
@@ -45,10 +61,28 @@ final class EngineClient {
         return nil
     }
 
+    /// Starts the engine and keeps it running until `stop`.
     func start() {
-        stopping = false
+        restartTask?.cancel()
+        launch(supervisor.start())
+    }
+
+    /// Stops the engine for good (until `start`). A restart waiting out its delay is dropped, and
+    /// nothing the old process still says is used.
+    func stop() {
+        supervisor.stop()
+        restartTask?.cancel()
+        restartTask = nil
+        shutDown()
+    }
+
+    private func launch(_ generation: Int) {
         buffer = Data()
+        ready = false
+        onHealth?(.starting)
         guard let url = Self.engineURL() else {
+            supervisor.stop()
+            onHealth?(.failed("Lantern's engine is missing. Reinstall October Lantern."))
             onStopped?("Lantern's engine is missing. Reinstall October Lantern.")
             return
         }
@@ -64,58 +98,81 @@ final class EngineClient {
             let data = handle.availableData
             // At end of file the handler keeps firing with no data until it's removed.
             if data.isEmpty { handle.readabilityHandler = nil; return }
-            Task { @MainActor in self?.receive(data) }
+            Task { @MainActor in self?.receive(data, from: generation) }
         }
         p.terminationHandler = { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.stdin = nil
-                if self.stopping { return }
-                self.onStopped?("Lantern's engine stopped; restarting it.")
-                try? await Task.sleep(for: .seconds(2))
-                self.start()
-            }
+            Task { @MainActor in self?.exited(generation) }
         }
         do {
             try p.run()
             process = p
             stdin = input.fileHandleForWriting
+            launchedAt = Date()
         } catch {
-            onStopped?("Couldn't start Lantern's engine: \(error.localizedDescription)")
+            output.fileHandleForReading.readabilityHandler = nil
+            process = nil
+            exited(generation, message: "Couldn't start Lantern's engine: \(error.localizedDescription)")
         }
     }
 
-    func stop() {
-        stopping = true
-        process?.terminate()
+    private func exited(_ generation: Int, message: String = "Lantern's engine stopped; restarting it.") {
+        guard supervisor.isCurrent(generation) else { return }
+        process = nil
+        stdin = nil
+        ready = false
+        guard let delay = supervisor.exited(generation, ranFor: Date().timeIntervalSince(launchedAt)) else { return }
+        onStopped?(message)
+        onHealth?(.restarting)
+        restartTask?.cancel()
+        restartTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled, let next = self.supervisor.relaunch(after: generation) else { return }
+            self.launch(next)
+        }
     }
 
-    func refresh() {
+    /// Ends the current process without treating it as a crash.
+    private func shutDown() {
+        ready = false
+        stdin = nil
+        buffer = Data()
+        process?.terminate()
+        process = nil
+    }
+
+    @discardableResult
+    func refresh() -> Bool {
         send(["type": "refresh"])
     }
 
-    func reply(requestId: String, agentId: String, text: String) {
+    @discardableResult
+    func reply(requestId: String, agentId: String, text: String) -> Bool {
         send(["type": "reply", "requestId": requestId, "agentId": agentId, "text": text])
     }
 
-    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, background: Bool) {
+    @discardableResult
+    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, background: Bool) -> Bool {
         send(["type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background])
     }
 
-    func history(agentId: String) {
+    @discardableResult
+    func history(agentId: String) -> Bool {
         send(["type": "history", "requestId": "h-\(agentId)", "agentId": agentId])
     }
 
-    func keys(requestId: String, agentId: String, keys: [String]) {
+    @discardableResult
+    func keys(requestId: String, agentId: String, keys: [String]) -> Bool {
         send(["type": "keys", "requestId": requestId, "agentId": agentId, "keys": keys])
     }
 
     /// "october.pair", "october.cancelPair" or "october.forget".
-    func october(_ type: String) {
+    @discardableResult
+    func october(_ type: String) -> Bool {
         send(["type": type])
     }
 
-    func focus(requestId: String, agentId: String) {
+    @discardableResult
+    func focus(requestId: String, agentId: String) -> Bool {
         send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
 
@@ -123,38 +180,54 @@ final class EngineClient {
 
     /// The current October access token: the engine starts hosting for the phone app, or hands a
     /// running host the refreshed token.
-    func phoneToken(_ accessToken: String) { send(["type": "phone.token", "accessToken": accessToken]) }
-    func phonePair() { send(["type": "phone.pair"]) }
-    func phoneDecide(allow: Bool) { send(["type": "phone.decide", "allow": allow]) }
-    func phoneRevoke(bind: String) { send(["type": "phone.revoke", "bind": bind]) }
-    func phoneStop() { send(["type": "phone.stop"]) }
+    @discardableResult func phoneToken(_ accessToken: String) -> Bool { send(["type": "phone.token", "accessToken": accessToken]) }
+    @discardableResult func phonePair() -> Bool { send(["type": "phone.pair"]) }
+    @discardableResult func phoneDecide(allow: Bool) -> Bool { send(["type": "phone.decide", "allow": allow]) }
+    @discardableResult func phoneRevoke(bind: String) -> Bool { send(["type": "phone.revoke", "bind": bind]) }
+    @discardableResult func phoneStop() -> Bool { send(["type": "phone.stop"]) }
 
-    private func send(_ obj: [String: Any]) {
-        guard let stdin, var data = try? JSONSerialization.data(withJSONObject: obj) else { return }
+    /// Writes one request. False when there's no ready engine to take it (the caller fails the
+    /// request instead of waiting for an answer that can't come).
+    @discardableResult
+    private func send(_ obj: [String: Any]) -> Bool {
+        guard ready, let stdin, var data = try? JSONSerialization.data(withJSONObject: obj) else { return false }
         data.append(0x0A)
         do {
             try stdin.write(contentsOf: data)
+            return true
         } catch {
-            onStopped?("Lantern's engine isn't answering.")
+            // The pipe is broken: end this process; its exit restarts the engine.
+            process?.terminate()
+            return false
         }
     }
 
-    private func receive(_ data: Data) {
-        guard !data.isEmpty else { return }
+    private func receive(_ data: Data, from generation: Int) {
+        guard !data.isEmpty, supervisor.isCurrent(generation) else { return }
         buffer.append(data)
-        while let newline = buffer.firstIndex(of: 0x0A) {
+        while supervisor.isCurrent(generation), let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[buffer.startIndex..<newline]
             buffer.removeSubrange(buffer.startIndex...newline)
             guard !line.isEmpty else { continue }
             do {
-                switch try JSONDecoder().decode(EngineMessage.self, from: line) {
-                case .hello(let protocolVersion, let version):
+                let message = try JSONDecoder().decode(EngineMessage.self, from: line)
+                if case .hello(let protocolVersion, let version) = message {
                     if protocolVersion == Self.protocolVersion {
+                        ready = true
+                        onHealth?(.ready)
                         onReady?()
                     } else {
+                        // Nothing else this engine says is used, and it isn't restarted.
+                        let text = "Lantern's engine (\(version)) doesn't match this app. Reinstall October Lantern."
                         stop()
-                        onStopped?("Lantern's engine (\(version)) doesn't match this app. Reinstall October Lantern.")
+                        onHealth?(.failed(text))
+                        onStopped?(text)
                     }
+                    continue
+                }
+                guard ready else { continue }
+                switch message {
+                case .hello: break
                 case .snapshot(let agents): onAgents?(agents)
                 case .replyResult(let id, let ok, _, let message): onReplyResult?(id, ok, message)
                 case .installed(let installed): onInstalled?(installed)

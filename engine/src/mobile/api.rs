@@ -8,6 +8,7 @@ use hmac::{KeyInit, Mac};
 use serde_json::{Value, json};
 use sha2::Sha256;
 
+use crate::actions::Outcome;
 use crate::hooks::now_ms;
 use crate::model::{Agent, State, iso};
 
@@ -20,8 +21,8 @@ pub struct Context<'a> {
     pub credential: &'a str,
 }
 
-/// Types a reply into an agent; `Err` carries the reason it didn't happen.
-pub type Deliver<'a> = &'a mut dyn FnMut(&Agent, &str) -> Result<(), String>;
+/// Types a reply into an agent, if typing can start before the deadline (epoch ms).
+pub type Deliver<'a> = &'a mut dyn FnMut(&Agent, &str, Option<u64>) -> Outcome;
 
 /// A stable UUID for an agent's node (the phone expects UUID-shaped ids).
 pub fn node_id(agent_id: &str) -> String {
@@ -100,6 +101,47 @@ fn err(request_id: &Value, code: &str, message: &str) -> (u16, Value) {
     (400, json!({"apiVersion": 2, "requestId": request_id, "ok": false, "error": {"code": code, "message": message, "retryable": false}}))
 }
 
+/// Answers already given to requests with an idempotency key, so a retried mutation is answered
+/// again without being performed again. Remembers the last `cap` keys, for as long as the host
+/// runs: a retry after that (or after Lantern restarts) is treated as a new request.
+pub struct Answers {
+    cap: usize,
+    entries: std::collections::VecDeque<(String, String, u16, Value)>,
+}
+
+impl Answers {
+    pub fn new(cap: usize) -> Answers {
+        Answers { cap, entries: Default::default() }
+    }
+
+    /// What the request is, for telling a retry from a different request under the same key.
+    fn fingerprint(request: &Value) -> String {
+        use sha2::Digest;
+        let text = format!("{}|{}", request["method"], request["payload"]);
+        Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The answer for a retry, re-addressed to this request's id; an error when the key was used
+    /// for a different request; `None` for a key not seen.
+    pub fn replay(&self, key: &str, request: &Value) -> Option<(u16, Value)> {
+        let (_, print, status, body) = self.entries.iter().find(|(k, ..)| k == key)?;
+        let id = &request["requestId"];
+        if *print != Self::fingerprint(request) {
+            return Some(err(id, "INVALID_ARGUMENT", "this idempotency key was already used for a different request"));
+        }
+        let mut body = body.clone();
+        body["requestId"] = id.clone();
+        Some((*status, body))
+    }
+
+    pub fn remember(&mut self, key: String, request: &Value, status: u16, body: Value) {
+        if self.entries.len() >= self.cap {
+            self.entries.pop_front();
+        }
+        self.entries.push_back((key, Self::fingerprint(request), status, body));
+    }
+}
+
 pub fn proof(credential: &str, challenge: &str, instance_id: &str, process_start: &str) -> String {
     use base64::Engine;
     let mut mac = hmac::Hmac::<Sha256>::new_from_slice(credential.as_bytes()).expect("hmac key");
@@ -116,7 +158,16 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
     if request["apiVersion"] != 2 {
         return err(id, "INCOMPATIBLE_VERSION", "api version 2 is required");
     }
-    if request["deadlineAt"].as_u64().is_some_and(|d| d > 0 && d < now_ms()) {
+    // `deadlineAt` is epoch ms; 0 or absent means none.
+    let deadline = match &request["deadlineAt"] {
+        Value::Null => None,
+        v => match v.as_u64() {
+            Some(0) => None,
+            Some(d) => Some(d),
+            None => return err(id, "INVALID_ARGUMENT", "deadlineAt must be a number of milliseconds"),
+        },
+    };
+    if deadline.is_some_and(|d| d < now_ms()) {
         return err(id, "DEADLINE_EXCEEDED", "the request expired before Lantern handled it");
     }
     match request["method"].as_str().unwrap_or("") {
@@ -164,15 +215,34 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
             if payload["args"][0] != ctx.canvas_id {
                 return err(id, "NOT_FOUND", "unknown canvas");
             }
-            let node = payload["args"][1]["id"].as_str().unwrap_or("");
-            let text = payload["args"][2].as_str().unwrap_or("").trim().to_string();
+            let args = &payload["args"];
+            let (Some(node), Some(text)) = (args[1]["id"].as_str(), args[2].as_str()) else {
+                return err(id, "INVALID_ARGUMENT", "userSend takes a canvas, a node and a message");
+            };
+            if args[1]["kind"] != "terminal" {
+                return err(id, "INVALID_ARGUMENT", "Lantern's agents are terminal nodes");
+            }
+            // Optional 4th argument: how long the message stays worth typing.
+            let expires = match &args[3] {
+                Value::Null => None,
+                v => match v.as_u64() {
+                    Some(ms) => Some(now_ms() + ms),
+                    None => return err(id, "INVALID_ARGUMENT", "expiresInMs must be a number of milliseconds"),
+                },
+            };
+            let deadline = [deadline, expires].into_iter().flatten().min();
+            let text = text.trim().to_string();
             match ctx.agents.iter().find(|a| node_id(&a.id) == node) {
                 None => err(id, "NOT_FOUND", "that agent isn't running any more"),
                 Some(_) if text.is_empty() || text.len() > 8000 => err(id, "INVALID_ARGUMENT", "message must be 1–8000 characters"),
                 Some(a) if !a.can_reply => ok(id, json!({"accepted": false, "reason": "Lantern can't type into this terminal yet"})),
-                Some(a) => match deliver(a, &text) {
-                    Ok(()) => ok(id, json!({"accepted": true, "delivery": "delivered"})),
-                    Err(reason) => ok(id, json!({"accepted": false, "reason": reason})),
+                Some(a) => match deliver(a, &text, deadline) {
+                    Outcome::Done => ok(id, json!({"accepted": true, "delivery": "delivered"})),
+                    Outcome::Failed { message, .. } => ok(id, json!({"accepted": false, "reason": message})),
+                    // It may have gone in: don't invite a retry that could type it twice.
+                    Outcome::Uncertain(_) => {
+                        ok(id, json!({"accepted": true, "delivery": "queued", "reason": "not-confirmed-check-the-terminal"}))
+                    }
                 },
             }
         }
@@ -192,6 +262,8 @@ mod tests {
             handle: "claude-1".into(),
             pid: 42,
             start_time: 1,
+            exe: None,
+            comm: String::new(),
             tty: None,
             cwd: Some("/x".into()),
             project: Some("x".into()),
@@ -202,6 +274,9 @@ mod tests {
             last_message: Some("Done.".into()),
             question: None,
             question_kind: None,
+            question_detail: None,
+            prompt_id: None,
+            session_match: crate::model::SessionMatch::Exact,
             host: None,
             tmux: None,
             can_reply: true,
@@ -219,9 +294,9 @@ mod tests {
         let agents = vec![agent(State::Waiting)];
         let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
         let typed: std::cell::RefCell<Vec<(String, String)>> = Default::default();
-        let mut deliver = |a: &Agent, t: &str| {
+        let mut deliver = |a: &Agent, t: &str, _: Option<u64>| {
             typed.borrow_mut().push((a.id.clone(), t.to_string()));
-            Ok(())
+            Outcome::Done
         };
         let (s, v) = handle(
             &ctx,
@@ -255,7 +330,7 @@ mod tests {
     fn expired_requests_and_failed_delivery_are_reported() {
         let agents = vec![agent(State::Waiting)];
         let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
-        let mut failing = |_: &Agent, _: &str| Err("the agent has exited".to_string());
+        let mut failing = |_: &Agent, _: &str, _: Option<u64>| Outcome::failed("send_failed", "the agent has exited");
         let mut expired = req("core.status", json!({}));
         expired["deadlineAt"] = json!(now_ms() - 1);
         let (_, v) = handle(&ctx, &expired, &mut failing);
@@ -264,5 +339,55 @@ mod tests {
             req("bus.mutate", json!({"operation": "userSend", "args": ["c", {"id": node_id("claude:42:1"), "kind": "terminal"}, "yes"]}));
         let (_, v) = handle(&ctx, &send, &mut failing);
         assert_eq!((v["result"]["accepted"].as_bool(), v["result"]["reason"].as_str()), (Some(false), Some("the agent has exited")));
+    }
+
+    #[test]
+    fn malformed_mutations_are_refused_and_deadlines_reach_delivery() {
+        let agents = vec![agent(State::Waiting)];
+        let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
+        let calls: std::cell::RefCell<Vec<Option<u64>>> = Default::default();
+        let mut deliver = |_: &Agent, _: &str, d: Option<u64>| {
+            calls.borrow_mut().push(d);
+            Outcome::Uncertain("gave up".into())
+        };
+        let send = |kind: &str, extra: Value| {
+            let mut args = vec![json!("c"), json!({"id": node_id("claude:42:1"), "kind": kind}), json!("yes")];
+            if !extra.is_null() {
+                args.push(extra);
+            }
+            req("bus.mutate", json!({"operation": "userSend", "args": args}))
+        };
+        let mut bad_deadline = send("terminal", Value::Null);
+        bad_deadline["deadlineAt"] = json!("yesterday");
+        assert_eq!(handle(&ctx, &bad_deadline, &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(handle(&ctx, &send("sticky", Value::Null), &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
+        assert_eq!(handle(&ctx, &send("terminal", json!("soon")), &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
+        assert!(calls.borrow().is_empty(), "nothing malformed reaches delivery");
+        // An uncertain outcome must not read as "not accepted" (the phone would offer a retry).
+        let (_, v) = handle(&ctx, &send("terminal", json!(5000)), &mut deliver);
+        assert_eq!((v["result"]["accepted"].as_bool(), v["result"]["delivery"].as_str()), (Some(true), Some("queued")));
+        let d = calls.borrow()[0].expect("expiresInMs becomes a deadline");
+        assert!(d > now_ms() && d <= now_ms() + 5000);
+    }
+
+    #[test]
+    fn retries_replay_the_answer_under_their_own_id() {
+        let mut answers = Answers::new(2);
+        let mut first = req("bus.mutate", json!({"operation": "userSend", "args": ["c", {"id": "n", "kind": "terminal"}, "yes"]}));
+        first["requestId"] = json!("first");
+        answers.remember(
+            "b|k".into(),
+            &first,
+            200,
+            json!({"apiVersion": 2, "requestId": "first", "ok": true, "result": {"accepted": true}}),
+        );
+        let mut retry = first.clone();
+        retry["requestId"] = json!("retry");
+        let (status, body) = answers.replay("b|k", &retry).unwrap();
+        assert_eq!((status, body["requestId"].as_str(), body["result"]["accepted"].as_bool()), (200, Some("retry"), Some(true)));
+        let mut other = retry.clone();
+        other["payload"]["args"][2] = json!("no");
+        assert_eq!(answers.replay("b|k", &other).unwrap().1["error"]["code"], "INVALID_ARGUMENT");
+        assert!(answers.replay("b|other", &retry).is_none());
     }
 }

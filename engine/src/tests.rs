@@ -145,7 +145,7 @@ fn hooks_install_uninstall_and_missing_app() {
     let settings = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
     assert!(settings.contains("say done"), "keeps the user's own hooks");
     assert!(settings.contains("\"model\": \"opus\""));
-    assert_eq!(settings.matches("hook claude").count(), 5);
+    assert_eq!(settings.matches("hook claude").count(), 6);
     assert!(settings.contains("PermissionRequest"));
     let config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert!(config.contains("lantern-engine") && config.contains("[tui]"));
@@ -153,7 +153,7 @@ fn hooks_install_uninstall_and_missing_app() {
 
     // Installing twice doesn't duplicate anything, and the second backup doesn't overwrite the first.
     hooks::install().unwrap();
-    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap().matches("hook claude").count(), 5);
+    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap().matches("hook claude").count(), 6);
     let backups = fs::read_dir(home.join(".claude"))
         .unwrap()
         .filter(|e| e.as_ref().unwrap().file_name().to_string_lossy().contains("lantern-backup"))
@@ -175,6 +175,13 @@ fn hooks_install_uninstall_and_missing_app() {
     let config = fs::read_to_string(home.join(".codex/config.toml")).unwrap();
     assert!(config.contains("their-notifier") && !config.contains("lantern-engine"));
     assert!(!hooks::support_dir().exists());
+
+    // Claude's file is written, then Codex's write fails: Claude's file gets its old contents back.
+    fs::remove_file(home.join(".codex/config.toml")).unwrap();
+    fs::create_dir_all(home.join(".codex/config.toml/in-the-way")).unwrap();
+    let before = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
+    assert!(hooks::install().is_err());
+    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap(), before);
 }
 
 #[test]
@@ -237,6 +244,8 @@ fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
         handle: "claude-1".into(),
         pid,
         start_time,
+        exe: crate::procs::live(pid).and_then(|l| l.exe),
+        comm: crate::procs::live(pid).map(|l| l.comm).unwrap_or_default(),
         tty: tty.map(String::from),
         cwd: None,
         project: None,
@@ -247,6 +256,9 @@ fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
         last_message: None,
         question: None,
         question_kind: None,
+        question_detail: None,
+        prompt_id: None,
+        session_match: crate::model::SessionMatch::Exact,
         host: None,
         tmux: None,
         can_reply: true,
@@ -271,9 +283,190 @@ fn delivery_refuses_targets_that_are_not_the_agent_any_more() {
     let live = crate::procs::live(me).unwrap();
     assert!(deliver::verify(&agent_for(me, live.start + 1, None)).unwrap_err().to_string().contains("another process"));
     assert!(deliver::verify(&agent_for(me, live.start, Some("ttys999"))).unwrap_err().to_string().contains("terminal"));
-    // Same pid, same start, no tty claim: only the foreground check remains, which depends on
-    // how the test runner was started, so it's asserted through `live` rather than `verify`.
-    assert!(live.tpgid == 0 || live.tpgid != live.pgid || deliver::verify(&agent_for(me, live.start, None)).is_ok());
+    // No terminal to check against: refused, whatever the foreground.
+    assert!(deliver::verify(&agent_for(me, live.start, None)).unwrap_err().to_string().contains("no terminal"));
+}
+
+fn live_like(agent: &Agent) -> crate::procs::Live {
+    crate::procs::Live {
+        pgid: 7,
+        tpgid: 7,
+        tty: agent.tty.clone(),
+        start: agent.start_time,
+        exe: agent.exe.clone(),
+        comm: agent.comm.clone(),
+    }
+}
+
+/// Everything the check refuses, one rule at a time, against a reading that otherwise passes.
+#[test]
+fn delivery_refuses_unknown_owners_and_changed_endpoints() {
+    let mut a = agent_for(1, 10, Some("ttys004"));
+    a.exe = Some("/usr/local/bin/claude".into());
+    a.comm = "claude".into();
+    a.route = Route::Terminal { tty: "/dev/ttys004".into() };
+    assert!(deliver::check(&a, &live_like(&a)).is_ok());
+
+    let unknown_fg = crate::procs::Live { tpgid: 0, ..live_like(&a) };
+    assert!(deliver::check(&a, &unknown_fg).unwrap_err().to_string().contains("can't tell"));
+    let background = crate::procs::Live { tpgid: 8, ..live_like(&a) };
+    assert!(deliver::check(&a, &background).unwrap_err().to_string().contains("foreground"));
+    let shell = crate::procs::Live { exe: Some("/bin/zsh".into()), comm: "zsh".into(), ..live_like(&a) };
+    assert!(deliver::check(&a, &shell).unwrap_err().to_string().contains("no longer running its agent"));
+    // The executable can't be read (deleted by an update): the kernel's name must still match.
+    let unreadable = crate::procs::Live { exe: None, ..live_like(&a) };
+    assert!(deliver::check(&a, &unreadable).is_ok());
+    let unreadable_shell = crate::procs::Live { exe: None, comm: "zsh".into(), ..live_like(&a) };
+    assert!(deliver::check(&a, &unreadable_shell).is_err());
+    let mut moved = a.clone();
+    moved.route = Route::Terminal { tty: "/dev/ttys009".into() };
+    assert!(deliver::check(&moved, &live_like(&moved)).unwrap_err().to_string().contains("tab changed"));
+}
+
+/// The process audit's counterexample: same pid, same start time, same terminal, but the agent
+/// `exec`ed a shell. The kernel reports the new program, and delivery refuses.
+#[test]
+fn delivery_refuses_a_process_that_execed_something_else() {
+    let mut child = Command::new("/bin/sh").args(["-c", "/bin/sleep 0.4; exec /bin/sleep 5"]).spawn().unwrap();
+    let pid = child.id();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let before = crate::procs::live(pid).unwrap();
+    let mut a = agent_for(pid, before.start, Some("ttys004"));
+    a.exe = before.exe.clone();
+    a.comm = before.comm.clone();
+    std::thread::sleep(std::time::Duration::from_millis(900));
+    let after = crate::procs::live(pid).unwrap();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!((after.start, after.pgid), (before.start, before.pgid), "same process");
+    assert_ne!(after.exe, before.exe, "the kernel reports the new program");
+    let reading = crate::procs::Live { tty: Some("ttys004".into()), tpgid: after.pgid, ..after };
+    assert!(deliver::check(&a, &reading).unwrap_err().to_string().contains("no longer running its agent"));
+}
+
+/// A phone reply that couldn't start in time is canceled: when the stalled worker gets to it,
+/// it types nothing. One that started is reported as uncertain, never as "not accepted".
+#[test]
+fn stalled_deliveries_are_canceled_not_typed_later() {
+    use crate::actions::{Op, Outcome, Ticket, perform};
+    use crate::serve::Incoming;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let a = agent_for(std::process::id(), 0, Some("ttys004"));
+    // Nobody serves the queue: the host's wait runs out (at the phone's 300 ms deadline).
+    let outcome = crate::mobile::host::deliver_and_wait(&tx, &a, "rm -rf build", Some(hooks::now_ms() + 300));
+    assert!(matches!(outcome, Outcome::Failed { code: "expired", .. }), "{outcome:?}");
+    // The worker resumes and finds the queued reply: canceled, nothing typed.
+    let Ok(Incoming::Deliver(d)) = rx.try_recv() else { panic!("the reply was queued") };
+    let link = crate::october_link::detached();
+    let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let o = perform(&a, Op::Text(d.text), far, &d.ticket, &link);
+    assert!(matches!(o, Outcome::Failed { code: "canceled", .. }), "{o:?}");
+    // Past its deadline: expired, whatever the ticket says.
+    let o = perform(&a, Op::Text("x".into()), std::time::Instant::now(), &Ticket::new(), &link);
+    assert!(matches!(o, Outcome::Failed { code: "expired", .. }), "{o:?}");
+    // A started action can't be canceled any more; the waiter must wait for its outcome.
+    let t = Ticket::new();
+    assert!(t.start());
+    assert!(!t.cancel());
+}
+
+#[test]
+fn permission_keys_must_name_the_current_prompt() {
+    use crate::deliver::Key;
+    let mut a = agent_for(1, 1, Some("ttys004"));
+    a.question_kind = Some(QuestionKind::Permission);
+    a.prompt_id = Some("p2".into());
+    assert!(crate::serve::keys_for(&a, vec![Key::Char('1')], None).is_err());
+    assert!(crate::serve::keys_for(&a, vec![Key::Char('1')], Some("p1".into())).is_err());
+    assert!(crate::serve::keys_for(&a, vec![Key::Char('1')], Some("p2".into())).is_ok());
+}
+
+#[test]
+fn permission_prompts_keep_the_whole_command() {
+    let v = serde_json::json!({
+        "hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
+        "tool_input": {"command": "echo harmless\nrm -rf ~/important"}
+    });
+    let ev = hooks::claude_event(&v).unwrap();
+    let q = ev.question.unwrap();
+    assert!(q.contains("echo harmless") && q.contains("+1 more line"), "{q}");
+    assert!(ev.question_detail.unwrap().contains("rm -rf ~/important"));
+    assert!(ev.prompt_id.is_some());
+}
+
+/// Stop, then Claude's idle reminder (twice): one finished turn, one time. A new turn after
+/// work starts again gets a new time.
+#[test]
+fn repeated_hook_events_keep_the_turn() {
+    let ev = |state: State, message: Option<&str>, at: u64| hooks::HookEvent {
+        source: "claude".into(),
+        state,
+        session_id: Some("s".into()),
+        cwd: None,
+        message: message.map(String::from),
+        question: None,
+        question_kind: None,
+        question_detail: None,
+        prompt_id: None,
+        transcript_path: None,
+        ancestors: vec![1],
+        at,
+    };
+    let stop = ev(State::Waiting, Some("Done."), 100);
+    let idle = hooks::continue_turn(Some(&stop), ev(State::Waiting, None, 60_100));
+    assert_eq!((idle.at, idle.message.as_deref()), (100, Some("Done.")));
+    let again = hooks::continue_turn(Some(&idle), ev(State::Waiting, None, 120_100));
+    assert_eq!(again.at, 100);
+    let working = hooks::continue_turn(Some(&again), ev(State::Working, None, 130_000));
+    let next = hooks::continue_turn(Some(&working), ev(State::Waiting, Some("Done."), 140_000));
+    assert_eq!(next.at, 140_000);
+}
+
+#[test]
+fn backups_and_temporary_files_never_collide() {
+    let dir = temp_dir("backups");
+    let file = dir.join("settings.json");
+    fs::write(&file, "{}").unwrap();
+    for _ in 0..100 {
+        hooks::backup(&file).unwrap();
+    }
+    let backups = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("lantern-backup")).count();
+    assert_eq!(backups, 100);
+
+    let target = dir.join("config.toml");
+    let writers: Vec<_> = (0..8)
+        .map(|i| {
+            let target = target.clone();
+            std::thread::spawn(move || {
+                (0..25).map(|_| hooks::write_atomic(&target, format!("writer {i}").as_bytes())).collect::<Result<Vec<_>, _>>()
+            })
+        })
+        .collect();
+    for w in writers {
+        w.join().unwrap().unwrap();
+    }
+    assert!(fs::read_to_string(&target).unwrap().starts_with("writer "));
+    let leftovers = fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("lantern-tmp")).count();
+    assert_eq!(leftovers, 0);
+}
+
+#[test]
+fn same_folder_guesses_are_hidden() {
+    let mut a = agent_for(1, 1, Some("ttys001"));
+    a.kind = Kind::Pi;
+    a.cwd = Some("/p".into());
+    a.session_match = crate::model::SessionMatch::Guessed;
+    a.last_message = Some("theirs?".into());
+    let mut b = a.clone();
+    b.pid = 2;
+    let mut c = a.clone();
+    c.pid = 3;
+    c.cwd = Some("/other".into());
+    let mut agents = vec![a, b, c];
+    scanner::hide_ambiguous(&mut agents);
+    assert_eq!(agents[0].session_match, crate::model::SessionMatch::Ambiguous);
+    assert_eq!((agents[1].last_message.as_deref(), agents[1].state), (None, State::Unknown));
+    assert_eq!(agents[2].session_match, crate::model::SessionMatch::Guessed);
 }
 
 #[test]
@@ -286,6 +479,8 @@ fn hook_events_carry_typed_questions() {
         message: None,
         question: Some("Permission to run Bash · rm -rf node_modules".into()),
         question_kind: Some(QuestionKind::Permission),
+        question_detail: None,
+        prompt_id: Some("p1".into()),
         transcript_path: None,
         ancestors: vec![1],
         at: 5,
