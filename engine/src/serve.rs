@@ -177,7 +177,8 @@ pub fn run() -> Result<()> {
             let october = link.snapshot();
             october_link::merge(&mut fresh, &october);
             if let Some(p) = &phone {
-                p.update_agents(&fresh);
+                // App sessions that aren't running have nothing to reply to.
+                p.update_agents(&fresh.iter().filter(|a| a.live).cloned().collect::<Vec<_>>());
             }
             let summary = serde_json::to_string(&october).unwrap_or_default();
             if summary != last_october {

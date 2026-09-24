@@ -64,7 +64,7 @@ struct ChatView: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1)
             }
             Spacer(minLength: 6)
-            StateChip(state: agent.state)
+            AgentStateChip(agent: agent)
             SmallButton(title: "Open", symbol: "arrow.up.forward.app") { model.open(agent) }
         }
         .padding(.horizontal, 12)

@@ -12,9 +12,6 @@ struct PanelView: View {
             case .newSession:
                 PanelTitle(title: "New session", model: model)
                 NewSessionView(model: model)
-            case .task:
-                PanelTitle(title: "Task", model: model)
-                NewSessionView(model: model, task: true)
             case .october:
                 PanelTitle(title: "October", model: model)
                 OctoberView(model: model)
@@ -227,7 +224,7 @@ struct InboxCard: View {
                                 .padding(.horizontal, 5).padding(.vertical, 1)
                                 .background(Capsule().fill(Theme.amber))
                         }
-                        StateChip(state: agent.state)
+                        AgentStateChip(agent: agent)
                     }
                     Text(timeAgo(agent.since)).font(.system(size: 10)).foregroundStyle(Theme.muted)
                 }
@@ -359,7 +356,7 @@ struct AgentRow: View {
                     .font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.head)
             }
             Spacer(minLength: 8)
-            StateChip(state: agent.state)
+            AgentStateChip(agent: agent)
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 12).fill(hover || selected ? Theme.faint : Color.clear))
@@ -455,3 +452,20 @@ struct Composer: View {
         .onAppear { focused = true }
     }
 }
+
+/// The agent's state, or "Recent" for an app session that isn't running any more.
+struct AgentStateChip: View {
+    let agent: Agent
+
+    var body: some View {
+        if agent.isLive {
+            StateChip(state: agent.state)
+        } else {
+            Text("Recent").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.muted)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Capsule().fill(Theme.faint))
+                .help("A \(agent.source ?? "app") session that isn't running now")
+        }
+    }
+}
+

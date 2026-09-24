@@ -25,6 +25,13 @@ pub struct Scanner {
     opencode_cache: HashMap<u32, ((u64, u64), SessionStatus)>,
     /// Working directory and start time per agent, for readers that match sessions by them.
     started: HashMap<u32, (PathBuf, u64)>,
+    /// App sessions (Codex app threads, recent Claude Desktop/Cowork/Codex app sessions) by agent
+    /// id: their session file, for history.
+    app_paths: HashMap<String, (Kind, PathBuf)>,
+    /// Handle numbers for app sessions, by agent id ("claude-app-2", "codex-app-1").
+    app_handles: HashMap<String, (String, usize)>,
+    /// App sessions that aren't running, re-read every 30 s.
+    recent: Option<(std::time::Instant, Vec<crate::apps::Recent>)>,
 }
 
 /// Arguments that mean the process is a helper or a headless run, not an interactive agent.
@@ -86,16 +93,29 @@ impl Scanner {
             handles: HashMap::new(),
             opencode_cache: HashMap::new(),
             started: HashMap::new(),
+            app_paths: HashMap::new(),
+            app_handles: HashMap::new(),
+            recent: None,
         }
     }
 
     pub fn scan(&mut self) -> Vec<Agent> {
         let mut table = ProcTable::capture(&mut self.sys, &mut self.proc_cache);
+        let claude_live = crate::apps::claude_live();
+        // Claude sessions the desktop app runs (its Code tab, Cowork): no terminal, and started the
+        // way headless runs are, but their status file says where they came from.
+        let from_app = |p: &Proc| claude_live.get(&p.pid).is_some_and(|l| crate::apps::claude_source(l.entrypoint.as_deref()).is_some());
 
-        // Interactive agents only (they have a terminal), and only the outermost process of each
-        // kind (the node wrapper, not the native binary it spawns).
-        let candidates: HashMap<u32, Kind> =
-            table.procs.values().filter(|p| p.tty.is_some()).filter_map(|p| classify(p).map(|k| (p.pid, k))).collect();
+        // Interactive agents only (they have a terminal, or they're an app's Claude session), and
+        // only the outermost process of each kind (the node wrapper, not the native binary it spawns).
+        let candidates: HashMap<u32, Kind> = table
+            .procs
+            .values()
+            .filter(|p| p.tty.is_some() || from_app(p))
+            .filter_map(|p| classify(p).or_else(|| from_app(p).then_some(Kind::Claude)).map(|k| (p.pid, k)))
+            .collect();
+        // The Codex app's threads run inside `codex app-server`.
+        let app_servers: Vec<(u32, u64)> = table.procs.values().filter(|p| is_codex_app_server(p)).map(|p| (p.pid, p.start_time)).collect();
         let outermost: Vec<(u32, Kind)> = candidates
             .iter()
             .filter(|(pid, kind)| !table.ancestors(**pid).iter().any(|a| candidates.get(&a.pid) == Some(kind)))
@@ -125,8 +145,12 @@ impl Scanner {
             let args = p.cmd.get(1..).unwrap_or(&[]);
 
             let hook = events.iter().filter(|e| e.source == kind.as_str()).filter(|e| e.ancestors.contains(&p.pid)).max_by_key(|e| e.at);
-            let (transcript, session_match) = self.transcript_status(p, kind, args, hook);
-            let (status, source) = merge(hook, transcript);
+            let live_status = claude_live.get(&p.pid).filter(|_| kind == Kind::Claude);
+            let (transcript, session_match) = self.transcript_status(p, kind, args, hook, live_status);
+            let (mut status, source) = merge(hook, transcript);
+            if let Some(l) = live_status {
+                apply_live(&mut status, source, l);
+            }
 
             let tmux_pane = tmux.as_ref().and_then(|t| p.tty.as_ref().and_then(|tty| t.panes_by_tty.get(tty))).cloned();
             let host = match &tmux_pane {
@@ -159,6 +183,8 @@ impl Scanner {
                 question_detail: status.question_detail,
                 prompt_id: status.prompt_id,
                 session_match,
+                source: live_status.and_then(|l| crate::apps::claude_source(l.entrypoint.as_deref())).map(String::from),
+                live: true,
                 can_reply: route != Route::None,
                 route,
                 host,
@@ -166,6 +192,42 @@ impl Scanner {
                 state_source: source,
             });
         }
+        self.app_paths.clear();
+        let mut seen: Vec<String> = out.iter().filter_map(|a| a.session_id.clone()).collect();
+        for (pid, start) in app_servers {
+            let host = host_app(&table, pid);
+            for path in crate::apps::codex_open_rollouts(pid) {
+                let Some(status) = self.transcripts.codex_status(&path) else { continue };
+                let session = status.session_id.clone().or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()));
+                let id = format!("codex:{pid}:{start}:{}", session.as_deref().unwrap_or(""));
+                seen.extend(session.clone());
+                let cwd = crate::apps::rollout_cwd(&path);
+                let a = self.app_agent(id, Kind::Codex, "Codex app", status, cwd, true, host.clone(), pid, start, &path);
+                out.push(a);
+            }
+        }
+        for r in self.recent_app_sessions() {
+            if seen.contains(&r.session_id) {
+                continue;
+            }
+            let kind = if r.source == "Codex app" { Kind::Codex } else { Kind::Claude };
+            let status = match kind {
+                Kind::Codex => self.transcripts.codex_status(&r.path),
+                _ => self.transcripts.claude_status(&r.path),
+            };
+            let Some(mut status) = status else { continue };
+            status.title = status.title.or(r.title.clone());
+            let host = crate::apps::app_bundle(r.source).map(|b| HostApp {
+                app: b.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                pid: 0,
+                bundle_path: b.to_string_lossy().into_owned(),
+            });
+            let id = format!("{}:session:{}", kind.as_str(), r.session_id);
+            let a = self.app_agent(id, kind, r.source, status, r.cwd.clone(), false, host, 0, 0, &r.path);
+            out.push(a);
+        }
+        let ids: Vec<String> = out.iter().map(|a| a.id.clone()).collect();
+        self.app_handles.retain(|id, _| ids.contains(id));
         self.transcripts.prune_stale();
         hide_ambiguous(&mut out);
         out
@@ -198,8 +260,89 @@ impl Scanner {
         }
     }
 
+    /// App sessions that aren't running (Claude Desktop, Cowork, Codex app) from the last three
+    /// days; the list is re-read every 30 seconds.
+    fn recent_app_sessions(&mut self) -> Vec<crate::apps::Recent> {
+        if let Some((at, list)) = &self.recent
+            && at.elapsed() < std::time::Duration::from_secs(30)
+        {
+            return list.clone();
+        }
+        let now = crate::hooks::now_ms();
+        let mut list = crate::apps::recent_claude(now);
+        list.extend(crate::apps::recent_codex(now));
+        list.sort_by_key(|r| std::cmp::Reverse(r.updated_ms));
+        self.recent = Some((std::time::Instant::now(), list.clone()));
+        list
+    }
+
+    /// An agent for a session that isn't in a terminal (Codex app thread, or a recent app session).
+    #[allow(clippy::too_many_arguments)]
+    fn app_agent(
+        &mut self,
+        id: String,
+        kind: Kind,
+        source: &str,
+        status: SessionStatus,
+        cwd: Option<String>,
+        live: bool,
+        host: Option<HostApp>,
+        pid: u32,
+        start_time: u64,
+        path: &std::path::Path,
+    ) -> Agent {
+        let prefix = match source {
+            "Cowork" => "cowork".to_string(),
+            _ => format!("{}-app", kind.as_str()),
+        };
+        let n = match self.app_handles.get(&id) {
+            Some((_, n)) => *n,
+            None => {
+                let n = (1..).find(|n| !self.app_handles.values().any(|(p, used)| *p == prefix && used == n)).unwrap_or(1);
+                self.app_handles.insert(id.clone(), (prefix.clone(), n));
+                n
+            }
+        };
+        self.app_paths.insert(id.clone(), (kind, path.to_path_buf()));
+        Agent {
+            id,
+            kind,
+            handle: format!("{prefix}-{n}"),
+            pid,
+            start_time,
+            exe: None,
+            comm: String::new(),
+            tty: None,
+            project: cwd.as_deref().and_then(|c| std::path::Path::new(c).file_name()).map(|f| f.to_string_lossy().into_owned()),
+            cwd,
+            title: status.title,
+            session_id: status.session_id,
+            state: status.state.unwrap_or(State::Unknown),
+            state_since: status.since,
+            last_message: status.last_message,
+            question: None,
+            question_kind: None,
+            question_detail: None,
+            prompt_id: None,
+            session_match: SessionMatch::Exact,
+            source: Some(source.to_string()),
+            live,
+            host,
+            tmux: None,
+            can_reply: false,
+            route: Route::None,
+            state_source: StateSource::Transcript,
+        }
+    }
+
     /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions.
     pub fn history(&mut self, agent: &Agent) -> Option<Vec<crate::history::ChatMessage>> {
+        if let Some((kind, path)) = self.app_paths.get(&agent.id) {
+            return Some(match kind {
+                Kind::Codex => crate::history::codex(path),
+                _ => crate::history::claude(path),
+            });
+        }
         match agent.kind {
             _ if agent.session_match == SessionMatch::Ambiguous => None,
             Kind::Claude => Some(self.claude_paths.get(&agent.pid).map(|(p, _)| crate::history::claude(p)).unwrap_or_default()),
@@ -242,6 +385,7 @@ impl Scanner {
         kind: Kind,
         args: &[String],
         hook: Option<&HookEvent>,
+        live: Option<&crate::apps::ClaudeLive>,
     ) -> (Option<SessionStatus>, SessionMatch) {
         let found = |status: Option<SessionStatus>, m: SessionMatch| match status {
             Some(s) => (Some(s), m),
@@ -250,10 +394,15 @@ impl Scanner {
         match kind {
             Kind::Claude => {
                 let from_hook = hook.and_then(|h| h.transcript_path.as_ref()).map(PathBuf::from);
+                // Claude's own status file names the session exactly.
+                let from_live = live
+                    .and_then(|l| l.session_id.as_deref())
+                    .filter(|id| looks_like_id(id))
+                    .and_then(|id| self.transcripts.claude_path_for_session(id));
                 let from_args = arg_after(args, &["--session-id", "--resume", "-r"])
                     .filter(|id| looks_like_id(id))
                     .and_then(|id| self.transcripts.claude_path_for_session(id));
-                let found_path = match from_hook.or(from_args) {
+                let found_path = match from_hook.or(from_live).or(from_args) {
                     Some(path) => Some((path, true)),
                     None => match self.claude_paths.get(&p.pid).filter(|(p, _)| p.exists()) {
                         Some(known) => Some(known.clone()),
@@ -345,6 +494,35 @@ pub(crate) fn hide_ambiguous(agents: &mut [Agent]) {
 
 fn idle() -> SessionStatus {
     SessionStatus { state: Some(State::Idle), ..Default::default() }
+}
+
+/// `codex app-server`: the process the Codex app runs its threads in.
+fn is_codex_app_server(p: &Proc) -> bool {
+    let program = |a: &String| basename(a) == "codex";
+    let is_codex = p.cmd.first().is_some_and(program) || p.cmd.get(1).is_some_and(program) || p.name == "codex";
+    is_codex && p.cmd.iter().any(|a| a == "app-server")
+}
+
+/// Claude's status file says busy or idle the moment it changes. Busy is working; idle after a
+/// transcript that still looks mid-turn means the turn ended (or was stopped). A hook's question
+/// (a permission prompt) is kept.
+pub(crate) fn apply_live(status: &mut SessionStatus, source: StateSource, live: &crate::apps::ClaudeLive) {
+    if source == StateSource::Hook && status.state == Some(State::NeedsInput) {
+        return;
+    }
+    match live.busy() {
+        Some(true) if status.state != Some(State::Working) => {
+            status.state = Some(State::Working);
+            status.since = live.status_updated_at.or(status.since);
+            status.question = None;
+            status.question_kind = None;
+        }
+        Some(false) if status.state == Some(State::Working) => {
+            status.state = Some(if status.last_message.is_some() { State::Waiting } else { State::Idle });
+            status.since = live.status_updated_at.or(status.since);
+        }
+        _ => {}
+    }
 }
 
 /// A hook event is exact but only as fresh as the last event; the transcript may be newer.

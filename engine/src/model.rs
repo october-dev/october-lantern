@@ -197,6 +197,11 @@ pub struct Agent {
     /// Identifies one permission prompt; Allow/Deny carry it so they can't answer a different one.
     pub prompt_id: Option<String>,
     pub session_match: SessionMatch,
+    /// The app a session belongs to when it isn't a terminal: "Claude Desktop", "Cowork",
+    /// "Codex app".
+    pub source: Option<String>,
+    /// `false` for an app session that isn't running any more (listed for three days).
+    pub live: bool,
     pub host: Option<HostApp>,
     pub tmux: Option<TmuxPane>,
     pub can_reply: bool,

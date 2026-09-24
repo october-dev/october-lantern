@@ -265,6 +265,8 @@ fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
         question_detail: None,
         prompt_id: None,
         session_match: crate::model::SessionMatch::Exact,
+        source: None,
+        live: true,
         host: None,
         tmux: None,
         can_reply: true,
@@ -616,4 +618,48 @@ fn toolkit_list_keeps_the_users_notes() {
     let again = render(&found, crate::toolkit::notes_of(&text).unwrap());
     assert_eq!(again.matches(NOTES_HEADING).count(), 1);
     assert_eq!(again.len(), text.len());
+}
+
+/// Claude's status file: busy is working at once; idle ends a turn the transcript still shows as
+/// running; a permission prompt from a hook stays.
+#[test]
+fn claude_status_files_give_live_state_and_app_labels() {
+    use crate::apps::{ClaudeLive, claude_source};
+    use crate::model::SessionStatus;
+    let live = |status: &str| ClaudeLive {
+        pid: 1,
+        session_id: Some("s".into()),
+        entrypoint: Some("cli".into()),
+        status: Some(status.into()),
+        status_updated_at: Some(500),
+    };
+    let working = SessionStatus { state: Some(State::Working), since: Some(100), last_message: Some("done".into()), ..Default::default() };
+    let mut s = working.clone();
+    crate::scanner::apply_live(&mut s, StateSource::Transcript, &live("idle"));
+    assert_eq!((s.state, s.since), (Some(State::Waiting), Some(500)));
+    let mut s = SessionStatus { state: Some(State::Waiting), since: Some(100), ..Default::default() };
+    crate::scanner::apply_live(&mut s, StateSource::Transcript, &live("busy"));
+    assert_eq!((s.state, s.since), (Some(State::Working), Some(500)));
+    let mut s = SessionStatus { state: Some(State::NeedsInput), ..Default::default() };
+    crate::scanner::apply_live(&mut s, StateSource::Hook, &live("busy"));
+    assert_eq!(s.state, Some(State::NeedsInput));
+
+    assert_eq!(claude_source(Some("claude-desktop")), Some("Claude Desktop"));
+    assert_eq!(claude_source(Some("local-agent")), Some("Cowork"));
+    assert_eq!(claude_source(Some("cli")), None);
+}
+
+#[test]
+fn app_sessions_are_found_in_session_files_and_codex_index() {
+    let dir = temp_dir("apps");
+    let desktop = dir.join("d.jsonl");
+    fs::write(&desktop, "{\"type\":\"summary\"}\n{\"entrypoint\":\"claude-desktop\",\"sessionId\":\"abc\",\"cwd\":\"/p\"}\n").unwrap();
+    let r = crate::apps::claude_app_session(&desktop, 7).unwrap();
+    assert_eq!((r.source, r.session_id.as_str(), r.cwd.as_deref()), ("Claude Desktop", "abc", Some("/p")));
+    let cli = dir.join("c.jsonl");
+    fs::write(&cli, "{\"entrypoint\":\"cli\",\"sessionId\":\"x\"}\n").unwrap();
+    assert!(crate::apps::claude_app_session(&cli, 7).is_none());
+    let rows = r#"[{"id":"t1","rollout_path":"/r.jsonl","cwd":"/w","title":"Fix it","updated":1790000000000}]"#;
+    let t = crate::apps::parse_codex_threads(rows);
+    assert_eq!((t[0].source, t[0].title.as_deref(), t[0].updated_ms), ("Codex app", Some("Fix it"), 1_790_000_000_000));
 }

@@ -277,6 +277,8 @@ mod tests {
             question_detail: None,
             prompt_id: None,
             session_match: crate::model::SessionMatch::Exact,
+            source: None,
+            live: true,
             host: None,
             tmux: None,
             can_reply: true,

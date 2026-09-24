@@ -106,6 +106,10 @@ struct Agent: Codable, Identifiable, Hashable {
     /// How the conversation was matched to this process: "exact", "guessed", "ambiguous" (another
     /// agent of this kind in this folder; state and history hidden) or "none".
     let sessionMatch: String?
+    /// The app a session belongs to when it isn't a terminal: "Claude Desktop", "Cowork", "Codex app".
+    let source: String?
+    /// false for an app session that isn't running any more (listed for three days).
+    let live: Bool?
     let host: HostApp?
     let tmux: TmuxPane?
     let canReply: Bool
@@ -114,6 +118,8 @@ struct Agent: Codable, Identifiable, Hashable {
 
     /// A tool permission prompt Lantern can answer with a keypress.
     var isPermissionPrompt: Bool { state == .needsInput && questionKind == "permission" && promptId != nil }
+
+    var isLive: Bool { live ?? true }
 
     /// Lantern can't tell which conversation belongs to this process.
     var sessionAmbiguous: Bool { sessionMatch == "ambiguous" }
@@ -131,6 +137,7 @@ struct Agent: Codable, Identifiable, Hashable {
 
     /// Where the agent lives, for display: "cmux", "tmux t1:0.0", ...
     var location: String? {
+        if let source { return source }
         if let tmux { return "tmux \(tmux.target)" }
         return host?.app
     }

@@ -24,11 +24,13 @@ struct PanelTitle: View {
 }
 
 /// Start a new agent session: pick an agent, a folder, an optional first message, and where it runs.
-/// As a Task (`task`), it starts from the app you're in: what you want done there comes first, and
-/// the agent is told about the app, its document, your screen and what this Mac already has.
+/// Opened while you're in an app other than a terminal (DaVinci Resolve, Preview, Keynote...), it
+/// becomes a task for that app: what you want done there comes first, and the agent is told about
+/// the app, its document, your screen and what this Mac already has. ✕ on the app card makes it
+/// a plain session.
 struct NewSessionView: View {
     @ObservedObject var model: AppModel
-    var task = false
+    @State private var taskDismissed = false
     @ObservedObject private var app = AppContext.shared
     @State private var screenshotOn = false
     @State private var showOthers = false
@@ -67,7 +69,7 @@ struct NewSessionView: View {
         .onChange(of: selectedKind) { kindChanged() }
         .onChange(of: model.launching) { was, now in
             // A start that succeeded moves to the Agents list; one that failed leaves us here.
-            if was && !now && (model.panel == .newSession || model.panel == .task) {
+            if was && !now && model.panel == .newSession {
                 failure = model.launchError ?? "Couldn't start the session."
             }
         }
@@ -75,7 +77,7 @@ struct NewSessionView: View {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if task {
+            if task, app.target != nil {
                 taskCard
                 section("What should it do\(app.target.map { " in \($0.name)" } ?? "")?") { promptField("e.g. Normalize the voice and fix the lighting") }
             }
@@ -342,6 +344,9 @@ struct NewSessionView: View {
 
     private var documentFolder: String? { app.target?.document?.deletingLastPathComponent().path }
 
+    /// A task for the app you were in, unless it's a terminal or you closed its card.
+    private var task: Bool { app.target != nil && !app.isTerminal && !taskDismissed }
+
     private func promptField(_ placeholder: String) -> some View {
         TextField(placeholder, text: $prompt, axis: .vertical)
             .textFieldStyle(.plain)
@@ -365,11 +370,18 @@ struct NewSessionView: View {
                         }
                     }
                     Spacer()
+                    Button {
+                        taskDismissed = true
+                        screenshotOn = prefs.screenshotNewSessions
+                        if !screenshotOn { shot.discard() }
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Start a plain session instead")
+                    .accessibilityLabel("Not for \(t.name)")
                 }
-                if app.isTerminal {
-                    Text("This is a terminal. For work in a project, a plain New Session (+) fits better.")
-                        .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-                } else if !app.trusted {
+                if !app.trusted {
                     HStack(spacing: 8) {
                         Text("Allow Accessibility so Lantern can tell the agent which document is open.")
                             .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
@@ -381,9 +393,6 @@ struct NewSessionView: View {
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hairline))
-        } else {
-            Text("Click the wand while you're in an app (DaVinci Resolve, Preview, Keynote…) to start a task for it.")
-                .font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
         }
     }
     /// A screenshot that's on must be ready (or failed, which the form shows) before starting.
@@ -530,6 +539,7 @@ struct OctoberView: View {
             }
             AccountCard()
             DesktopCard(model: model)
+            TeamCard()
             PhoneCard(signedIn: account.signedIn, planAllowsPhone: account.plan?.features?.mobile?.enabled)
         }
         .padding(.horizontal, 16)

@@ -3,7 +3,7 @@ import LanternCore
 import SwiftUI
 
 enum PanelMode: Equatable {
-    case inbox, agents, newSession, task, october
+    case inbox, agents, newSession, october
 
     /// The inbox and agent list share tabs and the composer; the others are standalone.
     var isList: Bool { self == .inbox || self == .agents }
@@ -150,7 +150,7 @@ final class AppModel: ObservableObject {
     /// Agents waiting on you (in harnesses you haven't muted), newest first.
     var inbox: [Agent] {
         agents
-            .filter { $0.state.wantsYou && !dismissed.contains($0.turnKey) && prefs.counts($0.kind) }
+            .filter { $0.isLive && $0.state.wantsYou && !dismissed.contains($0.turnKey) && prefs.counts($0.kind) }
             .sorted { ($0.stateSince ?? 0) > ($1.stateSince ?? 0) }
     }
 
@@ -170,8 +170,10 @@ final class AppModel: ObservableObject {
             case .idle, .unknown: 3
             }
         }
+        // App sessions that aren't running come last.
+        func order(_ a: Agent) -> Int { a.isLive ? rank(a.state) : 4 }
         return agents.sorted {
-            rank($0.state) != rank($1.state) ? rank($0.state) < rank($1.state) : ($0.stateSince ?? 0) > ($1.stateSince ?? 0)
+            order($0) != order($1) ? order($0) < order($1) : ($0.stateSince ?? 0) > ($1.stateSince ?? 0)
         }
     }
 
@@ -281,8 +283,13 @@ final class AppModel: ObservableObject {
         Analytics.shared.capture("agent_opened", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none"])
         let id = request("f")
         track(id, .focus(agentId: agent.id), sent: engine.focus(requestId: id, agentId: agent.id))
-        if let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) {
-            app.activate()
+        if let host = agent.host {
+            // An app session that isn't running: open its app.
+            if host.pid == 0 {
+                NSWorkspace.shared.open(URL(fileURLWithPath: host.bundlePath))
+            } else if let app = NSRunningApplication(processIdentifier: host.pid) {
+                app.activate()
+            }
         }
     }
 
@@ -340,11 +347,12 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.dictionary(forKey: "lastModels") as? [String: String])?[kind.rawValue]
     }
 
-    /// Opens Task for the app you're in (read now, before anything else can come to the front).
-    func startTask() {
-        if panel == .task { return panel = nil }
+    /// Opens New Session, reading the app you're in first (before anything else can come to the
+    /// front): in an app other than a terminal it opens as a task for that app.
+    func startNew() {
+        if panel == .newSession { return panel = nil }
         AppContext.shared.capture()
-        panel = .task
+        panel = .newSession
     }
 
     func refreshToolkit() { engine.refreshToolkit() }
@@ -485,7 +493,7 @@ final class AppModel: ObservableObject {
     /// snapshot after launch, anything that's been waiting over two hours counts as already seen, so
     /// opening Lantern isn't a wall of old sessions.
     private func noticeNewTurns() {
-        let waiting = agents.filter { $0.state.wantsYou && prefs.counts($0.kind) }
+        let waiting = agents.filter { $0.isLive && $0.state.wantsYou && prefs.counts($0.kind) }
         if firstSnapshot {
             firstSnapshot = false
             let stale = Date().addingTimeInterval(-2 * 3600)

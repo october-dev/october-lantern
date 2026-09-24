@@ -46,11 +46,8 @@ struct PillView: View {
                     PillIcon(symbol: "square.stack.3d.up", active: model.panel == .agents, help: "All agents") {
                         model.toggle(.agents)
                     }
-                    PillIcon(symbol: "plus", active: model.panel == .newSession, help: "New session") {
-                        model.toggle(.newSession)
-                    }
-                    PillIcon(symbol: "wand.and.stars", active: model.panel == .task, help: "Task for the app you're in") {
-                        model.startTask()
+                    PillIcon(symbol: "plus", active: model.panel == .newSession, help: "New session, or a task for the app you're in") {
+                        model.startNew()
                     }
                     PillIcon(symbol: dictation.isActive ? "mic.fill" : "mic",
                              tint: dictation.isRecording ? Theme.red : dictation.isActive ? Theme.amber : nil,

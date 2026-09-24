@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "welcome": self.showWelcome(step: page)
                 case "settings": self.showSettings(tab: page)
                 default:
-                    self.model.panel = ["agents": .agents, "new": .newSession, "task": .task, "october": .october][what] ?? .inbox
+                    self.model.panel = ["agents": .agents, "new": .newSession, "october": .october][what] ?? .inbox
                     if what == "chat", let first = self.model.inbox.first ?? self.model.agents.first {
                         self.model.openChat(first)
                     }
@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var jobs: [(String, AnyView)] = (0..<4).map { ("welcome-\($0)", AnyView(WelcomeView(model: model, onDone: {}, step: $0))) }
         jobs += (0..<4).map { ("settings-\($0)", AnyView(SettingsView(model: model, onShowWelcome: {}, tab: $0))) }
-        let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("task", .task), ("october", .october), ("chat", .agents)]
+        let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("october", .october), ("chat", .agents)]
         jobs += panels.map { name, mode in
             ("panel-\(name)", AnyView(PanelView(model: model, dictation: model.dictation).onAppear {
                 self.model.closeChat()
@@ -187,10 +187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         item("Waiting (\(model.inbox.count))") { [weak self] in self?.show(.inbox) }
         item("Agents (\(model.agents.count))") { [weak self] in self?.show(.agents) }
-        item("New Session…") { [weak self] in self?.show(.newSession) }
-        item("Task for the App in Front…") { [weak self] in
+        item("New Session or Task…") { [weak self] in
             AppContext.shared.capture()
-            self?.show(.task)
+            self?.show(.newSession)
         }
         let compose = item("Message an Agent…") { [weak self] in self?.model.compose(to: nil) }
         if Preferences.shared.hotkey != .none { compose.title += "  \(Preferences.shared.hotkey.label)" }

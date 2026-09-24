@@ -7,6 +7,7 @@
 //!   lantern-engine hooks install|uninstall|status|remove-all
 
 mod actions;
+mod apps;
 mod deliver;
 mod history;
 mod hooks;
