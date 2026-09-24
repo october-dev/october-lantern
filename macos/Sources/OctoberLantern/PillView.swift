@@ -63,7 +63,6 @@ struct PillView: View {
                     }
                     PillIcon(symbol: "ellipsis", help: "Settings") { onMenu() }
                     Rectangle().fill(Theme.stroke).frame(width: 22, height: 1).padding(.vertical, 2)
-                    TeamButton(active: model.panel == .october) { model.toggle(.october) }
                     Button { model.toggle(.october) } label: {
                         OctoberLogo(size: 26)
                             .overlay(

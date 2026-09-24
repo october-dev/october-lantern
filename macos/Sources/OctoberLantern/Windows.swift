@@ -41,10 +41,6 @@ final class WindowController {
     private let model: AppModel
     private let pill = FloatingPanel(keyable: false)
     private let panel = FloatingPanel(keyable: true)
-    /// The Team button's fan of teammates, beside the pill.
-    private let team = FloatingPanel(keyable: false)
-    private var teamHost: FirstClickHostingView<TeamStackView>!
-    private var teamOutsideSince: Date?
     private var pillHost: FirstClickHostingView<PillView>!
     private var panelHost: FirstClickHostingView<PanelView>!
     private var subscriptions = Set<AnyCancellable>()
@@ -79,11 +75,6 @@ final class WindowController {
         pill.contentView = GlassContainer(content: pillHost, cornerRadius: nil, tint: 0.45)
         panelHost = FirstClickHostingView(rootView: PanelView(model: model, dictation: model.dictation))
         panel.contentView = GlassContainer(content: panelHost, cornerRadius: 22, tint: 0.5)
-        teamHost = FirstClickHostingView(rootView: TeamStackView(stack: TeamStack.shared) { [weak self] in
-            self?.hideTeam()
-            if self?.model.panel != .october { self?.model.toggle(.october) }
-        })
-        team.contentView = GlassContainer(content: teamHost, cornerRadius: nil, tint: 0.45)
 
         // Re-lay out whenever the model changes (agent count changes the pill's height).
         model.objectWillChange
@@ -125,7 +116,6 @@ final class WindowController {
 
     func hidePill() {
         model.panel = nil
-        hideTeam()
         pill.orderOut(nil)
     }
 
@@ -187,51 +177,9 @@ final class WindowController {
         }
     }
 
-    /// The Team button's place on screen, while the pill shows it.
-    private var teamButtonRect: NSRect? {
-        let f = TeamStack.shared.buttonFrame
-        guard f != .zero, model.pillExpanded || model.panel != nil else { return nil }
-        return NSRect(x: pill.frame.minX + f.minX, y: pill.frame.maxY - f.maxY, width: f.width, height: f.height)
-    }
-
-    /// Shows the fan while the mouse is on the Team button or on the fan itself.
-    private func checkTeamHover() {
-        let mouse = NSEvent.mouseLocation
-        let onButton = teamButtonRect?.insetBy(dx: -3, dy: -3).contains(mouse) ?? false
-        let onFan = team.isVisible && team.frame.insetBy(dx: -8, dy: -8).contains(mouse)
-        if onButton || onFan {
-            teamOutsideSince = nil
-            if !team.isVisible, let rect = teamButtonRect { showTeam(beside: rect) }
-        } else if team.isVisible {
-            if teamOutsideSince == nil { teamOutsideSince = Date() }
-            if let since = teamOutsideSince, Date().timeIntervalSince(since) > 0.3 { hideTeam() }
-        }
-    }
-
-    private func showTeam(beside button: NSRect) {
-        let stack = TeamStack.shared
-        stack.leftward = edge == .right
-        let size = teamHost.fittingSize
-        let x = edge == .right ? pill.frame.minX - size.width - 6 : pill.frame.maxX + 6
-        team.setFrame(NSRect(x: x, y: button.midY - size.height / 2, width: size.width, height: size.height), display: true)
-        team.orderFrontRegardless()
-        DispatchQueue.main.async { stack.shown = true }
-    }
-
-    private func hideTeam() {
-        teamOutsideSince = nil
-        TeamStack.shared.shown = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
-            if TeamStack.shared.shown == false { self?.team.orderOut(nil) }
-        }
-    }
-
     private func checkHover() {
         guard pill.isVisible, dragStart == nil else { return }
-        checkTeamHover()
-        let mouse = NSEvent.mouseLocation
-        // The fan beside the pill counts as the pill, so the pill doesn't tuck in under it.
-        let inside = pill.frame.insetBy(dx: -6, dy: -6).contains(mouse) || (team.isVisible && team.frame.insetBy(dx: -8, dy: -8).contains(mouse))
+        let inside = pill.frame.insetBy(dx: -6, dy: -6).contains(NSEvent.mouseLocation)
         if inside {
             outsideSince = nil
             if !model.pillExpanded { model.pillExpanded = true }
@@ -248,10 +196,7 @@ final class WindowController {
 
     private func dragMoved() {
         let mouse = NSEvent.mouseLocation
-        if dragStart == nil {
-            dragStart = (mouse, pill.frame.origin)
-            hideTeam()
-        }
+        if dragStart == nil { dragStart = (mouse, pill.frame.origin) }
         guard let start = dragStart else { return }
         pill.setFrameOrigin(NSPoint(x: start.origin.x + mouse.x - start.mouse.x, y: start.origin.y + mouse.y - start.mouse.y))
         layoutPanel()

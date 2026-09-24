@@ -33,7 +33,6 @@ struct NewSessionView: View {
     @State private var taskDismissed = false
     @ObservedObject private var app = AppContext.shared
     @State private var screenshotOn = false
-    @State private var showShot = false
     @State private var kind: AgentKind?
     @State private var folder: String?
     @State private var prompt = ""
@@ -63,7 +62,6 @@ struct NewSessionView: View {
         }
         .onAppear { kindChanged() }
         .onChange(of: selectedKind) { kindChanged() }
-        .onChange(of: shot.error) { if screenshotOn, shot.error != nil { showShot = true } }
         .onChange(of: model.launching) { was, now in
             // A start that succeeded moves to the Agents list; one that failed leaves us here.
             if was && !now && model.panel == .newSession {
@@ -75,10 +73,11 @@ struct NewSessionView: View {
     /// The message first, then one row of agents and one row of options.
     private var form: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if task, app.target != nil { taskCard }
+            if app.target != nil, !app.isTerminal { workOnApp }
             promptField(task ? "What should it do in \(app.target?.name ?? "this app")?" : "What should it work on? (optional)")
             agentRow
             optionRow
+            if screenshotOn { screenshotPreview }
         }
     }
 
@@ -188,28 +187,18 @@ struct NewSessionView: View {
         .help(selectedFolder.map { "Runs in \(Self.short($0))" } ?? "Choose a folder")
     }
 
-    /// On: a screenshot of your screen goes with the first message. Its preview (and Retake)
-    /// shows when you point at the chip.
+    /// On: a screenshot of your screen goes with the first message; its preview (and Retake)
+    /// shows under the chips.
     private var screenshotChip: some View {
         Button {
             screenshotOn.toggle()
             // A plain session's choice is remembered; a task always starts with it on.
             if !task { prefs.screenshotNewSessions = screenshotOn }
-            if screenshotOn {
-                showShot = true
-                Task { await shot.capture() }
-            } else {
-                showShot = false
-                shot.discard()
-            }
+            if screenshotOn { Task { await shot.capture() } } else { shot.discard() }
         } label: {
             Chip(symbol: screenshotOn ? "camera.fill" : "camera", text: nil, active: screenshotOn)
         }
         .buttonStyle(.plain)
-        .onHover { inside in if screenshotOn && inside { showShot = true } }
-        .popover(isPresented: $showShot, arrowEdge: .bottom) {
-            screenshotPreview.padding(10).frame(width: 280)
-        }
         .help(screenshotOn ? "A screenshot of your screen goes with the first message" : "Include a screenshot of your screen")
         .accessibilityLabel(screenshotOn ? "Screenshot on" : "Screenshot off")
     }
@@ -354,39 +343,56 @@ struct NewSessionView: View {
         TextField(placeholder, text: $prompt, axis: .vertical)
             .textFieldStyle(.plain)
             .font(.system(size: 13))
-            .lineLimit(task ? 3...6 : 2...5)
+            .lineLimit(3...6)
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
     }
 
-    /// The app the task is for, on one line; ✕ makes it a plain session.
-    @ViewBuilder private var taskCard: some View {
+    /// "Work on DaVinci Resolve · video-3": on, the session is a task for the app you were in (with
+    /// a screenshot); off, a plain session.
+    @ViewBuilder private var workOnApp: some View {
         if let t = app.target {
-            HStack(spacing: 8) {
-                if let icon = t.icon { Image(nsImage: icon).resizable().frame(width: 18, height: 18) }
-                Text([t.name, t.document?.lastPathComponent ?? t.windowTitle].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle)
-                if !app.trusted {
+            let on = !taskDismissed
+            Button {
+                taskDismissed.toggle()
+                screenshotOn = !taskDismissed || prefs.screenshotNewSessions
+                if screenshotOn { Task { await shot.capture() } } else { shot.discard() }
+            } label: {
+                HStack(spacing: 8) {
+                    if let icon = t.icon { Image(nsImage: icon).resizable().frame(width: 20, height: 20) }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("Work on \(t.name)").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(on ? Theme.ink : Theme.muted)
+                        if let detail = t.document?.lastPathComponent ?? t.windowTitle, !detail.isEmpty {
+                            Text(detail).font(.system(size: 10.5)).foregroundStyle(Theme.muted).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 15)).foregroundStyle(on ? Theme.amber : Theme.muted)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(on ? Theme.amber.opacity(0.12) : Theme.faint))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(on ? Theme.amber.opacity(0.45) : Theme.hairline)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(on
+                ? "The agent is told about \(t.name), gets a screenshot and Lantern's list of tools on this Mac. Click for a plain session."
+                : "Click to start this as a task for \(t.name)")
+            .accessibilityLabel("Work on \(t.name)")
+            .accessibilityAddTraits(on ? .isSelected : [])
+            if on, !app.trusted {
+                HStack(spacing: 4) {
+                    Text("Lantern can't see which document is open.").font(.system(size: 10.5)).foregroundStyle(Theme.muted)
                     Button("Allow…") { app.requestAccess() }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+                        .buttonStyle(.plain).font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.amber)
                         .help("Allow Accessibility so Lantern can tell the agent which document is open.")
                 }
-                Spacer(minLength: 4)
-                Button {
-                    taskDismissed = true
-                    screenshotOn = prefs.screenshotNewSessions
-                    if !screenshotOn { shot.discard() }
-                } label: {
-                    Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.muted)
-                }
-                .buttonStyle(.plain)
-                .help("Start a plain session instead")
-                .accessibilityLabel("Not for \(t.name)")
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
-            .help("The agent is told about \(t.name) and given Lantern's list of tools on this Mac.")
         }
     }
 
