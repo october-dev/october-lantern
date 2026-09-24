@@ -54,6 +54,7 @@ final class PhoneModel: ObservableObject {
     }
 
     func pair() { engine?.phonePair() }
+    func cancelPairing() { engine?.phoneCancelPair() }
     func decide(_ allow: Bool) { engine?.phoneDecide(allow: allow) }
     func revoke(_ bind: String) { engine?.phoneRevoke(bind: bind) }
 }
@@ -152,6 +153,7 @@ struct PhoneCard: View {
                         .font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                     Text("Expires \(Date(timeIntervalSince1970: p.expiresAt / 1000).formatted(date: .omitted, time: .shortened))")
                         .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    Button("Cancel") { model.cancelPairing() }.buttonStyle(SecondaryButtonStyle())
                 }
             }
         }

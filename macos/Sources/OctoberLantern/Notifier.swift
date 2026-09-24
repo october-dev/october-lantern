@@ -3,7 +3,7 @@ import UserNotifications
 
 /// macOS notifications when an agent needs you. Clicking one opens that agent's conversation.
 @MainActor
-final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     static let shared = Notifier()
     var onOpen: ((String) -> Void)?
 
@@ -14,11 +14,30 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func setUp() {
         center?.delegate = self
+        Task { await refreshStatus() }
+        // Permission can change in System Settings while Lantern runs.
+        NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            Task { @MainActor in await Notifier.shared.refreshStatus() }
+        }
     }
 
     func requestPermission() async -> Bool {
         guard let center else { return false }
-        return (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        let granted = (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        await refreshStatus()
+        return granted
+    }
+
+    /// Whether macOS lets Lantern notify: notDetermined, denied, authorized (or provisional).
+    @Published private(set) var status: UNAuthorizationStatus = .notDetermined
+
+    func refreshStatus() async {
+        guard let center else { return }
+        status = await center.notificationSettings().authorizationStatus
+    }
+
+    static func openSystemSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
     }
 
     func post(for agent: Agent) {

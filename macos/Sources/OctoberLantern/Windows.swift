@@ -28,6 +28,13 @@ final class FloatingPanel: NSPanel {
 
 enum Edge: String { case left, right }
 
+/// The tallest a panel may be on the current screen, for views that scroll instead of growing.
+@MainActor
+final class PanelMetrics: ObservableObject {
+    static let shared = PanelMetrics()
+    @Published var maxHeight: CGFloat = 700
+}
+
 /// Owns the pill and the panel beside it, and keeps them positioned.
 @MainActor
 final class WindowController {
@@ -128,9 +135,12 @@ final class WindowController {
     }
 
     private func layoutPanel() {
-        guard panel.isVisible else { return }
         let visible = screen.visibleFrame
-        let size = panelHost.fittingSize
+        let limit = visible.height - 16
+        if abs(PanelMetrics.shared.maxHeight - limit) > 0.5 { PanelMetrics.shared.maxHeight = limit }
+        guard panel.isVisible else { return }
+        var size = panelHost.fittingSize
+        size.height = min(size.height, limit)
         let x = edge == .right ? pill.frame.minX - size.width - 10 : pill.frame.maxX + 10
         // Align the panel's top with the pill's top, kept on screen.
         let y = min(max(pill.frame.maxY - size.height, visible.minY + 8), visible.maxY - size.height - 8)
@@ -162,7 +172,7 @@ final class WindowController {
                 guard let self else { return }
                 let p = NSEvent.mouseLocation
                 if self.panel.frame.contains(p) || self.pill.frame.contains(p) { return }
-                if self.model.draft.isEmpty && !self.model.dictation.isRecording { self.model.panel = nil }
+                if self.model.draft.isEmpty && !self.model.dictation.isActive { self.model.panel = nil }
             }
         }
     }

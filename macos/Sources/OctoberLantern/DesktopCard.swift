@@ -47,10 +47,10 @@ struct DesktopCard: View {
         case "connected":
             return "\(link!.agentCount) agent\(link!.agentCount == 1 ? "" : "s") in October. Replies go through October, and Open shows them on the canvas."
         case "readOnly":
-            return "October is running. Connect to reply through October and see agents' names and questions."
+            return "October is running. Lantern lists its terminals; connect to reply through October and see agents' names and questions."
         case "pairing": return "Waiting for you to allow Lantern in October…"
         case "notRunning": return "Open October Desktop to connect."
-        case "error": return "Couldn't talk to October."
+        case "error": return link?.message.map { "Couldn't talk to October: \($0)" } ?? "Couldn't talk to October."
         default: return "Get October Desktop to run teams of agents on a canvas."
         }
     }
@@ -60,6 +60,7 @@ struct DesktopCard: View {
         switch link?.status {
         case "connected":
             Button("Disconnect") { model.october("october.forget") }.buttonStyle(SecondaryButtonStyle())
+                .help("Lantern forgets October's permission and goes back to only listing October's terminals. Remove Lantern in October's Connected apps too.")
         case "readOnly", "error":
             Button("Connect") { model.october("october.pair") }.buttonStyle(SecondaryButtonStyle())
         case "pairing":

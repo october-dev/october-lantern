@@ -16,6 +16,8 @@ struct PanelTitle: View {
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
+            .help("Close")
+            .accessibilityLabel("Close")
         }
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
     }
@@ -28,19 +30,49 @@ struct NewSessionView: View {
     @State private var folder: String?
     @State private var prompt = ""
     @State private var background = false
+    /// Why the last start failed, shown above the Start button (the form keeps what you typed).
+    @State private var failure: String?
+    @ObservedObject private var metrics = PanelMetrics.shared
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ScrollView {
+                form.padding(.horizontal, 16).padding(.bottom, 4)
+            }
+            .frame(maxHeight: max(200, metrics.maxHeight - 150))
+            .fixedSize(horizontal: false, vertical: true)
+            footer.padding(.horizontal, 16)
+        }
+        .padding(.bottom, 16)
+        .onChange(of: model.launching) { was, now in
+            // A start that succeeded moves to the Agents list; one that failed leaves us here.
+            if was && !now && model.panel == .newSession {
+                failure = model.launchError ?? "Couldn't start the session."
+            }
+        }
+    }
+
+    private var form: some View {
         VStack(alignment: .leading, spacing: 14) {
             section("Agent") {
-                if model.installedKinds.isEmpty {
-                    Text("Looking for installed agents…").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                } else {
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(model.installedKinds, id: \.self) { k in
-                            AgentTile(kind: k, selected: selectedKind == k) { kind = k }
+                // nil while the engine is still looking.
+                if let kinds = model.installedKinds {
+                    if kinds.isEmpty {
+                        Text("No agents found. Install Claude Code, Codex, OpenCode, Gemini CLI or another agent, then reopen this panel.")
+                            .font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        LazyVGrid(columns: columns, spacing: 8) {
+                            ForEach(kinds, id: \.self) { k in
+                                AgentTile(kind: k, selected: selectedKind == k) { kind = k }
+                            }
                         }
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Looking for installed agents…").font(.system(size: 12)).foregroundStyle(Theme.muted)
                     }
                 }
             }
@@ -89,7 +121,17 @@ struct NewSessionView: View {
                      : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
 
+    /// Always visible, however long the form.
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button(action: start) {
                 HStack {
                     if model.launching { ProgressView().controlSize(.small) }
@@ -103,19 +145,19 @@ struct NewSessionView: View {
             }
             .buttonStyle(.plain)
             .disabled(!canStart)
+            .keyboardShortcut(.defaultAction)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 16)
     }
 
-    private var selectedKind: AgentKind? { kind ?? model.installedKinds.first }
+    private var selectedKind: AgentKind? { kind ?? model.installedKinds?.first }
     private var selectedFolder: String? { folder ?? model.recentFolders.first }
     private var canStart: Bool { selectedKind != nil && selectedFolder != nil && !model.launching }
 
     private func start() {
         guard let k = selectedKind, let f = selectedFolder else { return }
+        failure = nil
+        // The prompt stays until the session has started (a success closes this panel).
         model.launch(kind: k, folder: f, prompt: prompt, background: background)
-        prompt = ""
     }
 
     private func chooseFolder() {
@@ -174,6 +216,8 @@ struct AgentTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+        .accessibilityLabel(kind.displayName)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
 
@@ -208,7 +252,17 @@ struct OctoberView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var account = OctoberAccount.shared
 
+    @ObservedObject private var metrics = PanelMetrics.shared
+
     var body: some View {
+        ScrollView {
+            content
+        }
+        .frame(maxHeight: max(200, metrics.maxHeight - 60))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 OctoberLogo(size: 40)

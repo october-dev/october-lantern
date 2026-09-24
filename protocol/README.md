@@ -1,4 +1,4 @@
-# Lantern engine protocol (v2)
+# Lantern engine protocol (v3)
 
 The app starts `lantern-engine serve`. The two sides exchange one JSON object per line. The engine writes to stdout and reads from stdin. Anything the engine writes to stderr is a log.
 
@@ -7,7 +7,7 @@ The app starts `lantern-engine serve`. The two sides exchange one JSON object pe
 ### `hello`
 Sent once at startup. The app only talks to an engine whose `protocol` matches its own; otherwise it stops the engine and asks the user to reinstall.
 ```json
-{"type":"hello","protocol":2,"version":"0.3.0"}
+{"type":"hello","protocol":3,"version":"0.3.0"}
 ```
 
 ### `snapshot`
@@ -35,10 +35,13 @@ Sent when anything changes, and at least every 10 seconds.
 | `title` | string? | Session title (Claude's `ai-title`, or the first prompt in a Codex session) |
 | `sessionId` | string? | |
 | `state` | `"working" \| "waiting" \| "needs_input" \| "idle" \| "unknown"` | `waiting` means the agent finished its turn and it's your turn. `needs_input` means it's blocked on a question or permission (known only from hooks). `unknown` means the session file didn't say (for Codex, a turn longer than the part of the file the engine reads). |
-| `stateSince` | number? | Epoch ms of the event that produced `state`: the session file's own timestamp for that event, or the hook event's time. Only falls back to the file's modification time when the file has no timestamps. |
+| `stateSince` | number? | Epoch ms of the event that produced `state`: the session file's own timestamp for that event, or the time the hook first reported this state (a repeat, such as Claude's idle reminder after `Stop`, keeps the first time). Only falls back to the file's modification time when the file has no timestamps. Together with `id` it identifies a turn. |
 | `lastMessage` | string? | The agent's last message to you (truncated to 2,000 characters) |
 | `question` | string? | For `needs_input`: what it's asking |
-| `questionKind` | `"permission" \| "other"`? | For `needs_input` from a hook: `permission` is a tool permission prompt (`1` allows once, Escape declines, with the tool and command in `question`); `other` is anything else, to be answered in the terminal. |
+| `questionKind` | `"permission" \| "other"`? | For `needs_input` from a hook: `permission` is a tool permission prompt (`1` allows once, Escape declines); `other` is anything else, to be answered in the terminal. |
+| `questionDetail` | string? | The whole request behind `question`: a permission prompt's full command (every line) or tool input. `question` is one line and says how many lines it leaves out. Cut at 20,000 characters, with a note saying so. |
+| `promptId` | string? | Identifies one permission prompt. `keys` for a permission prompt must carry it; the engine refuses keys for a prompt that has since been answered or replaced. |
+| `sessionMatch` | `"exact" \| "guessed" \| "ambiguous" \| "none"` | How the session file was matched to this process. `exact`: a hook, `--session-id`/`--resume`, or the open file (Codex). `guessed`: the newest session in the folder that started after the process. `ambiguous`: another agent of the same kind in the same folder is also only guessed, so `state` is `unknown` and `lastMessage`, `question`, `title` and history are withheld (replies still work: they go to the process's own terminal). |
 | `host` | `{ "app": string, "pid": number, "bundlePath": string }?` | The GUI app the agent runs inside (Terminal, iTerm2, Ghostty, cmux, ...) |
 | `tmux` | `{ "socket": string?, "target": string, "paneId": string }?` | Present when the agent runs inside a tmux pane |
 | `canReply` | bool | `true` when the engine can type a reply into the agent (`route.via` isn't `none`) |
@@ -52,6 +55,7 @@ Sent once, shortly after `hello`. Lists the agents installed on this machine, as
 ```
 
 ### `launchResult` / `attachResult`
+`launchResult` comes after the first message has been typed, for agents that take it that way (up to about 20 seconds). `attachResult` answers `attach` and `focus`.
 ```json
 {"type":"launchResult","requestId":"l1","ok":true,"session":"codex-myproj-12345"}
 {"type":"attachResult","requestId":"a1","ok":false,"message":"agent is not in a tmux session"}
@@ -72,7 +76,15 @@ The recent conversation with an agent (up to 120 messages from the end of its se
 {"type":"replyResult","requestId":"r1","ok":true}
 {"type":"replyResult","requestId":"r1","ok":false,"error":"not_reachable","message":"..."}
 ```
-`error` is `unknown_agent`, `not_reachable` or `send_failed`. A reply is only `ok` after the text and Enter reached the terminal; before typing, the engine checks that the agent process is alive with the same start time, still on the same tty, and in the foreground of that tty, so a reply can't land in the shell an exited agent left behind (`send_failed` with the reason).
+`error` is one of:
+- `unknown_agent`, `not_reachable`, `bad_request`: refused before anything was queued.
+- `send_failed`: nothing was typed; `message` says why.
+- `expired`: it couldn't start within 15 seconds (another send to the same terminal, or macOS's Automation prompt, took too long). Nothing was typed.
+- `canceled`: canceled before typing started. Nothing was typed.
+- `prompt_changed`: the permission prompt was answered or replaced. Nothing was pressed.
+- `uncertain`: typing started, but Lantern can't tell whether it all went in (a helper ran out of time, or the text went in and Enter didn't). Sending again could repeat it.
+
+A reply is only `ok` after the text and Enter reached the terminal. Replies, keys and focus requests run on one worker per terminal, off the scan loop. Immediately before typing (after any Automation prompt has been answered), the engine checks that the terminal still belongs to the agent: the same process (pid and start time), still running the same program (a process that `exec`ed a shell is refused), on the same tty, and in the foreground of that tty, with the route's own terminal (tmux pane, Terminal/iTerm tab) still on that tty. When the foreground is unknown it refuses.
 
 ### `october`
 The connection to October Desktop, sent whenever it changes.
@@ -95,7 +107,7 @@ The connection to October Desktop, sent whenever it changes.
 ```
 
 ```json
-{"type":"keys","requestId":"k1","agentId":"claude:4242:1790180000","keys":["1"]}
+{"type":"keys","requestId":"k1","agentId":"claude:4242:1790180000","keys":["1"],"promptId":"9f2c41d07a3b5e18"}
 {"type":"focus","requestId":"f1","agentId":"claude:4242:1790180000"}
 ```
 
@@ -105,9 +117,9 @@ The connection to October Desktop, sent whenever it changes.
 {"type":"october.forget"}
 ```
 
-`keys` presses single keys without Enter (`"1"`, `"Escape"`), e.g. to answer a permission prompt, after the same target check as `reply`; the result comes back as `replyResult`. `focus` brings the agent's own tab or pane to the front (for a tmux session nobody is attached to, it opens a Terminal window attached to it; for an agent inside a connected October Desktop, it shows the agent on the canvas); the result comes back as `attachResult`.
+`keys` presses single keys without Enter (`"1"`, `"Escape"`), e.g. to answer a permission prompt, after the same target check as `reply`; the result comes back as `replyResult`. For an agent at a permission prompt, `promptId` is required and must name the current prompt, both when the request arrives and again immediately before the key is pressed. `focus` brings the agent's own tab or pane to the front (for a tmux session nobody is attached to, it opens a Terminal window attached to it; for an agent inside a connected October Desktop, it shows the agent on the canvas); the result comes back as `attachResult`.
 
-`launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument; other agents have it typed in about 4 seconds after they start (see AUDIT.md, F18). `attach` opens a Terminal window attached to an agent's tmux session.
+`launch` starts a new session. With tmux, it runs on Lantern's tmux server (`-L lantern`), and `background: false` also opens a Terminal window attached to it. Without tmux, it runs directly in a new Terminal window, and `background: true` fails. Claude Code and Codex get `prompt` as a command-line argument (after `--`, so a message starting with `-` isn't read as an option). Other agents have it typed in once the pane runs the agent (not the shell starting it), in the foreground, and its screen has stopped changing, within 20 seconds; without tmux they can't be given a first message, and `launch` says so instead of dropping it. `attach` opens a Terminal window attached to an agent's tmux session.
 
 `reply` types the text into the agent's terminal (see `route`), then presses Enter. For agents with `route.via == "none"` it returns `not_reachable`, and the app falls back to copying the text and bringing the host app forward. `october.pair` asks October Desktop to allow Lantern (October shows a code to compare), `october.cancelPair` withdraws that, and `october.forget` drops the credential October issued (Lantern then goes back to listing October's terminals read-only).
 
@@ -118,10 +130,13 @@ Hooks write one JSON file per session to `~/Library/Application Support/October 
 ```json
 {"source":"claude","state":"needs_input","sessionId":"...","cwd":"...","message":null,
  "question":"Permission to run Bash · rm -rf node_modules","questionKind":"permission",
+ "questionDetail":"rm -rf node_modules","promptId":"9f2c41d07a3b5e18",
  "transcriptPath":"...","ancestors":[1234,1200],"at":1790181234567}
 ```
 
-The engine matches a hook file to a running agent by `ancestors`, the process ids above the hook command (the agent is one of them). Claude Code hooks: `PermissionRequest` (the moment a permission prompt appears, with the tool and command), `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`; other notification types are ignored), `Stop` (with `last_assistant_message`), `UserPromptSubmit` and `PostToolUse`. Codex: the `notify` program (`agent-turn-complete`).
+The engine matches a hook file to a running agent by `ancestors`, the process ids above the hook command (the agent is one of them). Claude Code hooks: `PermissionRequest` (the moment a permission prompt appears, with the tool and command), `Notification` (`permission_prompt`, `idle_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`; other notification types are ignored), `Stop` (with `last_assistant_message`), `UserPromptSubmit`, `PostToolUse` and `PostToolUseFailure`. Codex: the `notify` program (`agent-turn-complete`).
+
+Installing and removing hooks takes a lock, backs each file up under a new name (`<file>.lantern-backup-<ms>[-n]`, never overwriting an earlier backup), writes through a temporary file of its own, and writes Claude's and Codex's files together: if the second write fails, the first gets its old contents back. `lantern-engine hooks status` prints `{"claude":bool,"claudeOutdated":bool,"codex":bool}`; `claudeOutdated` means an older Lantern's hooks that lack events this version needs.
 
 ## Phone (October phone app)
 
@@ -137,6 +152,7 @@ App → engine:
 ```json
 {"type":"phone.token","accessToken":"<October Supabase access token>"}
 {"type":"phone.pair"}
+{"type":"phone.cancelPair"}
 {"type":"phone.decide","allow":true}
 {"type":"phone.revoke","bind":"<device bind uuid>"}
 {"type":"phone.stop"}
@@ -158,9 +174,17 @@ On the phone, Lantern appears as one canvas whose nodes are Lantern's agents. La
 - `bus.query` `listCanvases` / `currentSnapshot`
 - `facts.query` `listNotifications` / `listNodeWorkflows` / `listPrObservations`
 - `ui.list`, `terminal.list`, `agent.list`, `devServer.list`, `chat.history` (empty lists)
-- `bus.mutate userSend`, which types the reply into the agent's terminal through the same path as a reply from the app, and answers `{"accepted":true,"delivery":"delivered"}` only after it did; otherwise `{"accepted":false,"reason":"…"}`
+- `bus.mutate userSend`, which types the reply into the agent's terminal through the same path as a reply from the app. It answers:
+  - `{"accepted":true,"delivery":"delivered"}` only after the reply was typed;
+  - `{"accepted":false,"reason":"…"}` when nothing was typed (including a reply that couldn't start in time, which is canceled and never typed later);
+  - `{"accepted":true,"delivery":"queued","reason":"not-confirmed-check-the-terminal"}` when typing started but Lantern can't confirm it finished. `accepted:false` would invite a retry that could type it twice.
 
-A request whose `deadlineAt` has passed is refused with `DEADLINE_EXCEEDED`; a `userSend` for another canvas with `NOT_FOUND`. The answer to a request with an `idempotencyKey` is remembered per phone, so a retry gets the same answer without typing again.
+Checks on `userSend`:
+- A request's `deadlineAt` (epoch ms; `0` or absent means none) must be a number. One that has passed is refused with `DEADLINE_EXCEEDED`.
+- The optional fourth argument `expiresInMs` must be a number. The sooner of the two is the deadline for typing to start (at most 20 seconds).
+- The node must be `{"id":…,"kind":"terminal"}` and the canvas Lantern's own, or the request is refused (`INVALID_ARGUMENT` / `NOT_FOUND`).
+
+The answer to a request with an `idempotencyKey` is remembered per phone (the last 256, for as long as the engine runs). A retry of the same request gets the same answer, re-addressed to the retry's `requestId`, without typing again. The same key on a different request is refused with `INVALID_ARGUMENT`.
 
 It emits the `bus.changed`, `facts.changed`, `core.lifecycle`, `cursor.reset` and `cursor.heartbeat` events. Anything else returns `PERMISSION_DENIED`.
 

@@ -9,13 +9,33 @@ struct PillView: View {
     var onDragEnd: () -> Void
     var onMenu: () -> Void
 
-    private var expanded: Bool { model.pillExpanded || model.panel != nil || dictation.isRecording }
+    private var expanded: Bool { model.pillExpanded || model.panel != nil || dictation.isActive }
+
+    /// What's wrong with the engine, when it isn't running normally (nil while starting or ready).
+    private var engineProblem: String? {
+        switch model.engineHealth {
+        case .ready, .starting: nil
+        case .restarting: "Lantern's engine stopped and is restarting. Agents may be out of date."
+        case .failed(let message): "Lantern's engine isn't running: \(message)"
+        }
+    }
 
     var body: some View {
         VStack(spacing: 8) {
             LanternButton(count: model.badgeCount, waiting: !model.inbox.isEmpty, working: model.anyWorking, onTap: {
                 model.toggle(.inbox)
             }, onDrag: onDrag, onDragEnd: onDragEnd)
+            .overlay(alignment: .topTrailing) {
+                if let engineProblem {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 8, weight: .heavy))
+                        .foregroundStyle(.black.opacity(0.85))
+                        .frame(width: 14, height: 14)
+                        .background(Circle().fill(model.engineHealth == .restarting ? Theme.amber : Theme.red))
+                        .help(engineProblem)
+                        .accessibilityLabel(engineProblem)
+                }
+            }
 
             if expanded {
                 VStack(spacing: 6) {
@@ -32,8 +52,9 @@ struct PillView: View {
                     PillIcon(symbol: "text.bubble", help: "Message an agent  ⌃⌥Space") {
                         model.compose(to: nil)
                     }
-                    PillIcon(symbol: dictation.isRecording ? "mic.fill" : "mic",
-                             tint: dictation.isRecording ? Theme.red : nil, help: "Dictate") {
+                    PillIcon(symbol: dictation.isActive ? "mic.fill" : "mic",
+                             tint: dictation.isRecording ? Theme.red : dictation.isActive ? Theme.amber : nil,
+                             help: dictation.isAuthorizing ? "Waiting for microphone permission… click to cancel" : dictation.isRecording ? "Stop dictating" : "Dictate") {
                         model.toggleDictation()
                     }
                     .overlay {
@@ -56,6 +77,7 @@ struct PillView: View {
                     }
                     .buttonStyle(.plain)
                     .help("October")
+                    .accessibilityLabel("October")
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -118,7 +140,14 @@ struct LanternButton: View {
                 .onChanged { _ in onDrag() }
                 .onEnded { _ in onDragEnd() }
         )
+        // A tap gesture rather than a Button, so the same view can be dragged; it still acts as a
+        // button for VoiceOver and keyboard users.
         .onTapGesture { onTap() }
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(count > 0 ? "October Lantern, \(count) waiting on you" : "October Lantern")
+        .accessibilityHint("Shows who's waiting on you")
+        .accessibilityAction { onTap() }
         // No continuous animation: redrawing a blur inside the glass every frame costs ~15% of a
         // CPU core. The glow changes only when the state does.
         .animation(.easeOut(duration: 0.3), value: count)
@@ -144,5 +173,6 @@ struct PillIcon: View {
         .buttonStyle(.plain)
         .onHover { hover = $0 }
         .help(help)
+        .accessibilityLabel(help)
     }
 }

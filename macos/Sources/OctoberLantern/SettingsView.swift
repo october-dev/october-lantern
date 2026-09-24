@@ -5,6 +5,7 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var prefs = Preferences.shared
     @ObservedObject var hooks = Hooks.shared
+    @ObservedObject var notifier = Notifier.shared
     var onShowWelcome: () -> Void
     @State var tab = 0
 
@@ -16,7 +17,10 @@ struct SettingsView: View {
             about.tabItem { Label("About", systemImage: "info.circle") }.tag(3)
         }
         .frame(width: 520, height: 440)
-        .task { hooks.refresh() }
+        .task {
+            hooks.refresh()
+            await notifier.refreshStatus()
+        }
     }
 
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
@@ -38,13 +42,9 @@ struct SettingsView: View {
                     .onChange(of: autoUpdate) { _, on in Updater.shared.automaticallyChecks = on }
             }
             Section {
-                LabeledContent("Exact status from agent hooks") {
-                    Toggle("", isOn: Binding(get: { hooks.installed }, set: { model.show(hooks.set($0)) }))
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                }
-                Text("Claude Code and Codex tell Lantern the moment they finish or need permission. Lantern backs up ~/.claude/settings.json and ~/.codex/config.toml before changing them, and restores them when you turn this off. Restart running agents afterwards.")
-                    .font(.caption).foregroundStyle(.secondary)
+                HooksSetting(hooks: hooks)
+            } header: {
+                Text("Exact status from agent hooks")
             }
         }
         .formStyle(.grouped)
@@ -53,11 +53,24 @@ struct SettingsView: View {
     private var notifications: some View {
         Form {
             Toggle("Notify me when an agent needs me", isOn: $prefs.notificationsEnabled)
+                .onChange(of: prefs.notificationsEnabled) { _, on in
+                    // Ask macOS the first time they're turned on.
+                    if on && notifier.status == .notDetermined { Task { _ = await notifier.requestPermission() } }
+                }
+            if prefs.notificationsEnabled && notifier.status == .denied {
+                LabeledContent {
+                    Button("Open System Settings…") { Notifier.openSystemSettings() }
+                } label: {
+                    Label("Off in System Settings", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                }
+                Text("macOS is blocking Lantern's notifications. Allow them for October Lantern in System Settings › Notifications.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Toggle("Also when an agent finishes its turn", isOn: $prefs.notifyOnFinish).disabled(!prefs.notificationsEnabled)
             Text("Questions and permission prompts always notify (when notifications are on). Notifications are skipped for agents you've muted in Agents.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button("Open Notification Settings…") {
-                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
+            if notifier.status != .denied {
+                Button("Open Notification Settings…") { Notifier.openSystemSettings() }
             }
         }
         .formStyle(.grouped)
@@ -117,11 +130,58 @@ struct SettingsView: View {
                 Link(Support.email, destination: URL(string: "mailto:\(Support.email)")!)
             }
             Section {
-                Button("Uninstall October Lantern…", role: .destructive) { Support.uninstall() }
-                Text("Removes the hooks (restoring your agents' settings), support files and settings, then moves the app to the Trash.")
+                Button("Uninstall October Lantern…", role: .destructive) { Support.uninstall(model: model) }
+                Text("Signs out of October, removes the hooks (restoring your agents' settings), support files and settings, then moves the app to the Trash.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Claude Code and Codex hooks, each with its own state. An older Lantern's Claude hooks (missing
+/// events this version needs) offer an update. Errors show here, under the control.
+struct HooksSetting: View {
+    @ObservedObject var hooks: Hooks
+    @State private var error: String?
+
+    var body: some View {
+        LabeledContent("Claude Code") { state(on: hooks.claude, outdated: hooks.claudeOutdated) }
+        LabeledContent("Codex") { state(on: hooks.codex, outdated: false) }
+        HStack {
+            if hooks.busy { ProgressView().controlSize(.small) }
+            Spacer()
+            if hooks.anyInstalled {
+                Button("Turn Off") { run(false) }.disabled(hooks.busy)
+            }
+            if !hooks.installed {
+                Button(hooks.claudeOutdated ? "Update" : hooks.anyInstalled ? "Turn On for Both" : "Turn On") { run(true) }
+                    .disabled(hooks.busy)
+            }
+        }
+        if let error {
+            Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        Text("Claude Code and Codex tell Lantern the moment they finish or need permission. Lantern backs up ~/.claude/settings.json and ~/.codex/config.toml before changing them, and restores them when you turn this off. Restart running agents afterwards.")
+            .font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private func state(on: Bool, outdated: Bool) -> some View {
+        if on {
+            Label("On", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+        } else if outdated {
+            Label("Needs update", systemImage: "arrow.triangle.2.circlepath").foregroundStyle(.orange)
+        } else {
+            Text("Off").foregroundStyle(.secondary)
+        }
+    }
+
+    private func run(_ on: Bool) {
+        error = nil
+        Task {
+            let out = await hooks.set(on)
+            if out.hasPrefix("Error") || out.hasPrefix("Couldn't") || out.contains("engine is missing") { error = out }
+        }
     }
 }

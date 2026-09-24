@@ -80,6 +80,13 @@ struct Agent: Codable, Identifiable, Hashable {
     /// "permission" when a hook says the agent is at a tool permission prompt (`1` allows once,
     /// Escape declines); "other" for any other question.
     let questionKind: String?
+    /// The whole request behind `question` (a permission prompt's full command).
+    let questionDetail: String?
+    /// Identifies one permission prompt; Allow/Deny send it so they can't answer a different one.
+    let promptId: String?
+    /// How the conversation was matched to this process: "exact", "guessed", "ambiguous" (another
+    /// agent of this kind in this folder; state and history hidden) or "none".
+    let sessionMatch: String?
     let host: HostApp?
     let tmux: TmuxPane?
     let canReply: Bool
@@ -87,7 +94,10 @@ struct Agent: Codable, Identifiable, Hashable {
     let stateSource: String
 
     /// A tool permission prompt Lantern can answer with a keypress.
-    var isPermissionPrompt: Bool { state == .needsInput && questionKind == "permission" }
+    var isPermissionPrompt: Bool { state == .needsInput && questionKind == "permission" && promptId != nil }
+
+    /// Lantern can't tell which conversation belongs to this process.
+    var sessionAmbiguous: Bool { sessionMatch == "ambiguous" }
 
     /// Identifies one particular turn, so dismissing it doesn't hide the next one.
     var turnKey: String { "\(id)@\(Int(stateSince ?? 0))" }

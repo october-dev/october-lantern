@@ -139,7 +139,7 @@ pub fn run() -> Result<()> {
         let _ = stdin_tx.send(Incoming::Closed);
     });
 
-    emit(&json!({"type": "hello", "protocol": 2, "version": env!("CARGO_PKG_VERSION")}));
+    emit(&json!({"type": "hello", "protocol": 3, "version": env!("CARGO_PKG_VERSION")}));
     crate::hooks::refresh_hook_binary();
     // Checking installed agents runs a login shell, so do it off the main loop.
     std::thread::spawn(|| emit(&json!({"type": "installed", "installed": launch::installed()})));

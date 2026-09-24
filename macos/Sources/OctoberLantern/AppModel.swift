@@ -45,9 +45,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var dismissed: Set<String>
     /// Turns you've already seen in Waiting. They stay listed (under Earlier) but don't count.
     @Published private(set) var seen: Set<String>
-    @Published private(set) var installedKinds: [AgentKind] = []
+    /// Installed agents; `nil` until the engine has checked.
+    @Published private(set) var installedKinds: [AgentKind]?
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var launching = false
+    /// Why the last start failed, shown in the New Session form.
+    @Published private(set) var launchError: String?
     /// The agent whose conversation is open in the panel, if any.
     @Published private(set) var chatAgentId: String?
     @Published private(set) var chatMessages: [ChatMessage] = []
@@ -76,6 +79,8 @@ final class AppModel: ObservableObject {
     private var pendingSince: [String: Date] = [:]
     private var deadlineTask: Task<Void, Never>?
     static let requestDeadline: TimeInterval = 20
+    /// Starting a session may wait for the agent to come up before typing its first message.
+    static let launchDeadline: TimeInterval = 45
     private let prefs = Preferences.shared
     var onNotify: ((Agent) -> Void)?
 
@@ -83,7 +88,9 @@ final class AppModel: ObservableObject {
         dismissed = Set(UserDefaults.standard.stringArray(forKey: "dismissedTurns") ?? [])
         seen = Set(UserDefaults.standard.stringArray(forKey: "seenTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
-        engine.onReplyResult = { [weak self] id, ok, message in self?.replyFinished(id, ok: ok, message: message) }
+        engine.onReplyResult = { [weak self] id, ok, error, message in
+            self?.replyFinished(id, ok: ok, uncertain: error == "uncertain", message: message)
+        }
         engine.onActionResult = { [weak self] id, ok, message in self?.actionFinished(id, ok: ok, message: message) }
         engine.onHistory = { [weak self] agentId, supported, messages in
             guard let self, agentId == self.chatAgentId else { return }
@@ -223,10 +230,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Answers a permission prompt: "1" allows once, Escape declines.
+    /// Answers a permission prompt: "1" allows once, Escape declines. The engine refuses if the
+    /// prompt on screen is no longer the one shown here.
     func answerPermission(_ agent: Agent, allow: Bool) {
+        guard let promptId = agent.promptId else { return }
         let id = request("k")
-        track(id, .keys(agentId: agent.id), sent: engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"]))
+        track(
+            id, .keys(agentId: agent.id),
+            sent: engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"], promptId: promptId)
+        )
     }
 
     func send() {
@@ -267,6 +279,7 @@ final class AppModel: ObservableObject {
         used.insert(folder, at: 0)
         UserDefaults.standard.set(Array(used.prefix(8)), forKey: "recentFolders")
         launching = true
+        launchError = nil
         let id = request("l")
         track(id, .launch, sent: engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, background: background))
     }
@@ -313,7 +326,10 @@ final class AppModel: ObservableObject {
         deadlineTask = Task { @MainActor [weak self] in
             while let self, !self.pendingSince.isEmpty {
                 try? await Task.sleep(for: .seconds(2))
-                let late = self.pendingSince.filter { -$0.value.timeIntervalSinceNow > Self.requestDeadline }.keys
+                let late = self.pendingSince.filter { id, since in
+                    let limit = if case .launch = self.pending[id] { Self.launchDeadline } else { Self.requestDeadline }
+                    return -since.timeIntervalSinceNow > limit
+                }.keys
                 for id in late { self.fail(id, "no answer from Lantern's engine") }
             }
             self?.deadlineTask = nil
@@ -322,7 +338,7 @@ final class AppModel: ObservableObject {
 
     private func fail(_ id: String, _ message: String) {
         switch pending[id] {
-        case .reply, .keys: replyFinished(id, ok: false, message: message)
+        case .reply, .keys: replyFinished(id, ok: false, uncertain: false, message: message)
         case .launch, .focus: actionFinished(id, ok: false, message: message)
         case nil: pendingSince[id] = nil
         }
@@ -366,7 +382,7 @@ final class AppModel: ObservableObject {
         knownTurns = Set(waiting.map(\.turnKey))
     }
 
-    private func replyFinished(_ requestId: String, ok: Bool, message: String?) {
+    private func replyFinished(_ requestId: String, ok: Bool, uncertain: Bool, message: String?) {
         pendingSince[requestId] = nil
         guard let request = pending.removeValue(forKey: requestId) else { return }
         switch request {
@@ -377,11 +393,20 @@ final class AppModel: ObservableObject {
                 drafts.sent(ticket)
                 show("Sent to @\(handle(agentId))")
                 if let chatAgentId { engine.history(agentId: chatAgentId) }
+            } else if uncertain {
+                // It may have gone in: keep the draft, but don't suggest sending it again.
+                show("@\(handle(agentId)): \(message ?? "not sure it went in. Check the terminal.")")
             } else {
                 show("Couldn't send to @\(handle(agentId)): \(message ?? "unknown error")")
             }
         case .keys(let agentId):
-            show(ok ? "Sent to @\(handle(agentId))" : "Couldn't answer @\(handle(agentId)): \(message ?? "unknown error")")
+            if ok {
+                show("Sent to @\(handle(agentId))")
+            } else if uncertain {
+                show("@\(handle(agentId)): \(message ?? "not sure it went in. Check the terminal.")")
+            } else {
+                show("Couldn't answer @\(handle(agentId)): \(message ?? "unknown error")")
+            }
         case .launch, .focus:
             break
         }
@@ -393,8 +418,12 @@ final class AppModel: ObservableObject {
         switch request {
         case .launch:
             launching = false
-            if ok { panel = .agents }
-            show(ok ? "Session started" : "Couldn't start the session: \(message ?? "unknown error")")
+            if ok {
+                panel = .agents
+                show("Session started")
+            } else {
+                launchError = message ?? "unknown error"
+            }
         case .focus(let agentId):
             if !ok { show("Couldn't open @\(handle(agentId)): \(message ?? "unknown error")") }
         case .reply, .keys:

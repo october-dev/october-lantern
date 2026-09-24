@@ -52,7 +52,7 @@ The result is either wasted agent time (an agent sat idle for 20 minutes waiting
 2. **Knows which ones are waiting on you.** Lantern reads each agent's own session log to tell whether it's still working or has finished and is waiting for you, and shows what it last said. With the optional hooks, it also knows the moment Claude Code asks for permission, and which command it's asking about.
 3. **One place to look.** The lantern glows amber with a count when agents finish or ask you something. Click it to see **Waiting**: each agent, its project, how long it's been waiting and its last message.
 4. **Read the whole conversation.** Click any agent to open its chat: what you asked, what it answered, and a one-line summary of each command or tool it ran.
-5. **Answer without switching windows.** Type or dictate a reply and Lantern types it into the agent's own terminal tab: in **cmux**, **Terminal**, **iTerm2** and **tmux**. Before typing, it checks the agent is still the process it saw, on that terminal, in the foreground, so a reply never lands in a shell an exited agent left behind. For permission prompts, **Allow** and **Deny** buttons answer right from Lantern.
+5. **Answer without switching windows.** Type or dictate a reply and Lantern types it into the agent's own terminal tab: in **cmux**, **Terminal**, **iTerm2** and **tmux**. Right before typing, it checks that the terminal still belongs to the agent: the same process, still running the agent (not a shell it left behind), on that terminal, in the foreground. When it can't tell, it doesn't type. For permission prompts, **Allow** and **Deny** buttons answer right from Lantern; they only press a key if that prompt is still the one on screen.
 6. **Notifies you.** An optional macOS notification when an agent finishes or needs you, even when the lantern is out of sight. Clicking it opens that agent's conversation.
 7. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern opens it in a new Terminal window or runs it in the background.
 8. **Stays out of your way.** Collapsed, Lantern is one small lantern on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
@@ -70,7 +70,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 **Expanded.** Hover over the lantern and it grows downward into a glass capsule with buttons for **Waiting**, **Agents**, **New session (+)**, **Message**, **Dictate** and **More**, then the **October** logo. It tucks back in when the mouse leaves. Drag the lantern to move it; it snaps to the nearest screen edge.
 
 **The panel** opens beside the lantern:
-- **Waiting:** a card for each agent that finished or needs you since you last looked, showing its logo, handle (e.g. `@claude-2`), project, the terminal it runs in, how long ago, the session title and its last message. Cards have **Reply**, **Open** (jumps to the agent's own tab) and **Done** buttons. A permission prompt ("Claude needs your permission to use Bash") gets **Allow** and **Deny** buttons. Below the cards, an **Earlier** list holds agents that are still waiting but that you've seen, with **Clear all**.
+- **Waiting:** a card for each agent that finished or needs you since you last looked, showing its logo, handle (e.g. `@claude-2`), project, the terminal it runs in, how long ago, the session title and its last message. Cards have **Reply**, **Open** (jumps to the agent's own tab) and **Dismiss** buttons. A permission prompt ("Permission to run Bash · npm test") gets **Allow** and **Deny** buttons, and **Show full request** shows every line of the command. Below the cards, an **Earlier** list holds agents that are still waiting but that you've seen, with **Clear all**.
 - **Agents:** every running agent, the ones that need you first, with logo, handle, folder, terminal and status (*Needs you*, *Your turn*, *Working*, *Idle*, *Running*).
 - **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
 - **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
@@ -109,7 +109,7 @@ Say you have six sessions running in cmux: two Claude Code, two Codex, one OpenC
 
 | Agent | Detected | Working / your turn | Last message and chat | Notes |
 |---|---|---|---|---|
-| Claude Code | ✅ | ✅ | ✅ | With hooks: instant updates, and permission prompts (with the exact command) with Allow/Deny |
+| Claude Code | ✅ | ✅ | ✅ | With hooks: instant updates, exact session matching, and permission prompts (with the full command) with Allow/Deny |
 | Codex CLI | ✅ | ✅ | ✅ | With hooks: instant "finished" updates |
 | OpenCode | ✅ | ✅ | ✅ | Reads OpenCode's local database |
 | Pi | ✅ | ✅ | ✅ | |
@@ -141,7 +141,7 @@ Lantern is in **beta (v0.3.0)**.
 | Finds agents in any terminal | ✅ |
 | Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI |
 | Reply from Lantern | ✅ cmux, Terminal, iTerm2, tmux. Other terminals: copy and paste. |
-| Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2 and tmux. The card shows the tool and command being approved. |
+| Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2 and tmux. The card shows the tool and the full command being approved. The key is only pressed if that prompt is still the one on screen. |
 | Jump to the agent's exact tab | ✅ cmux, Terminal, iTerm2, tmux |
 | Notifications | ✅ Optional |
 | Start new sessions (Terminal window or background) | ✅ Background needs tmux |
@@ -166,7 +166,7 @@ Lantern is in **beta (v0.3.0)**.
 - **No screen recording.** Lantern doesn't take screenshots.
 - **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`), and never modifies them.
 - **Typing replies.** When you send a reply, Lantern types it into that agent's terminal: through cmux's command-line tool, tmux, or macOS Automation for Terminal and iTerm2. macOS asks you once per app before Automation is allowed.
-- **Optional hooks.** If you turn on exact status, Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`: PermissionRequest, Notification, Stop, UserPromptSubmit, PostToolUse) and Codex's `notify` setting (`~/.codex/config.toml`). It reads and checks both files before changing either, backs both up, replaces each atomically, keeps any existing Codex notify program working, and restores everything when you turn hooks off or uninstall. If Lantern is deleted without uninstalling, the hooks quietly do nothing. The hook events Lantern stores (`~/Library/Application Support/October Lantern/events`) hold the agent's last message and the command it asked permission for.
+- **Optional hooks.** If you turn on exact status, Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`: PermissionRequest, Notification, Stop, UserPromptSubmit, PostToolUse, PostToolUseFailure) and Codex's `notify` setting (`~/.codex/config.toml`). It reads and checks both files before changing either, backs both up (never overwriting an earlier backup), replaces each atomically, puts the first file back if the second can't be written, keeps any existing Codex notify program working, and restores everything when you turn hooks off or uninstall. Settings shows Claude Code and Codex separately, and offers an update when an older Lantern's Claude hooks are installed. If Lantern is deleted without uninstalling, the hooks quietly do nothing. The hook events Lantern stores (`~/Library/Application Support/October Lantern/events`) hold the agent's last message and the command it asked permission for.
 - **Problem and crash reports are only ever sent by you**, as an email you see before sending. They contain versions and a summary of which agents and terminals are running, never conversations, folders or code.
 
 ## Requirements and permissions
@@ -224,7 +224,10 @@ No. Your agents keep running where they are. Lantern is a lightweight view and r
 No. Everything runs locally; without an October account the only network request is the update check. If you connect a phone through October, replies and agent status travel end-to-end encrypted through October's relay.
 
 **Can it answer permission prompts ("Allow this command?")?**
-Yes, for Claude Code with hooks turned on, when the agent runs in cmux, iTerm2 or tmux. Elsewhere, click **Open** to jump to it.
+Yes, for Claude Code with hooks turned on, when the agent runs in cmux, iTerm2 or tmux. Elsewhere, click **Open** to jump to it. Lantern presses the key only if the prompt is still the one it showed you; if it was answered or replaced in the meantime, it says so and presses nothing.
+
+**Why does an agent show "Running" and no conversation, when another one in the same folder works?**
+Two agents of the same kind in one folder, and Lantern could only guess which session file is whose. Rather than show you the wrong conversation, it shows neither. Turn on hooks (Claude Code), or start the agent with `--resume <id>`, for an exact match. Replies still go to the right terminal.
 
 **Why does an agent say "Running" instead of "Your turn"?**
 Lantern can't read that agent's session files yet (see [Supported agents](#supported-agents)).
@@ -259,7 +262,7 @@ Yes, during the beta. No account is needed.
   5. merges hook events (from `lantern-engine hook ...`), using whichever is newer;
   6. sends the app a snapshot whenever something changed.
 
-  It also serves conversation history, sends single keys for Allow/Deny, focuses tabs, and starts new sessions on Lantern's own tmux server (`tmux -L lantern`) through the user's login shell. Before typing anything it re-checks the target process (same pid and start time, same tty, in the foreground). It has no UI, so a Windows front end could reuse it.
+  It also serves conversation history, sends single keys for Allow/Deny, focuses tabs, and starts new sessions on Lantern's own tmux server (`tmux -L lantern`) through the user's login shell. Replies, keys and focus run on one worker per terminal with a deadline, off the scan loop. Right before typing it re-checks the target (same pid and start time, same program, same tty, in the foreground, the route's pane or tab still on that tty) and refuses when it can't tell. A send that times out before it starts is canceled; one that started but can't be confirmed is reported as uncertain. It has no UI, so a Windows front end could reuse it.
 - **App (`macos/`, Swift).**
   - **Windows:** the lantern and the panel are borderless, non-activating `NSPanel`s inside an `NSGlassEffectView` (macOS 26) or `NSVisualEffectView` container.
   - **Hover:** expansion works by polling the mouse position.

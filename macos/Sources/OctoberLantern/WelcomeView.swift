@@ -5,6 +5,8 @@ import SwiftUI
 struct WelcomeView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var hooks = Hooks.shared
+    @State private var hooksError: String?
+    @ObservedObject var notifier = Notifier.shared
     @ObservedObject var prefs = Preferences.shared
     var onDone: () -> Void
     @State var step = 0
@@ -113,8 +115,11 @@ struct WelcomeView: View {
                     }
             }
             SetupRow(symbol: "bell.badge", title: "Notifications", detail: "A notification when an agent finishes or asks you something, even when the lantern is out of sight.") {
-                if notificationsAllowed {
+                if notificationsAllowed || notifier.status == .authorized || notifier.status == .provisional {
                     Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
+                } else if notifier.status == .denied {
+                    Button("Open Settings…") { Notifier.openSystemSettings() }.buttonStyle(SecondaryButtonStyle())
+                        .help("Notifications are off for Lantern in System Settings")
                 } else {
                     Button("Turn On") {
                         Task { notificationsAllowed = await Notifier.shared.requestPermission() }
@@ -126,8 +131,25 @@ struct WelcomeView: View {
                      detail: "Lets Claude Code and Codex tell Lantern the moment they finish or need permission, so you can Allow or Deny from Lantern. Adds Lantern to ~/.claude/settings.json and ~/.codex/config.toml, after backing both up. Restart running agents afterwards.") {
                 if hooks.installed {
                     Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
+                } else if hooks.busy {
+                    ProgressView().controlSize(.small)
                 } else {
-                    Button("Turn On") { hooks.set(true) }.buttonStyle(SecondaryButtonStyle())
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button(hooks.claudeOutdated ? "Update" : "Turn On") {
+                            hooksError = nil
+                            Task {
+                                let out = await hooks.set(true)
+                                if out.hasPrefix("Error") || out.hasPrefix("Couldn't") || out.contains("engine is missing") { hooksError = out }
+                            }
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        if let hooksError {
+                            Text(hooksError).font(.system(size: 11)).foregroundStyle(Theme.red).frame(maxWidth: 220, alignment: .trailing)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if hooks.claude != hooks.codex {
+                            Text(hooks.claude ? "On for Claude Code only" : "On for Codex only").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                        }
+                    }
                 }
             }
             SetupRow(symbol: "keyboard", title: "Shortcut", detail: "Opens the message box from anywhere.") {

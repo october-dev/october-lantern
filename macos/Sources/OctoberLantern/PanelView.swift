@@ -7,6 +7,7 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            EngineBanner(health: model.engineHealth)
             switch model.panel {
             case .newSession:
                 PanelTitle(title: "New session", model: model)
@@ -26,7 +27,7 @@ struct PanelView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                 }
-                .frame(maxHeight: 440)
+                .frame(maxHeight: max(240, PanelMetrics.shared.maxHeight - 200))
                 .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -61,6 +62,7 @@ struct PanelView: View {
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Close")
             .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 16)
@@ -77,8 +79,7 @@ struct PanelView: View {
         } else {
             ForEach(model.newInbox) { agent in
                 InboxCard(agent: agent, selected: model.target?.id == agent.id, isNew: true, model: model)
-                    .contentShape(Rectangle())
-                    .onTapGesture { model.openChat(agent) }
+                    .opensChat(agent, model: model)
             }
             if !model.earlierInbox.isEmpty {
                 HStack {
@@ -86,13 +87,12 @@ struct PanelView: View {
                     Spacer()
                     Button("Clear all") { model.dismiss(model.earlierInbox) }
                         .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
-                        .help("Mark all of these as done")
+                        .help("Dismiss all of these until they have something new")
                 }
                 .padding(.horizontal, 4).padding(.top, model.newInbox.isEmpty ? 0 : 6)
                 ForEach(model.earlierInbox) { agent in
                     InboxCard(agent: agent, selected: model.target?.id == agent.id, model: model)
-                        .contentShape(Rectangle())
-                        .onTapGesture { model.openChat(agent) }
+                        .opensChat(agent, model: model)
                 }
             }
         }
@@ -103,13 +103,58 @@ struct PanelView: View {
             EmptyState(title: "No agents running", detail: "Start Claude Code, Codex, OpenCode, Pi, Gemini or another agent in any terminal.")
         } else {
             ForEach(model.ranked) { agent in
-                AgentRow(agent: agent, selected: model.target?.id == agent.id)
-                    .onTapGesture { model.openChat(agent) }
+                Button { model.openChat(agent) } label: {
+                    AgentRow(agent: agent, selected: model.target?.id == agent.id)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("@\(agent.handle), \(agent.state.label)\(agent.title.map { ", \($0)" } ?? "")")
+                .accessibilityHint("Opens the conversation")
                     .contextMenu {
                         Button("Message @\(agent.handle)") { model.compose(to: agent) }
                         Button("Open in \(agent.host?.app ?? "terminal")") { model.open(agent) }
                     }
             }
+        }
+    }
+}
+
+/// A card that opens its agent's conversation when clicked. The card holds its own buttons, so it
+/// can't itself be a Button; it's exposed to VoiceOver as one.
+private struct OpensChat: ViewModifier {
+    let agent: Agent
+    let model: AppModel
+
+    func body(content: Content) -> some View {
+        content
+            .contentShape(Rectangle())
+            .onTapGesture { model.openChat(agent) }
+            .accessibilityElement(children: .contain)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(named: "Open conversation") { model.openChat(agent) }
+    }
+}
+
+extension View {
+    fileprivate func opensChat(_ agent: Agent, model: AppModel) -> some View { modifier(OpensChat(agent: agent, model: model)) }
+}
+
+/// Shown while Lantern's engine isn't running normally.
+struct EngineBanner: View {
+    let health: EngineHealth
+
+    var body: some View {
+        let text: String? = switch health {
+        case .ready: nil
+        case .starting: "Starting…"
+        case .restarting: "Lantern's engine stopped. Restarting…"
+        case .failed(let message): message
+        }
+        if let text {
+            Label(text, systemImage: health == .starting ? "hourglass" : "exclamationmark.triangle")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(health == .starting ? Theme.muted : Theme.amber)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.top, 12)
         }
     }
 }
@@ -190,12 +235,18 @@ struct InboxCard: View {
             }
 
             if let question = agent.question {
-                Text(question)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Theme.amber)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(question)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.amber)
+                        .textSelection(.enabled)
+                    if let detail = agent.questionDetail, detail != question {
+                        RequestDetail(detail: detail)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
             }
 
             if let message = agent.lastMessage, !message.isEmpty {
@@ -219,7 +270,8 @@ struct InboxCard: View {
                 SmallButton(title: "Reply", symbol: "arrowshape.turn.up.left") { model.compose(to: agent) }
                 SmallButton(title: "Open", symbol: "arrow.up.forward.app") { model.open(agent) }
                 Spacer()
-                SmallButton(title: "Done", symbol: "checkmark") { model.dismiss(agent) }
+                SmallButton(title: "Dismiss", symbol: "checkmark") { model.dismiss(agent) }
+                    .help("Hide this until @\(agent.handle) has something new")
             }
         }
         .padding(12)
@@ -229,6 +281,29 @@ struct InboxCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(selected || isNew ? Theme.amber.opacity(selected ? 0.6 : 0.3) : Color.clear, lineWidth: 1)
         )
+    }
+}
+
+/// The full request behind a permission prompt (every line of the command), collapsed by default.
+struct RequestDetail: View {
+    let detail: String
+    @State private var shown = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(shown ? "Hide full request" : "Show full request") { shown.toggle() }
+                .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+            if shown {
+                ScrollView {
+                    Text(detail)
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(Theme.ink.opacity(0.9))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 180)
+            }
+        }
     }
 }
 
@@ -247,7 +322,7 @@ struct PermissionButtons: View {
                         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.amber))
                 }
                 .buttonStyle(.plain)
-                .help("Allow once (presses 1 in the agent's terminal)")
+                .help("Allow once: presses 1 in the agent's terminal, if this is still the prompt on screen")
                 Button { model.answerPermission(agent, allow: false) } label: {
                     Label("Deny", systemImage: "xmark").font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.ink)
@@ -321,7 +396,7 @@ struct Composer: View {
                     // Inside a conversation, the recipient is the conversation: choosing another
                     // agent opens its conversation rather than sending there from this one.
                     Button("@\(agent.handle) · \(agent.project ?? "")") {
-                        if model.chatAgentId != nil { model.openChat(agent) } else { model.targetId = agent.id }
+                        if model.chatAgentId != nil { model.openChat(agent) } else { model.readdress(to: agent) }
                     }
                 }
             } label: {
@@ -346,11 +421,13 @@ struct Composer: View {
                     .focused($focused)
                     .onSubmit { model.send() }
                 Button { model.toggleDictation() } label: {
-                    Image(systemName: dictation.isRecording ? "waveform" : "mic")
-                        .foregroundStyle(dictation.isRecording ? Theme.red : Theme.muted)
+                    Image(systemName: dictation.isAuthorizing ? "hourglass" : dictation.isRecording ? "waveform" : "mic")
+                        .foregroundStyle(dictation.isActive ? Theme.red : Theme.muted)
                         .symbolEffect(.variableColor.iterative, isActive: dictation.isRecording)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(dictation.isActive ? "Stop dictation" : "Dictate")
+                .help(dictation.isAuthorizing ? "Waiting for permission to use the microphone. Click to cancel." : "Dictate")
                 Button { model.send() } label: {
                     Image(systemName: model.sending ? "ellipsis.circle" : "arrow.up.circle.fill")
                         .font(.system(size: 18))
@@ -359,12 +436,13 @@ struct Composer: View {
                 .buttonStyle(.plain)
                 .disabled(model.draft.isEmpty || model.target == nil || model.sending)
                 .help(model.sending ? "Sending…" : "Send")
+                .accessibilityLabel("Send")
             }
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(dictation.isRecording ? Theme.red.opacity(0.5) : Theme.stroke, lineWidth: 1)
+                    .stroke(dictation.isActive ? Theme.red.opacity(0.5) : Theme.stroke, lineWidth: 1)
             )
         }
         .padding(.horizontal, 12)

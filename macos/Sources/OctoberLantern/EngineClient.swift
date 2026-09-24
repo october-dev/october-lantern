@@ -12,10 +12,12 @@ enum EngineHealth: Equatable {
 @MainActor
 final class EngineClient {
     /// The protocol this app speaks (protocol/README.md). An engine that says otherwise isn't used.
-    static let protocolVersion = 2
+    static let protocolVersion = 3
 
     var onAgents: (([Agent]) -> Void)?
-    var onReplyResult: ((String, Bool, String?) -> Void)?
+    /// (request id, ok, error code, message). Code "uncertain": typing started but may not have
+    /// gone in.
+    var onReplyResult: ((String, Bool, String?, String?) -> Void)?
     var onInstalled: ((EngineMessage.Installed) -> Void)?
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
@@ -40,7 +42,7 @@ final class EngineClient {
     private var launchedAt = Date()
     private var restartTask: Task<Void, Never>?
 
-    static func engineURL() -> URL? {
+    nonisolated static func engineURL() -> URL? {
         let fm = FileManager.default
         if let env = ProcessInfo.processInfo.environment["LANTERN_ENGINE"], fm.isExecutableFile(atPath: env) {
             return URL(fileURLWithPath: env)
@@ -161,8 +163,10 @@ final class EngineClient {
     }
 
     @discardableResult
-    func keys(requestId: String, agentId: String, keys: [String]) -> Bool {
-        send(["type": "keys", "requestId": requestId, "agentId": agentId, "keys": keys])
+    func keys(requestId: String, agentId: String, keys: [String], promptId: String?) -> Bool {
+        var request: [String: Any] = ["type": "keys", "requestId": requestId, "agentId": agentId, "keys": keys]
+        if let promptId { request["promptId"] = promptId }
+        return send(request)
     }
 
     /// "october.pair", "october.cancelPair" or "october.forget".
@@ -182,6 +186,7 @@ final class EngineClient {
     /// running host the refreshed token.
     @discardableResult func phoneToken(_ accessToken: String) -> Bool { send(["type": "phone.token", "accessToken": accessToken]) }
     @discardableResult func phonePair() -> Bool { send(["type": "phone.pair"]) }
+    @discardableResult func phoneCancelPair() -> Bool { send(["type": "phone.cancelPair"]) }
     @discardableResult func phoneDecide(allow: Bool) -> Bool { send(["type": "phone.decide", "allow": allow]) }
     @discardableResult func phoneRevoke(bind: String) -> Bool { send(["type": "phone.revoke", "bind": bind]) }
     @discardableResult func phoneStop() -> Bool { send(["type": "phone.stop"]) }
@@ -229,7 +234,7 @@ final class EngineClient {
                 switch message {
                 case .hello: break
                 case .snapshot(let agents): onAgents?(agents)
-                case .replyResult(let id, let ok, _, let message): onReplyResult?(id, ok, message)
+                case .replyResult(let id, let ok, let error, let message): onReplyResult?(id, ok, error, message)
                 case .installed(let installed): onInstalled?(installed)
                 case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
                 case .october(let link): onOctober?(link)

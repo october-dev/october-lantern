@@ -89,29 +89,62 @@ enum Support {
         }
     }
 
-    /// Removes the hooks (restoring the agents' settings), Lantern's support files, the login
-    /// item and preferences, then moves the app to the Trash.
-    static func uninstall() {
+    /// Signs out of October (the session leaves the Keychain), stops the phone host and the engine,
+    /// removes the hooks (restoring the agents' settings), Lantern's support files, the login item and
+    /// preferences, then moves the app to the Trash. Every step is checked; if one fails, Lantern
+    /// says which and how to finish by hand, and asks before trashing the app.
+    static func uninstall(model: AppModel) {
         let alert = NSAlert()
         alert.messageText = "Uninstall October Lantern?"
-        alert.informativeText = "This removes Lantern's hooks from Claude Code and Codex (restoring your previous settings), its support files and its settings, then moves the app to the Trash. Your agents and any sessions Lantern started keep running."
+        alert.informativeText = "This signs out of October, removes Lantern's hooks from Claude Code and Codex (restoring your previous settings), its support files and its settings, then moves the app to the Trash. Your agents and any sessions Lantern started keep running. Paired phones aren't removed: they'll show this Mac as offline until you remove it in the October app."
         alert.addButton(withTitle: "Uninstall")
         alert.addButton(withTitle: "Cancel")
         alert.buttons.first?.hasDestructiveAction = true
         NSApp.activate()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        if let engine = EngineClient.engineURL() {
-            let p = Process()
-            p.executableURL = engine
-            p.arguments = ["hooks", "remove-all"]
-            try? p.run()
-            p.waitUntilExit()
-        }
-        try? SMAppService.mainApp.unregister()
-        if let domain = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: domain) }
-        NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, _ in
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+        Task { @MainActor in
+            var failures: [String] = []
+
+            if OctoberAccount.shared.signedIn { OctoberAccount.shared.signOut() }
+            PhoneModel.shared.stop()
+            model.stop()
+
+            let out = await Hooks.run(["hooks", "remove-all"])
+            if let error = out.split(separator: "\n").first(where: { $0.hasPrefix("Error") || $0.hasPrefix("Couldn't") || $0.contains("engine is missing") }) {
+                failures.append("Removing the hooks: \(error). Remove the Lantern entries from ~/.claude/settings.json (\"hooks\") and ~/.codex/config.toml (\"notify\") by hand; backups ending in .lantern-backup-… are next to each file. Then delete ~/Library/Application Support/October Lantern.")
+            }
+            do {
+                if SMAppService.mainApp.status == .enabled { try await SMAppService.mainApp.unregister() }
+            } catch {
+                failures.append("Removing the login item: \(error.localizedDescription). Remove October Lantern in System Settings › General › Login Items.")
+            }
+            if let domain = Bundle.main.bundleIdentifier {
+                UserDefaults.standard.removePersistentDomain(forName: domain)
+                UserDefaults.standard.synchronize()
+            }
+
+            if !failures.isEmpty {
+                let a = NSAlert()
+                a.alertStyle = .warning
+                a.messageText = "Some of Lantern couldn't be removed"
+                a.informativeText = failures.joined(separator: "\n\n")
+                a.addButton(withTitle: "Move App to Trash Anyway")
+                a.addButton(withTitle: "Keep the App")
+                NSApp.activate()
+                guard a.runModal() == .alertFirstButtonReturn else { return }
+            }
+            NSWorkspace.shared.recycle([Bundle.main.bundleURL]) { _, error in
+                DispatchQueue.main.async {
+                    if let error {
+                        let a = NSAlert()
+                        a.messageText = "Couldn't move the app to the Trash"
+                        a.informativeText = "\(error.localizedDescription)\n\nEverything else is removed. Drag October Lantern from Applications to the Trash."
+                        a.runModal()
+                    }
+                    NSApp.terminate(nil)
+                }
+            }
         }
     }
 }

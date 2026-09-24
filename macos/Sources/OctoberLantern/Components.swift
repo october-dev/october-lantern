@@ -196,6 +196,114 @@ func markdown(_ text: String) -> AttributedString {
     )) ?? AttributedString(text)
 }
 
+/// Agent text as blocks: paragraphs (inline Markdown, line breaks kept), bulleted and numbered
+/// lists, headings, and fenced code as monospaced blocks with a Copy button.
+struct MarkdownBlocks: View {
+    let text: String
+    var ink: Color = Theme.ink
+
+    enum Block: Hashable {
+        case paragraph(String)
+        case heading(String)
+        case item(marker: String, text: String)
+        case code(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(Self.parse(text).enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .paragraph(let t):
+                    Text(markdown(t)).font(.system(size: 12.5)).foregroundStyle(ink).textSelection(.enabled)
+                case .heading(let t):
+                    Text(markdown(t)).font(.system(size: 13, weight: .semibold)).foregroundStyle(ink).textSelection(.enabled)
+                case .item(let marker, let t):
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(marker).font(.system(size: 12.5)).foregroundStyle(Theme.muted)
+                        Text(markdown(t)).font(.system(size: 12.5)).foregroundStyle(ink).textSelection(.enabled)
+                    }
+                case .code(let code):
+                    CodeBlock(code: code)
+                }
+            }
+        }
+    }
+
+    static func parse(_ text: String) -> [Block] {
+        var blocks: [Block] = []
+        var paragraph: [String] = []
+        var code: [String]?
+        func flush() {
+            if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: "\n"))) }
+            paragraph = []
+        }
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if var lines = code {
+                if trimmed.hasPrefix("```") {
+                    blocks.append(.code(lines.joined(separator: "\n")))
+                    code = nil
+                } else {
+                    lines.append(line)
+                    code = lines
+                }
+                continue
+            }
+            if trimmed.hasPrefix("```") {
+                flush()
+                code = []
+            } else if trimmed.isEmpty {
+                flush()
+            } else if trimmed.hasPrefix("#") {
+                flush()
+                blocks.append(.heading(String(trimmed.drop(while: { $0 == "#" })).trimmingCharacters(in: .whitespaces)))
+            } else if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("• ") {
+                flush()
+                blocks.append(.item(marker: "•", text: String(trimmed.dropFirst(2))))
+            } else if let dot = trimmed.firstIndex(of: "."), trimmed[..<dot].allSatisfy(\.isNumber), !trimmed[..<dot].isEmpty,
+                      trimmed[trimmed.index(after: dot)...].hasPrefix(" ") {
+                flush()
+                blocks.append(.item(marker: String(trimmed[...dot]), text: String(trimmed[trimmed.index(dot, offsetBy: 2)...])))
+            } else {
+                paragraph.append(line)
+            }
+        }
+        // An unclosed fence (a message cut off mid-block) still shows as code.
+        if let lines = code { blocks.append(.code(lines.joined(separator: "\n"))) }
+        flush()
+        return blocks
+    }
+}
+
+struct CodeBlock: View {
+    let code: String
+    @State private var copied = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.9))
+                    .textSelection(.enabled).fixedSize().padding(8).padding(.trailing, 24)
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+                copied = true
+                Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.muted).frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+            .help("Copy")
+            .accessibilityLabel("Copy code")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.3)))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+    }
+}
+
 /// A hosting view that takes the first click, so buttons work without focusing the panel first.
 final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
