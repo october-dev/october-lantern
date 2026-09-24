@@ -51,7 +51,11 @@ struct NewSessionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            form.padding(.horizontal, 16)
+            ScrollView {
+                form.padding(.horizontal, 16).padding(.bottom, 4)
+            }
+            .frame(maxHeight: max(220, metrics.maxHeight - 150))
+            .fixedSize(horizontal: false, vertical: true)
             footer.padding(.horizontal, 16)
         }
         .padding(.bottom, 16)
@@ -70,15 +74,54 @@ struct NewSessionView: View {
         }
     }
 
-    /// The message first, then one row of agents and one row of options.
+    /// The message first; then the agent, its model, the folder, the context it gets, and where it
+    /// opens, each on its own row.
     private var form: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if app.target != nil, !app.isTerminal { workOnApp }
+        VStack(alignment: .leading, spacing: 12) {
             promptField(task ? "What should it do in \(app.target?.name ?? "this app")?" : "What should it work on? (optional)")
-            agentRow
-            optionRow
-            if screenshotOn { screenshotPreview }
+            section("Agent") { agentRow }
+            if let k = selectedKind { section("Model") { modelRow(k) } }
+            section("Folder") { folderRow }
+            section("Context") {
+                if app.target != nil, !app.isTerminal { workOnApp }
+                screenshotToggle
+                if screenshotOn { screenshotPreview }
+            }
+            section("Open in") {
+                HStack(spacing: 8) {
+                    Choice(title: "Terminal window", symbol: "macwindow", selected: !background) { background = false }
+                    Choice(title: "Background", symbol: "moon", selected: background, disabled: !model.tmuxAvailable) { background = true }
+                }
+                Text(model.tmuxAvailable
+                     ? "Lantern can reply directly to sessions it starts. Background sessions open in Terminal when you click Open."
+                     : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
+                    .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    @ViewBuilder
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+            content()
+        }
+    }
+
+    /// A full-width menu field: icon, value, chevron.
+    private func field(symbol: String, text: String) -> some View {
+        HStack {
+            Image(systemName: symbol)
+            Text(text).lineLimit(1).truncationMode(.middle)
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+        }
+        .font(.system(size: 12.5))
+        .foregroundStyle(Theme.ink.opacity(0.9))
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
+        .contentShape(Rectangle())
     }
 
     // MARK: Agents
@@ -133,17 +176,7 @@ struct NewSessionView: View {
 
     // MARK: Options
 
-    private var optionRow: some View {
-        HStack(spacing: 6) {
-            if let k = selectedKind { modelChip(k) }
-            folderChip
-            screenshotChip
-            openInChip
-            Spacer(minLength: 0)
-        }
-    }
-
-    @ViewBuilder private func modelChip(_ k: AgentKind) -> some View {
+    @ViewBuilder private func modelRow(_ k: AgentKind) -> some View {
         if let list = model.models[k.rawValue] {
             if list.choosable {
                 Menu {
@@ -155,23 +188,23 @@ struct NewSessionView: View {
                     Divider()
                     Button(list.models.count > 25 ? "Search \(list.models.count) models…" : "Other model…") { searchingModels = true }
                 } label: {
-                    Chip(symbol: "cpu", text: modelLabel(list), maxWidth: 88)
+                    field(symbol: "cpu", text: modelLabel(list))
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .help("Model: \(modelLabel(list))")
-                .popover(isPresented: $searchingModels, arrowEdge: .bottom) {
-                    modelSearch(list).padding(10).frame(width: 280)
-                }
+                if searchingModels { modelSearch(list) }
             } else {
-                Chip(symbol: "cpu", text: "Default", maxWidth: 88).opacity(0.6)
-                    .help("\(k.displayName) starts with its own default model.")
+                Text("\(k.displayName) starts with its own default model.").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
             }
         } else {
-            Chip(symbol: "cpu", text: "Model…", maxWidth: 88).opacity(0.6).help("Loading \(k.displayName)'s models…")
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading \(k.displayName)'s models…").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+            }
         }
     }
 
-    private var folderChip: some View {
+    private var folderRow: some View {
         Menu {
             if task, let doc = documentFolder {
                 Button("\(Self.short(doc)) (the document's folder)") { folder = doc }
@@ -181,39 +214,27 @@ struct NewSessionView: View {
             if !model.recentFolders.isEmpty { Divider() }
             Button("Choose Folder…") { chooseFolder() }
         } label: {
-            Chip(symbol: "folder", text: selectedFolder.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "Folder", maxWidth: 100)
+            field(symbol: "folder", text: selectedFolder.map(Self.short) ?? "Choose a folder…")
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .menuStyle(.borderlessButton).menuIndicator(.hidden)
         .help(selectedFolder.map { "Runs in \(Self.short($0))" } ?? "Choose a folder")
     }
 
     /// On: a screenshot of your screen goes with the first message; its preview (and Retake)
-    /// shows under the chips.
-    private var screenshotChip: some View {
-        Button {
-            screenshotOn.toggle()
-            // A plain session's choice is remembered; a task always starts with it on.
-            if !task { prefs.screenshotNewSessions = screenshotOn }
-            if screenshotOn { Task { await shot.capture() } } else { shot.discard() }
-        } label: {
-            Chip(symbol: screenshotOn ? "camera.fill" : "camera", text: nil, active: screenshotOn)
+    /// shows below.
+    private var screenshotToggle: some View {
+        Toggle(isOn: Binding(
+            get: { screenshotOn },
+            set: { on in
+                screenshotOn = on
+                // A plain session's choice is remembered; a task always starts with it on.
+                if !task { prefs.screenshotNewSessions = on }
+                if on { Task { await shot.capture() } } else { shot.discard() }
+            }
+        )) {
+            Text("Include a screenshot of my screen").font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.9))
         }
-        .buttonStyle(.plain)
-        .help(screenshotOn ? "A screenshot of your screen goes with the first message" : "Include a screenshot of your screen")
-        .accessibilityLabel(screenshotOn ? "Screenshot on" : "Screenshot off")
-    }
-
-    private var openInChip: some View {
-        Menu {
-            Button("Terminal window") { background = false }
-            Button("Background (open it later)") { background = true }.disabled(!model.tmuxAvailable)
-        } label: {
-            Chip(symbol: background ? "moon" : "macwindow", text: background ? "Background" : "Terminal", maxWidth: 84)
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help(model.tmuxAvailable
-            ? "Lantern can reply directly to sessions it starts. Background sessions open in Terminal when you click Open."
-            : "Install tmux (brew install tmux) so Lantern can reply directly and run sessions in the background.")
+        .toggleStyle(.switch).controlSize(.small)
     }
 
     /// Always visible, however long the form.

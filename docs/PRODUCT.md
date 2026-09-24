@@ -170,7 +170,7 @@ Lantern is in **beta (v0.3.8)**.
   - `chat_opened`, `agent_opened`, `dictation_started`, `hooks_changed` (on or off).
   - `october_signed_in`, `october_signed_out`, `october_desktop_connected`, `phone_paired`, `engine_failed`.
 
-  Never sent: messages, prompts, commands, folder or project names, file paths, agent titles, or anything typed or dictated. No location is looked up from your IP address. If you sign in to October, your usage is linked to your October account (its id and email). Turning the switch off stops sending and drops anything not yet sent. Builds from source have no PostHog key and send nothing.
+  Never sent: messages, prompts, commands, folder or project names, file paths, agent titles, or anything typed or dictated. PostHog derives an approximate location (country and city) from the IP address the counts arrive from, to show where Lantern is used; it isn't precise and nothing else is used for it. If you sign in to October, your usage is linked to your October account (its id and email). Turning the switch off stops sending and drops anything not yet sent. Builds from source have no PostHog key and send nothing.
 - **October account (optional).** Signing in talks to October's sign-in service (Supabase) and reads your plan from october.dev. The session is kept in the macOS Keychain.
 - **October Desktop (optional).** Lantern talks to October only on your Mac (127.0.0.1), and only after you allow it in October. You can disconnect it from either app.
 - **October phone app (optional).** Traffic goes through October's relay and is end-to-end encrypted (Noise), so the relay can't read it. Phones are paired by QR and can be revoked from Lantern.

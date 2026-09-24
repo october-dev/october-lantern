@@ -71,8 +71,7 @@ final class Analytics {
         #else
             props["arch"] = "x86_64"
         #endif
-        // No location lookup from the IP address.
-        props["$geoip_disable"] = true
+        // PostHog derives an approximate location (country, city) from the IP address it sees.
         queue.append(["event": event, "properties": props, "timestamp": ISO8601DateFormatter().string(from: Date())])
         if queue.count > 200 { queue.removeFirst(queue.count - 200) }
         scheduleFlush(after: queue.count >= 20 ? 1 : 60)
