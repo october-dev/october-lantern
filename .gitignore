@@ -8,3 +8,6 @@
 # Website assets kept locally, not in the repo
 /bg.mp4
 /.claude/
+
+# Private notes, migrations and infrastructure docs (never pushed)
+/_internal/
