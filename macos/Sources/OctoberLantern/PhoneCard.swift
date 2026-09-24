@@ -72,10 +72,14 @@ struct PhoneCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "iphone").font(.system(size: 16)).foregroundStyle(connected ? Theme.green : Theme.muted).frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("October phone app").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+            PhoneArtwork()
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text("October phone app").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.ink)
+                            .lineLimit(1).fixedSize()
+                        StatusPill(text: statusText, color: statusColor)
+                    }
                     Text(detail).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -90,13 +94,21 @@ struct PhoneCard: View {
             }
 
             ForEach(model.state?.devices ?? []) { device in
-                HStack(spacing: 8) {
-                    Image(systemName: "iphone.gen3").foregroundStyle(Theme.muted)
-                    Text(device.label).font(.system(size: 12.5)).foregroundStyle(Theme.ink)
+                HStack(spacing: 10) {
+                    Image(systemName: "iphone.gen3").font(.system(size: 15)).foregroundStyle(connected ? Theme.green : Theme.muted)
+                        .frame(width: 28, height: 28)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.faint))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(device.label).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+                        Text("Paired \(Date(timeIntervalSince1970: device.pairedAt / 1000).formatted(date: .abbreviated, time: .omitted))")
+                            .font(.system(size: 10.5)).foregroundStyle(Theme.muted)
+                    }
                     Spacer()
                     Button("Remove") { model.revoke(device.bind) }
                         .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                 }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
             }
 
             if let message = model.state?.message {
@@ -106,6 +118,28 @@ struct PhoneCard: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.faint))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(connected ? Theme.green.opacity(0.35) : Theme.hairline))
+    }
+
+    private var statusText: String {
+        guard signedIn else { return "Sign in first" }
+        if planAllowsPhone == false || model.state?.status == "plan-required" { return "Upgrade" }
+        if model.state?.pairing != nil { return "Pairing" }
+        if model.state?.status == "error" { return "Problem" }
+        if model.state?.devices.isEmpty ?? true { return "Not paired" }
+        switch model.state?.status {
+        case "connected": return "Connected"
+        case "connecting": return "Connecting"
+        default: return "Offline"
+        }
+    }
+
+    private var statusColor: Color {
+        switch statusText {
+        case "Connected": Theme.green
+        case "Pairing", "Connecting", "Upgrade": Theme.amber
+        case "Problem": Theme.red
+        default: Theme.muted
+        }
     }
 
     private var connected: Bool { model.state?.status == "connected" && !(model.state?.devices.isEmpty ?? true) }
@@ -171,3 +205,37 @@ struct PhoneCard: View {
         return NSImage(cgImage: cg, size: NSSize(width: output.extent.width / 2, height: output.extent.height / 2))
     }
 }
+
+/// The phone app, as October Desktop shows it: three real screens of the app over October's
+/// wallpaper, the outer two tilted.
+private struct PhoneArtwork: View {
+    var body: some View {
+        ZStack {
+            if let wall = Assets.image("october/hero-palace.jpg") {
+                Image(nsImage: wall).resizable().aspectRatio(contentMode: .fill)
+            }
+            LinearGradient(colors: [.clear, .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
+            phone("october/phone-agent-network.jpg").rotationEffect(.degrees(-13)).offset(x: -78, y: 30)
+            phone("october/phone-agent-chat.jpg").rotationEffect(.degrees(13)).offset(x: 78, y: 30)
+            phone("october/phone-dashboard.jpg").offset(y: 14)
+        }
+        .frame(height: 150)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityHidden(true)
+    }
+
+    private func phone(_ path: String) -> some View {
+        Group {
+            if let img = Assets.image(path) {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Color.black
+            }
+        }
+        .frame(width: 74, height: 160)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.black.opacity(0.7), lineWidth: 2.5))
+        .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
+    }
+}
+

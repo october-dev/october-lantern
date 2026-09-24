@@ -153,7 +153,7 @@ private struct Arrow: Shape {
 }
 
 /// A dotted grid, like a design canvas.
-private struct Dots: Shape {
+struct Dots: Shape {
     func path(in r: CGRect) -> Path {
         var p = Path()
         let step: CGFloat = 12
