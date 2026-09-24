@@ -132,7 +132,7 @@ Headless runs (for example `claude -p` or `codex exec` in a script) are ignored 
 
 ## What's true today
 
-Lantern is in **beta (v0.3.1)**.
+Lantern is in **beta (v0.3.2)**.
 
 | Capability | Status |
 |---|---|
@@ -158,7 +158,16 @@ Lantern is in **beta (v0.3.1)**.
 
 ## Privacy
 
-- **Everything stays on your Mac unless you connect to October.** Without an October account, the only network request is the daily update check (a public list of versions on GitHub).
+- **Your code and conversations stay on your Mac unless you connect to October.** Without an October account, Lantern makes two kinds of network request: the daily update check (a public list of versions on GitHub), and anonymous usage counts (below).
+- **Anonymous usage counts (on by default, off in Settings › General or on the welcome screen).** Sent to PostHog (US), a few batched requests a day, so we can count daily and monthly users and see which features are used. Each event carries only its name, a random install id, the app version, the macOS version and the chip type, plus these details:
+  - `lantern_active`, once a day: how many agents of each kind are running (e.g. 3 Claude Code, 1 Codex).
+  - `reply_sent`, `reply_failed`, `reply_uncertain`, `reply_copied`: the agent's kind and how the reply was typed (tmux, cmux, Terminal…).
+  - `permission_answered`: allow or deny, and the route.
+  - `session_started`, `session_start_failed`: the agent's kind, and whether it started in the background.
+  - `chat_opened`, `agent_opened`, `dictation_started`, `hooks_changed` (on or off).
+  - `october_signed_in`, `october_signed_out`, `october_desktop_connected`, `phone_paired`, `engine_failed`.
+
+  Never sent: messages, prompts, commands, folder or project names, file paths, agent titles, or anything typed or dictated. No location is looked up from your IP address. If you sign in to October, your usage is linked to your October account (its id and email). Turning the switch off stops sending and drops anything not yet sent. Builds from source have no PostHog key and send nothing.
 - **October account (optional).** Signing in talks to October's sign-in service (Supabase) and reads your plan from october.dev. The session is kept in the macOS Keychain.
 - **October Desktop (optional).** Lantern talks to October only on your Mac (127.0.0.1), and only after you allow it in October. You can disconnect it from either app.
 - **October phone app (optional).** Traffic goes through October's relay and is end-to-end encrypted (Noise), so the relay can't read it. Phones are paired by QR and can be revoked from Lantern.
@@ -221,7 +230,7 @@ No. Lantern finds agents however you started them, in whatever terminal.
 No. Your agents keep running where they are. Lantern is a lightweight view and remote on top. October Desktop is the full workspace for building with teams of agents.
 
 **Does it send my code or conversations anywhere?**
-No. Everything runs locally; without an October account the only network request is the update check. If you connect a phone through October, replies and agent status travel end-to-end encrypted through October's relay.
+No. Everything runs locally. Without an October account, the only network requests are the update check and anonymous usage counts (feature counts, never content; off in Settings). If you connect a phone through October, replies and agent status travel end-to-end encrypted through October's relay.
 
 **Can it answer permission prompts ("Allow this command?")?**
 Yes, for Claude Code with hooks turned on, when the agent runs in cmux, iTerm2 or tmux. Elsewhere, click **Open** to jump to it. Lantern presses the key only if the prompt is still the one it showed you; if it was answered or replaced in the meantime, it says so and presses nothing.

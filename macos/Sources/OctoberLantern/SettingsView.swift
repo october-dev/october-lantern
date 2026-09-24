@@ -25,6 +25,7 @@ struct SettingsView: View {
 
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var autoUpdate = Updater.shared.automaticallyChecks
+    @State private var shareUsage = Analytics.shared.enabled
 
     private var general: some View {
         Form {
@@ -121,6 +122,14 @@ struct SettingsView: View {
                 }
                 if Updater.shared.available {
                     Button("Check for Updates…") { Updater.shared.checkForUpdates() }
+                }
+            }
+            if Analytics.shared.available {
+                Section {
+                    Toggle("Share anonymous usage counts", isOn: $shareUsage)
+                        .onChange(of: shareUsage) { _, on in Analytics.shared.enabled = on }
+                    Text("How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your account.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             Section("Help") {

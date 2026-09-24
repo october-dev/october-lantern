@@ -39,6 +39,7 @@ final class Hooks: ObservableObject {
         busy = true
         defer { busy = false }
         let out = await Self.run(["hooks", on ? "install" : "uninstall"])
+        Analytics.shared.capture("hooks_changed", ["on": on])
         refresh()
         return out.split(separator: "\n").last.map(String.init) ?? ""
     }

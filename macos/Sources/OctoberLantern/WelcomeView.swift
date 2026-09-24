@@ -103,6 +103,8 @@ struct WelcomeView: View {
         }
     }
 
+    @State private var shareUsage = Analytics.shared.enabled
+
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("A few choices").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
@@ -150,6 +152,13 @@ struct WelcomeView: View {
                             Text(hooks.claude ? "On for Claude Code only" : "On for Codex only").font(.system(size: 11)).foregroundStyle(Theme.muted)
                         }
                     }
+                }
+            }
+            if Analytics.shared.available {
+                SetupRow(symbol: "chart.bar", title: "Share anonymous usage counts",
+                         detail: "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folders. If you sign in to October, counts are linked to your account.") {
+                    Toggle("", isOn: $shareUsage).toggleStyle(.switch).labelsHidden()
+                        .onChange(of: shareUsage) { _, on in Analytics.shared.enabled = on }
                 }
             }
             SetupRow(symbol: "keyboard", title: "Shortcut", detail: "Opens the message box from anywhere.") {

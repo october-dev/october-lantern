@@ -88,6 +88,7 @@ final class OctoberAccount: ObservableObject {
     private init(restore: Bool = true) {
         guard restore else { return }
         session = Keychain.load()
+        if let s = session { Analytics.shared.identify(userId: s.userId, email: s.email) }
         if session != nil {
             Task { await refreshIfNeeded(force: false); await loadPlan() }
         }
@@ -174,6 +175,10 @@ final class OctoberAccount: ObservableObject {
 
     func signOut() {
         let token = session?.accessToken
+        if session != nil {
+            Analytics.shared.capture("october_signed_out")
+            Analytics.shared.forgetUser()
+        }
         cancelSignIn()
         generation += 1
         session = nil
@@ -220,6 +225,8 @@ final class OctoberAccount: ObservableObject {
     private func adopt(_ s: Session) async {
         generation += 1
         session = s
+        Analytics.shared.identify(userId: s.userId, email: s.email)
+        Analytics.shared.capture("october_signed_in")
         store.save(s)
         PhoneModel.shared.token(s.accessToken)
         scheduleRefresh()

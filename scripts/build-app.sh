@@ -52,6 +52,11 @@ cp -R "$ROOT/macos/Resources/." "$APP/Contents/Resources/"
 cp "$ROOT/logo.png" "$APP/Contents/Resources/logo.png"
 ditto "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
+# PostHog project key for usage counts: from $POSTHOG_KEY, else the Keychain item "lantern-posthog".
+# Not in the repo, so builds from source send nothing.
+POSTHOG_KEY="${POSTHOG_KEY:-$(security find-generic-password -s lantern-posthog -w 2>/dev/null || true)}"
+if [[ -n "$POSTHOG_KEY" ]]; then echo "==> usage counts: on (PostHog key found)"; else echo "==> usage counts: off (no PostHog key)"; fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -73,6 +78,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSAppleEventsUsageDescription</key><string>Lantern types your replies into the terminal tab where each agent is running.</string>
   <key>SUFeedURL</key><string>https://raw.githubusercontent.com/harshsaver/october-lantern-releases/main/appcast.xml</string>
   <key>SUPublicEDKey</key><string>TcvtDFVfXw92Ot6tGT+5OKMmGYPg6kcNmRWXsfw0/IQ=</string>
+  <key>PostHogKey</key><string>$POSTHOG_KEY</string>
   <key>SUEnableAutomaticChecks</key><true/>
   <key>SUScheduledCheckInterval</key><integer>86400</integer>
 </dict>

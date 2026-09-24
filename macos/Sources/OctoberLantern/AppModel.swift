@@ -51,6 +51,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var launching = false
     /// Why the last start failed, shown in the New Session form.
     @Published private(set) var launchError: String?
+    private var launchingKind = ""
+    private var launchingInBackground = false
     /// The agent whose conversation is open in the panel, if any.
     @Published private(set) var chatAgentId: String?
     @Published private(set) var chatMessages: [ChatMessage] = []
@@ -103,7 +105,12 @@ final class AppModel: ObservableObject {
             self.chatSupported = supported
             if messages != self.chatMessages { self.chatMessages = messages }
         }
-        engine.onOctober = { [weak self] link in self?.octoberLink = link }
+        engine.onOctober = { [weak self] link in
+            if link.status == "connected", self?.octoberLink?.status != "connected" {
+                Analytics.shared.capture("october_desktop_connected")
+            }
+            self?.octoberLink = link
+        }
         engine.onPhone = { state in PhoneModel.shared.receive(state) }
         PhoneModel.shared.engine = engine
         engine.onInstalled = { [weak self] installed in
@@ -112,7 +119,10 @@ final class AppModel: ObservableObject {
         }
         engine.onReady = { OctoberAccount.shared.engineReady() }
         engine.onStopped = { [weak self] message in self?.engineStopped(message) }
-        engine.onHealth = { [weak self] health in self?.engineHealth = health }
+        engine.onHealth = { [weak self] health in
+            if case .failed = health { Analytics.shared.capture("engine_failed") }
+            self?.engineHealth = health
+        }
         // Dictated text goes to the draft it was started in, whichever conversation is showing.
         dictation.onText = { [weak self] text, owner in self?.drafts.set(text, for: owner) }
         dictation.onError = { [weak self] message in self?.show(message) }
@@ -188,6 +198,7 @@ final class AppModel: ObservableObject {
             chatLoading = true
         }
         if !(panel?.isList ?? false) { panel = .inbox }
+        if chatAgentId != agent.id { Analytics.shared.capture("chat_opened", ["kind": agent.kind.rawValue]) }
         chatAgentId = agent.id
         targetId = agent.id  // the composer switches to this agent's own draft
         engine.history(agentId: agent.id)
@@ -228,6 +239,7 @@ final class AppModel: ObservableObject {
     }
 
     func open(_ agent: Agent) {
+        Analytics.shared.capture("agent_opened", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none"])
         let id = request("f")
         track(id, .focus(agentId: agent.id), sent: engine.focus(requestId: id, agentId: agent.id))
         if let host = agent.host, let app = NSRunningApplication(processIdentifier: host.pid) {
@@ -239,6 +251,7 @@ final class AppModel: ObservableObject {
     /// prompt on screen is no longer the one shown here.
     func answerPermission(_ agent: Agent, allow: Bool) {
         guard let promptId = agent.promptId else { return }
+        Analytics.shared.capture("permission_answered", ["allow": allow, "route": agent.route?.via ?? "none"])
         let id = request("k")
         track(
             id, .keys(agentId: agent.id),
@@ -262,6 +275,7 @@ final class AppModel: ObservableObject {
             NSPasteboard.general.setString(text, forType: .string)
             open(agent)
             show("Copied. Paste into @\(agent.handle) in \(agent.host?.app ?? "its terminal") with ⌘V")
+            Analytics.shared.capture("reply_copied", ["kind": agent.kind.rawValue])
             drafts.sent(ticket)
         }
     }
@@ -285,6 +299,8 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(Array(used.prefix(8)), forKey: "recentFolders")
         launching = true
         launchError = nil
+        launchingKind = kind.rawValue
+        launchingInBackground = background
         let id = request("l")
         track(id, .launch, sent: engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, background: background))
     }
@@ -296,6 +312,7 @@ final class AppModel: ObservableObject {
             compose(to: nil)
             if drafts.recipient == nil, let t = target { drafts.readdress(t.id) }
             dictation.start(prefix: draft, owner: drafts.recipient ?? "")
+            Analytics.shared.capture("dictation_started")
         }
     }
 
@@ -371,6 +388,7 @@ final class AppModel: ObservableObject {
 
     func update(_ fresh: [Agent]) {
         agents = fresh
+        Analytics.shared.dailyActive(kinds: Dictionary(fresh.map { ($0.kind.rawValue, 1) }, uniquingKeysWith: +))
         drafts.prune(keeping: Set(fresh.map(\.id)))
         noticeNewTurns()
         // Keep an open conversation current.
@@ -412,6 +430,11 @@ final class AppModel: ObservableObject {
         switch request {
         case .reply(let ticket):
             let agentId = ticket.recipient
+            let agent = agents.first { $0.id == agentId }
+            Analytics.shared.capture(
+                ok ? "reply_sent" : uncertain ? "reply_uncertain" : "reply_failed",
+                ["kind": agent?.kind.rawValue ?? "unknown", "route": agent?.route?.via ?? "unknown"]
+            )
             if ok {
                 // Only the draft revision that was sent is cleared; anything typed since stays.
                 drafts.sent(ticket)
@@ -442,6 +465,7 @@ final class AppModel: ObservableObject {
         switch request {
         case .launch:
             launching = false
+            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground])
             if ok {
                 panel = .agents
                 show("Session started")

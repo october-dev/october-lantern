@@ -9,7 +9,7 @@ What the website needs for the beta. Product facts come from [product guide](doc
    This link always serves the newest release (0.3.0 is 10.5 MB). Show next to it: "macOS 14 or later · Apple silicon and Intel · Free during the beta".
 2. **Privacy page** (`/privacy`). Use the product guide's Privacy section, which covers:
    - everything stays on the Mac unless you choose to sign in to October; no account is needed
-   - without an October account, the only network request is the daily update check (a public file on GitHub)
+   - without an October account, the only network requests are the daily update check (a public file on GitHub) and anonymous usage counts (feature counts, never content), which are on by default and can be turned off in Settings; the product guide lists every event
    - dictation is on-device only (Lantern refuses rather than sending audio to Apple)
    - there's no screen recording
    - session files are only read, never changed

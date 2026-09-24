@@ -82,11 +82,12 @@ Optional hooks add prompt completion updates for Codex and permission requests f
 
 ## Private by default
 
-Your code and conversations stay on your Mac when you use Lantern on its own. No account is needed. The standalone app's only network request is its update check.
+Your code and conversations stay on your Mac when you use Lantern on its own. No account is needed. On its own, Lantern connects to the internet for two things: its update check, and anonymous usage counts, which you can turn off in Settings.
 
 - **On-device dictation.** Audio stays on your Mac. If your language doesn't support on-device recognition, Lantern tells you.
 - **No screen recording.** Lantern reads supported agents' local session files.
 - **You're in control.** Replies are sent when you choose. Optional hooks can be removed in Settings.
+- **Anonymous usage counts.** How often Lantern and its features are used (e.g. "a reply was sent through tmux"), never content. The [privacy guide](docs/PRODUCT.md#privacy) lists exactly what's sent. Off with one switch in Settings; builds from source send nothing.
 - **Optional October connections.** Signing in and connecting other devices introduces network connections; the [privacy guide](docs/PRODUCT.md#privacy) explains each one.
 
 ## A little Lantern. A bigger October.

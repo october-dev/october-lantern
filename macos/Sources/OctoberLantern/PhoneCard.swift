@@ -39,7 +39,10 @@ final class PhoneModel: ObservableObject {
     /// Set by `AppModel`; the engine hosts the phone connection.
     weak var engine: EngineClient?
 
-    func receive(_ s: State) { state = s }
+    func receive(_ s: State) {
+        if s.devices.count > (state?.devices.count ?? s.devices.count) { Analytics.shared.capture("phone_paired") }
+        state = s
+    }
 
     /// The engine is gone, and with it the host; a new engine reports fresh state after `token`.
     func reset() { state = nil }
