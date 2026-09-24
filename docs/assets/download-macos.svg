@@ -1,0 +1,74 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="260"
+  height="64"
+  viewBox="0 0 260 64"
+  fill="none"
+>
+  <title>Download Lantern for Mac</title>
+  <desc>Apple silicon and Intel</desc>
+  <defs>
+    <linearGradient
+      id="surface"
+      x1="0"
+      y1="0"
+      x2="260"
+      y2="64"
+      gradientUnits="userSpaceOnUse"
+    >
+      <stop stop-color="#303B2F" />
+      <stop offset="1" stop-color="#18231D" />
+    </linearGradient>
+  </defs>
+  <rect
+    x=".5"
+    y=".5"
+    width="259"
+    height="63"
+    rx="15.5"
+    fill="url(#surface)"
+    stroke="#BD9B62"
+  />
+  <path d="M16 1.5h228" stroke="#FFF5DA" stroke-opacity=".16" />
+  <rect
+    x="18"
+    y="19"
+    width="27"
+    height="19"
+    rx="3"
+    stroke="#F6DCAC"
+    stroke-width="1.6"
+  />
+  <path
+    d="M27 44h9m-4.5-6v6"
+    stroke="#F6DCAC"
+    stroke-width="1.6"
+    stroke-linecap="round"
+  />
+  <text
+    x="60"
+    y="29"
+    fill="#FFFAF0"
+    font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif"
+    font-size="16"
+    font-weight="600"
+  >
+    Download for Mac
+  </text>
+  <text
+    x="60"
+    y="46"
+    fill="#D9D2BD"
+    font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif"
+    font-size="10.5"
+  >
+    Apple silicon &amp; Intel
+  </text>
+  <path
+    d="M231 22v16m-5-5 5 5 5-5M224 43h14"
+    stroke="#F3CF71"
+    stroke-width="1.7"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
