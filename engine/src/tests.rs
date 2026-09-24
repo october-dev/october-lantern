@@ -182,6 +182,12 @@ fn hooks_install_uninstall_and_missing_app() {
     let before = fs::read_to_string(home.join(".claude/settings.json")).unwrap();
     assert!(hooks::install().is_err());
     assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap(), before);
+
+    // Codex's folder can't even be created (a file is in the way): same rollback.
+    fs::remove_dir_all(home.join(".codex")).unwrap();
+    fs::write(home.join(".codex"), "not a folder").unwrap();
+    assert!(hooks::install().is_err());
+    assert_eq!(fs::read_to_string(home.join(".claude/settings.json")).unwrap(), before);
 }
 
 #[test]
@@ -489,4 +495,39 @@ fn hook_events_carry_typed_questions() {
     assert_eq!((s.state, s.question_kind, s.since), (Some(State::NeedsInput), Some(QuestionKind::Permission), Some(5)));
     let json = serde_json::to_string(&ev).unwrap();
     assert!(json.contains("\"questionKind\":\"permission\""));
+}
+
+/// Two prompts whose one-line summaries match but whose commands differ are two prompts.
+#[test]
+fn every_permission_request_gets_its_own_prompt_id() {
+    let ask = |command: &str| {
+        let v = serde_json::json!({
+            "hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
+            "tool_input": {"command": command}
+        });
+        hooks::claude_event(&v).unwrap()
+    };
+    let first = ask("cd build\nmake clean");
+    let second = hooks::continue_turn(Some(&first), ask("cd build\nrm -rf ~"));
+    assert_eq!(first.question, second.question, "same summary");
+    assert_ne!(first.prompt_id, second.prompt_id);
+    assert!(second.question_detail.unwrap().contains("rm -rf ~"));
+}
+
+#[test]
+fn helpers_are_bounded_and_drained() {
+    use std::time::{Duration, Instant};
+    // Plenty of output: read while it runs, no false time-out.
+    let out = crate::run::output(Command::new("/bin/sh").args(["-c", "head -c 300000 /dev/zero"]), Duration::from_secs(5)).unwrap();
+    assert_eq!(out.stdout.len(), 300_000);
+    // Too slow: killed at the limit.
+    let t = Instant::now();
+    let e = crate::run::output(Command::new("/bin/sleep").arg("5"), Duration::from_millis(100)).unwrap_err();
+    assert!(e.downcast_ref::<crate::run::TimedOut>().is_some());
+    assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
+    // Exits at once, but leaves a child holding its output open: still ends at the limit.
+    let t = Instant::now();
+    let out = crate::run::output(Command::new("/bin/sh").args(["-c", "echo hi; /bin/sleep 5 & exit 0"]), Duration::from_millis(100)).unwrap();
+    assert!(t.elapsed() < Duration::from_millis(600), "{:?}", t.elapsed());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
 }

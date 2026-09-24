@@ -737,9 +737,7 @@ fn describe(e: &anyhow::Error) -> String {
 }
 
 fn computer_name() -> String {
-    std::process::Command::new("/usr/sbin/scutil")
-        .args(["--get", "ComputerName"])
-        .output()
+    crate::run::output(std::process::Command::new("/usr/sbin/scutil").args(["--get", "ComputerName"]), Duration::from_secs(3))
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
@@ -748,9 +746,7 @@ fn computer_name() -> String {
 }
 
 fn machine_model() -> String {
-    std::process::Command::new("/usr/sbin/sysctl")
-        .args(["-n", "hw.model"])
-        .output()
+    crate::run::output(std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.model"]), Duration::from_secs(3))
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
 }

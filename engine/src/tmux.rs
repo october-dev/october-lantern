@@ -73,12 +73,16 @@ fn sockets(table: &ProcTable) -> BTreeSet<Option<String>> {
     out
 }
 
+/// A tmux server that doesn't answer within this is skipped for this scan.
+const DISCOVER_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 pub fn discover(table: &ProcTable) -> TmuxInfo {
     let mut info = TmuxInfo { panes_by_tty: HashMap::new(), clients: HashMap::new() };
     for socket in sockets(table) {
-        let panes = base_command(&socket)
-            .args(["list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"])
-            .output();
+        let panes = &mut base_command(&socket);
+        let panes = panes
+            .args(["list-panes", "-a", "-F", "#{pane_tty}\t#{pane_id}\t#{session_name}:#{window_index}.#{pane_index}"]);
+        let panes = crate::run::output(panes, DISCOVER_LIMIT);
         if let Ok(out) = panes {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 let parts: Vec<&str> = line.split('\t').collect();
@@ -90,7 +94,7 @@ pub fn discover(table: &ProcTable) -> TmuxInfo {
                     .insert(tty, TmuxPane { socket: socket.clone(), pane_id: parts[1].to_string(), target: parts[2].to_string() });
             }
         }
-        let clients = base_command(&socket).args(["list-clients", "-F", "#{client_pid}\t#{session_name}"]).output();
+        let clients = crate::run::output(base_command(&socket).args(["list-clients", "-F", "#{client_pid}\t#{session_name}"]), DISCOVER_LIMIT);
         if let Ok(out) = clients {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Some((pid, session)) = line.split_once('\t')

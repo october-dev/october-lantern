@@ -62,7 +62,7 @@ pub mod opencode {
             return Vec::new();
         }
         let uri = format!("file:{}?mode=ro", db.display());
-        let out = Command::new("/usr/bin/sqlite3").args(["-json", "-readonly", &uri, sql]).output();
+        let out = crate::run::output(Command::new("/usr/bin/sqlite3").args(["-json", "-readonly", &uri, sql]), std::time::Duration::from_secs(3));
         match out {
             Ok(o) if o.status.success() => serde_json::from_slice(&o.stdout).unwrap_or_default(),
             _ => Vec::new(),

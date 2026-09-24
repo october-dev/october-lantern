@@ -219,7 +219,7 @@ pub(crate) fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
 }
 
 fn codex_open_rollout(pid: u32) -> Option<PathBuf> {
-    let out = Command::new("/usr/sbin/lsof").args(["-p", &pid.to_string(), "-Fn"]).output().ok()?;
+    let out = crate::run::output(Command::new("/usr/sbin/lsof").args(["-p", &pid.to_string(), "-Fn"]), Duration::from_secs(3)).ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| l.strip_prefix('n'))

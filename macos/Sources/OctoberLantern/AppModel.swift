@@ -78,7 +78,12 @@ final class AppModel: ObservableObject {
     /// When each pending request was sent; unanswered after `requestDeadline`, it fails.
     private var pendingSince: [String: Date] = [:]
     private var deadlineTask: Task<Void, Never>?
-    static let requestDeadline: TimeInterval = 20
+    /// Longer than the engine can take to answer a reply (15 s to start typing, then time-limited
+    /// helpers), so a timeout here means the engine is stuck, not merely slow.
+    static let requestDeadline: TimeInterval = 60
+    /// Replies and keys the engine didn't answer in time. It may still have typed them, so a late
+    /// answer is still applied (and a late "sent" clears the draft).
+    private var overdue: [String: Pending] = [:]
     /// Starting a session may wait for the agent to come up before typing its first message.
     static let launchDeadline: TimeInterval = 45
     private let prefs = Preferences.shared
@@ -315,10 +320,10 @@ final class AppModel: ObservableObject {
 
     /// Records a request as waiting for the engine's answer. One the engine couldn't be given fails
     /// straight away; one it never answers fails after `requestDeadline`.
-    private func track(_ id: String, _ op: Pending, sent: Bool) {
+    func track(_ id: String, _ op: Pending, sent: Bool) {
         pending[id] = op
         guard sent else {
-            fail(id, "Lantern's engine isn't running.")
+            fail(id, "Lantern's engine isn't running.", reached: false)
             return
         }
         pendingSince[id] = Date()
@@ -330,17 +335,31 @@ final class AppModel: ObservableObject {
                     let limit = if case .launch = self.pending[id] { Self.launchDeadline } else { Self.requestDeadline }
                     return -since.timeIntervalSinceNow > limit
                 }.keys
-                for id in late { self.fail(id, "no answer from Lantern's engine") }
+                for id in late { self.expire(id) }
             }
             self?.deadlineTask = nil
         }
     }
 
-    private func fail(_ id: String, _ message: String) {
+    /// `reached`: the engine had the request, so a reply or key may have been typed after all.
+    private func fail(_ id: String, _ message: String, reached: Bool) {
         switch pending[id] {
-        case .reply, .keys: replyFinished(id, ok: false, uncertain: false, message: message)
+        case .reply, .keys: replyFinished(id, ok: false, uncertain: reached, message: message)
         case .launch, .focus: actionFinished(id, ok: false, message: message)
         case nil: pendingSince[id] = nil
+        }
+    }
+
+    /// No answer in time. A reply or key isn't reported as failed (that would invite sending it
+    /// twice): it's uncertain, and a late answer is still applied.
+    func expire(_ id: String) {
+        guard let op = pending[id] else { return pendingSince[id] = nil }
+        switch op {
+        case .reply, .keys:
+            fail(id, "no answer from Lantern's engine yet. It may still type it: check the terminal before sending again", reached: true)
+            overdue[id] = op
+        case .launch, .focus:
+            fail(id, "no answer from Lantern's engine", reached: true)
         }
     }
 
@@ -350,7 +369,7 @@ final class AppModel: ObservableObject {
 
     // MARK: Engine events
 
-    private func update(_ fresh: [Agent]) {
+    func update(_ fresh: [Agent]) {
         agents = fresh
         drafts.prune(keeping: Set(fresh.map(\.id)))
         noticeNewTurns()
@@ -382,8 +401,13 @@ final class AppModel: ObservableObject {
         knownTurns = Set(waiting.map(\.turnKey))
     }
 
-    private func replyFinished(_ requestId: String, ok: Bool, uncertain: Bool, message: String?) {
+    func replyFinished(_ requestId: String, ok: Bool, uncertain: Bool, message: String?) {
         pendingSince[requestId] = nil
+        if let late = overdue.removeValue(forKey: requestId), case .reply(let ticket) = late {
+            if ok { drafts.sent(ticket) }
+            show(ok ? "Sent to @\(handle(ticket.recipient)) after all" : "@\(handle(ticket.recipient)): \(message ?? "not sent")")
+            return
+        }
         guard let request = pending.removeValue(forKey: requestId) else { return }
         switch request {
         case .reply(let ticket):
@@ -432,13 +456,25 @@ final class AppModel: ObservableObject {
     }
 
     /// The engine is gone: nothing outstanding will be answered, and nothing it reported is current.
-    private func engineStopped(_ message: String) {
+    func engineStopped(_ message: String) {
+        // Replies it was typing may or may not have gone in; drafts stay (including other
+        // conversations': the agents come back with the same ids in the next snapshot).
+        let unsure = pending.values.compactMap { op -> String? in
+            switch op {
+            case .reply(let ticket): ticket.recipient
+            case .keys(let agentId): agentId
+            default: nil
+            }
+        }
+        let names = unsure.map { "@\(handle($0))" }.joined(separator: ", ")
         pending.removeAll()
         pendingSince.removeAll()
+        overdue.removeAll()
         launching = false
         firstSnapshot = true
-        update([])
+        agents = []
+        closeChat()
         PhoneModel.shared.reset()
-        show(message)
+        show(unsure.isEmpty ? message : "\(message) Check \(names): what was being sent may or may not have gone in.")
     }
 }

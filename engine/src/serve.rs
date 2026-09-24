@@ -19,7 +19,7 @@ use crate::scanner::Scanner;
 
 const SCAN_EVERY: Duration = Duration::from_millis(1500);
 const HEARTBEAT: Duration = Duration::from_secs(10);
-/// Typing for the app must start within this (the app gives up waiting after 20 s).
+/// Typing for the app must start within this (the app waits 60 s for the whole outcome).
 const APP_DEADLINE: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]

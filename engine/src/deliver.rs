@@ -17,8 +17,8 @@
 //! remains is the time one `tmux`/`osascript` call takes to start. Every call has a time limit: a
 //! send that runs out of time after it started is reported as uncertain, not as failed.
 
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
@@ -201,27 +201,13 @@ fn host_name(agent: &Agent) -> String {
     agent.host.as_ref().map(|h| h.app.clone()).unwrap_or_else(|| "this terminal".into())
 }
 
-/// Runs a command with a time limit. Running out of time kills it and, for a command that types
-/// (`typing`), is an `Uncertain` error: some of it may have gone in.
+/// Runs a command with a time limit (see `run.rs`). Running out of time, for a command that
+/// types (`typing`), is an `Uncertain` error: some of it may have gone in.
 pub fn output_within(cmd: &mut Command, limit: Duration, typing: bool) -> Result<Output> {
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().context("starting a helper")?;
-    let started = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            return Ok(child.wait_with_output()?);
-        }
-        if started.elapsed() >= limit {
-            let _ = child.kill();
-            let _ = child.wait();
-            let msg = format!("gave up after {} s", limit.as_secs());
-            return Err(if typing {
-                Uncertain(format!("{msg}; the message may or may not have gone in")).into()
-            } else {
-                anyhow::anyhow!(msg)
-            });
-        }
-        std::thread::sleep(Duration::from_millis(15));
-    }
+    crate::run::output(cmd, limit).map_err(|e| match e.downcast_ref::<crate::run::TimedOut>() {
+        Some(t) if typing => Uncertain(format!("{t}; the message may or may not have gone in")).into(),
+        _ => e,
+    })
 }
 
 fn cmux(args: &[&str]) -> Result<()> {

@@ -148,13 +148,13 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, mode: Mode) -> Resul
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
     let session = format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000);
-    let status = Command::new(tmux::tmux_bin())
+    let status = &mut Command::new(tmux::tmux_bin());
+    let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
-        .arg(agent_command(kind, cwd, prompt))
-        .status()
-        .context("starting tmux")?;
-    if !status.success() {
+        .arg(agent_command(kind, cwd, prompt));
+    let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
+    if !out.status.success() {
         bail!("tmux couldn't start the session");
     }
 

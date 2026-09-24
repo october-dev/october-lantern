@@ -88,9 +88,15 @@ fn write_event(ev: &HookEvent) -> Result<()> {
 
 /// Claude repeats itself: `Stop` and, a minute later, an idle reminder describe the same finished
 /// turn; a permission prompt is announced by `PermissionRequest` and again by a notification. A
-/// repeat keeps the earlier event's time and prompt id, so it doesn't become a new turn.
+/// repeat keeps the earlier event's time, so it doesn't become a new turn. A permission request
+/// is never a repeat (see below).
 pub(crate) fn continue_turn(prev: Option<&HookEvent>, mut ev: HookEvent) -> HookEvent {
     let Some(prev) = prev else { return ev };
+    // Every PermissionRequest is a new prompt, even for a command that looks the same: its
+    // prompt id must never identify an earlier request.
+    if ev.prompt_id.is_some() {
+        return ev;
+    }
     let same = ev.source == "claude"
         && prev.state == ev.state
         && prev.question_kind == ev.question_kind
@@ -392,10 +398,12 @@ fn write_both(changes: &[(PathBuf, Vec<u8>)]) -> Result<()> {
         backup(path)?;
     }
     for (i, (path, bytes)) in changes.iter().enumerate() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
+        let written = match path.parent() {
+            Some(parent) => fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display())),
+            None => Ok(()),
         }
-        if let Err(e) = write_atomic(path, bytes) {
+        .and_then(|_| write_atomic(path, bytes));
+        if let Err(e) = written {
             for (j, (done, _)) in changes.iter().enumerate().take(i) {
                 let restored = match &originals[j] {
                     Some(old) => write_atomic(done, old),

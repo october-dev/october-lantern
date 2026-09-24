@@ -17,6 +17,7 @@ mod october_core;
 mod october_link;
 mod procs;
 mod readers;
+mod run;
 mod scanner;
 mod serve;
 #[cfg(test)]
