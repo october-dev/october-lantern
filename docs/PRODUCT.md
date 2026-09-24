@@ -74,7 +74,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Agents:** every running agent, the ones that need you first, with logo, handle, folder, terminal and status (*Needs you*, *Your turn*, *Working*, *Idle*, *Running*).
 - **Chat:** click any agent to slide into its conversation. Your messages appear on the right in amber bubbles, the agent's replies on the left in glass bubbles, and each command it ran as a one-line entry ("Run · npm test"). It updates live.
 - **Composer** at the bottom: "To @claude-2", a message field, a mic button and a send button.
-- **New session:** a grid of the agents installed on this Mac, a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Context** (include a screenshot of your screen, with a preview and Retake), **Open in** *Terminal window* or *Background*, and **Start**.
+- **New session:** a grid of the agents installed on this Mac, a **Model** menu (Default, the models the agent offers, a search for long lists such as October's, or any model id you type; the last choice per agent is remembered), a folder picker (recent folders, folders agents are running in, or "Choose Folder…"), an optional first message, **Context** (include a screenshot of your screen, with a preview and Retake), **Open in** *Terminal window* or *Background*, and **Start**.
 - **October:** three cards. **Connect to October** signs in (Google, GitHub, Apple or email) and then shows the account and plan. **Connect to October Desktop** shows whether October is running, and once you click **Connect** and allow Lantern in October (matching a 6-digit code), it's fully connected. **October phone app** pairs a phone by QR after you sign in, then lists paired phones with Revoke.
 
 **Welcome.** The first launch shows a short, four-page welcome:
@@ -163,7 +163,7 @@ Lantern is in **beta (v0.3.3)**.
   - `lantern_active`, once a day: how many agents of each kind are running (e.g. 3 Claude Code, 1 Codex).
   - `reply_sent`, `reply_failed`, `reply_uncertain`, `reply_copied`: the agent's kind and how the reply was typed (tmux, cmux, Terminal…).
   - `permission_answered`: allow or deny, and the route.
-  - `session_started`, `session_start_failed`: the agent's kind, and whether it started in the background.
+  - `session_started`, `session_start_failed`: the agent's kind, the model id chosen (or "default"), whether it started in the background, and whether a screenshot was included.
   - `chat_opened`, `agent_opened`, `dictation_started`, `hooks_changed` (on or off).
   - `october_signed_in`, `october_signed_out`, `october_desktop_connected`, `phone_paired`, `engine_failed`.
 

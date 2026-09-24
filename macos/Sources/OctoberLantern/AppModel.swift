@@ -49,11 +49,14 @@ final class AppModel: ObservableObject {
     @Published private(set) var installedKinds: [AgentKind]?
     @Published private(set) var tmuxAvailable = false
     @Published private(set) var launching = false
+    /// Models each agent can start with, by kind, once the engine has listed them.
+    @Published private(set) var models: [String: EngineMessage.ModelList] = [:]
     /// Why the last start failed, shown in the New Session form.
     @Published private(set) var launchError: String?
     private var launchingKind = ""
     private var launchingInBackground = false
     private var launchingWithScreenshot = false
+    private var launchingModel = "default"
     /// The agent whose conversation is open in the panel, if any.
     @Published private(set) var chatAgentId: String?
     @Published private(set) var chatMessages: [ChatMessage] = []
@@ -114,6 +117,7 @@ final class AppModel: ObservableObject {
         }
         engine.onPhone = { state in PhoneModel.shared.receive(state) }
         PhoneModel.shared.engine = engine
+        engine.onModels = { [weak self] list in self?.models[list.kind.rawValue] = list }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
             self?.tmuxAvailable = installed.tmux
@@ -294,7 +298,18 @@ final class AppModel: ObservableObject {
     }
 
     /// `screenshot`: a saved screenshot (ScreenCapture.save) the agent gets with its first message.
-    func launch(kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, background: Bool) {
+    /// Asks the engine which models `kind` offers (it answers from a cache after the first time).
+    func loadModels(_ kind: AgentKind) { engine.models(kind: kind) }
+
+    /// The model last chosen for each agent; nil is the agent's own default.
+    func lastModel(_ kind: AgentKind) -> String? {
+        (UserDefaults.standard.dictionary(forKey: "lastModels") as? [String: String])?[kind.rawValue]
+    }
+
+    func launch(kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, model: String? = nil, background: Bool) {
+        var last = UserDefaults.standard.dictionary(forKey: "lastModels") as? [String: String] ?? [:]
+        last[kind.rawValue] = model
+        UserDefaults.standard.set(last, forKey: "lastModels")
         var used = UserDefaults.standard.stringArray(forKey: "recentFolders") ?? []
         used.removeAll { $0 == folder }
         used.insert(folder, at: 0)
@@ -304,10 +319,13 @@ final class AppModel: ObservableObject {
         launchingKind = kind.rawValue
         launchingInBackground = background
         launchingWithScreenshot = screenshot != nil
+        launchingModel = model ?? "default"
         let id = request("l")
         track(
             id, .launch,
-            sent: engine.launch(requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, background: background)
+            sent: engine.launch(
+                requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, background: background
+            )
         )
     }
 
@@ -471,7 +489,7 @@ final class AppModel: ObservableObject {
         switch request {
         case .launch:
             launching = false
-            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot])
+            Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot, "model": launchingModel])
             if ok {
                 panel = .agents
                 show("Session started")

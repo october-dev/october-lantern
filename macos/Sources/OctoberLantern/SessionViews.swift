@@ -30,6 +30,10 @@ struct NewSessionView: View {
     @State private var folder: String?
     @State private var prompt = ""
     @State private var background = false
+    /// nil: the agent's own default model.
+    @State private var chosenModel: String?
+    @State private var searchingModels = false
+    @State private var modelQuery = ""
     @ObservedObject private var prefs = Preferences.shared
     @ObservedObject private var shot = ScreenCapture.shared
     /// Why the last start failed, shown above the Start button (the form keeps what you typed).
@@ -52,6 +56,8 @@ struct NewSessionView: View {
             // The screen as it is when you open New Session (Lantern's own windows left out).
             if prefs.screenshotNewSessions { await shot.capture() }
         }
+        .onAppear { kindChanged() }
+        .onChange(of: selectedKind) { kindChanged() }
         .onChange(of: model.launching) { was, now in
             // A start that succeeded moves to the Agents list; one that failed leaves us here.
             if was && !now && model.panel == .newSession {
@@ -82,6 +88,8 @@ struct NewSessionView: View {
                     }
                 }
             }
+
+            if let k = selectedKind { section("Model") { modelPicker(k) } }
 
             section("Folder") {
                 Menu {
@@ -203,6 +211,103 @@ struct NewSessionView: View {
         }
     }
 
+    /// A new agent picked: load its models and start from the model used with it last time.
+    private func kindChanged() {
+        guard let k = selectedKind else { return }
+        model.loadModels(k)
+        chosenModel = model.lastModel(k)
+        searchingModels = false
+        modelQuery = ""
+    }
+
+    @ViewBuilder
+    private func modelPicker(_ k: AgentKind) -> some View {
+        if let list = model.models[k.rawValue] {
+            if !list.choosable {
+                Text("\(k.displayName) starts with its own default model.").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Menu {
+                        Button("Default") { chosenModel = nil; searchingModels = false }
+                        if !list.models.isEmpty && list.models.count <= 25 {
+                            Divider()
+                            ForEach(list.models, id: \.id) { m in Button(m.label) { chosenModel = m.id; searchingModels = false } }
+                        }
+                        Divider()
+                        Button(list.models.count > 25 ? "Search \(list.models.count) models…" : "Other model…") { searchingModels = true }
+                    } label: {
+                        fieldLabel(symbol: "cpu", text: modelLabel(list))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    if searchingModels { modelSearch(list) }
+                }
+            }
+        } else {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading \(k.displayName)'s models…").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+            }
+        }
+    }
+
+    private func modelLabel(_ list: EngineMessage.ModelList) -> String {
+        guard let chosenModel else { return "Default" }
+        return list.models.first { $0.id == chosenModel }.map { m in m.group.map { "\(m.label) · \($0)" } ?? m.label } ?? chosenModel
+    }
+
+    /// Type to filter the agent's models, or use exactly what you typed.
+    private func modelSearch(_ list: EngineMessage.ModelList) -> some View {
+        let query = modelQuery.trimmingCharacters(in: .whitespaces)
+        let matches = query.isEmpty ? Array(list.models.prefix(6))
+            : Array(list.models.filter { $0.id.localizedCaseInsensitiveContains(query) || $0.label.localizedCaseInsensitiveContains(query) }.prefix(8))
+        return VStack(alignment: .leading, spacing: 2) {
+            TextField("Model name or id", text: $modelQuery)
+                .textFieldStyle(.plain).font(.system(size: 12.5))
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.faint))
+                .onSubmit { if !query.isEmpty { pickModel(matches.first { $0.id == query }?.id ?? query) } }
+            ForEach(matches, id: \.id) { m in
+                Button { pickModel(m.id) } label: {
+                    HStack {
+                        Text(m.label).foregroundStyle(Theme.ink.opacity(0.9)).lineLimit(1)
+                        Spacer()
+                        if let g = m.group { Text(g).foregroundStyle(Theme.muted) }
+                    }
+                    .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 4).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if !query.isEmpty && !list.models.contains(where: { $0.id == query }) {
+                Button { pickModel(query) } label: {
+                    Text("Use “\(query)”").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func pickModel(_ id: String) {
+        chosenModel = id
+        searchingModels = false
+        modelQuery = ""
+    }
+
+    private func fieldLabel(symbol: String, text: String) -> some View {
+        HStack {
+            Image(systemName: symbol)
+            Text(text).lineLimit(1).truncationMode(.middle)
+            Spacer()
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold))
+        }
+        .font(.system(size: 12.5))
+        .foregroundStyle(Theme.ink.opacity(0.9))
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.faint))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.hairline))
+    }
+
     private var selectedKind: AgentKind? { kind ?? model.installedKinds?.first }
     private var selectedFolder: String? { folder ?? model.recentFolders.first }
     /// A screenshot that's on must be ready (or failed, which the form shows) before starting.
@@ -222,7 +327,8 @@ struct NewSessionView: View {
             screenshot = saved
         }
         // The prompt stays until the session has started (a success closes this panel).
-        model.launch(kind: k, folder: f, prompt: prompt, screenshot: screenshot, background: background)
+        let chosen = model.models[k.rawValue]?.choosable == true ? chosenModel : nil
+        model.launch(kind: k, folder: f, prompt: prompt, screenshot: screenshot, model: chosen, background: background)
     }
 
     private func chooseFolder() {

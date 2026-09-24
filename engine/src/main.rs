@@ -13,6 +13,7 @@ mod hooks;
 mod launch;
 mod mobile;
 mod model;
+mod models;
 mod october_core;
 mod october_link;
 mod procs;

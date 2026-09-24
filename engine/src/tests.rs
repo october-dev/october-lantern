@@ -545,13 +545,33 @@ fn new_sessions_carry_the_screenshot() {
     assert!(first_message(None, Some(shot)).unwrap().contains("wait for my instructions"));
     assert_eq!(first_message(Some("hi"), None).as_deref(), Some("hi"));
 
-    let codex = agent_command(Kind::Codex, Path::new("/p"), Some(&msg), Some(shot));
+    let codex = agent_command(Kind::Codex, Path::new("/p"), Some(&msg), Some(shot), None);
     let (flags, prompt) = codex.split_once(" -- ").unwrap();
     assert!(flags.contains("--image") && flags.contains("s1.png"), "{codex}");
     assert!(prompt.contains("fix the layout"));
-    let claude = agent_command(Kind::Claude, Path::new("/p"), Some(&msg), Some(shot));
+    let claude = agent_command(Kind::Claude, Path::new("/p"), Some(&msg), Some(shot), None);
     assert!(claude.split_once(" -- ").unwrap().0.contains("--add-dir"), "{claude}");
-    let gemini = agent_command(Kind::Gemini, Path::new("/p"), Some(&msg), Some(shot));
+    let gemini = agent_command(Kind::Gemini, Path::new("/p"), Some(&msg), Some(shot), None);
     assert!(gemini.contains("--include-directories"));
-    assert!(!agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None).contains("--add-dir"));
+    assert!(!agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None, None).contains("--add-dir"));
+}
+
+#[test]
+fn models_are_listed_and_passed() {
+    use crate::models::{parse_bullets, parse_codex, parse_slashed, parse_table, valid};
+    let codex = r#"{"models":[{"slug":"gpt-b","display_name":"GPT B","visibility":"list","priority":2},
+        {"slug":"hidden","visibility":"hide","priority":0},{"slug":"gpt-a","display_name":"GPT A","visibility":"list","priority":1}]}"#;
+    let ids: Vec<String> = parse_codex(codex).into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, ["gpt-a", "gpt-b"]);
+    let grok = "Default model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.6\n";
+    assert_eq!(parse_bullets(grok).len(), 2);
+    let table = "provider    model     context  max-out\nopenrouter  ~anthropic/claude-opus-latest  1M  128K\n";
+    let t = parse_table(table);
+    assert_eq!((t.len(), t[0].id.as_str(), t[0].group.as_deref()), (1, "openrouter/~anthropic/claude-opus-latest", Some("openrouter")));
+    assert_eq!(parse_slashed("opencode/big-pickle\nnoise line\n").len(), 1);
+    assert!(valid("claude-opus-5-5[1m]") && valid("sonnet") && !valid("--dangerous") && !valid("a b") && !valid("x;rm"));
+
+    let cmd = crate::launch::agent_command(Kind::Claude, std::path::Path::new("/p"), Some("hi"), None, Some("opus"));
+    let (flags, _) = cmd.split_once(" -- ").unwrap();
+    assert!(flags.contains("--model") && flags.contains("opus"), "{cmd}");
 }

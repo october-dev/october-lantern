@@ -40,7 +40,13 @@ enum Request {
         prompt: Option<String>,
         /// A screenshot the app saved for this session (in the screenshots folder).
         screenshot: Option<String>,
+        /// A model id for the agent's `--model`; absent for the agent's own default.
+        model: Option<String>,
         background: bool,
+    },
+    /// The models to offer when starting `kind` (answered with `models`).
+    Models {
+        kind: Kind,
     },
     #[serde(rename_all = "camelCase")]
     History {
@@ -206,12 +212,19 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, background }) => {
+                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, background }) => {
                     // Off the loop: it may wait for the agent to start before typing its first message.
                     std::thread::spawn(move || {
                         let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
                         let screenshot = screenshot.map(std::path::PathBuf::from);
-                        match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), screenshot.as_deref(), mode) {
+                        match launch::launch(
+                            kind,
+                            std::path::Path::new(&cwd),
+                            prompt.as_deref(),
+                            screenshot.as_deref(),
+                            model.as_deref(),
+                            mode,
+                        ) {
                             Ok(l) => emit(&json!({"type": "launchResult", "requestId": request_id, "ok": true, "session": l.session})),
                             Err(e) => {
                                 emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}))
@@ -219,6 +232,14 @@ pub fn run() -> Result<()> {
                         }
                     });
                     next_scan = Instant::now() + Duration::from_millis(1500);
+                }
+                Ok(Request::Models { kind }) => {
+                    // Listing runs the agent's own command; off the loop.
+                    std::thread::spawn(move || {
+                        let models = crate::models::list(kind);
+                        let choosable = crate::models::flag(kind).is_some();
+                        emit(&json!({"type": "models", "kind": kind, "choosable": choosable, "models": models}));
+                    });
                 }
                 Ok(Request::History { request_id, agent_id }) => {
                     let messages = agents.iter().find(|a| a.id == agent_id).and_then(|a| scanner.history(a));

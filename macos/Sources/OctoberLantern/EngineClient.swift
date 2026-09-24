@@ -19,6 +19,7 @@ final class EngineClient {
     /// gone in.
     var onReplyResult: ((String, Bool, String?, String?) -> Void)?
     var onInstalled: ((EngineMessage.Installed) -> Void)?
+    var onModels: ((EngineMessage.ModelList) -> Void)?
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
     var onPhone: ((PhoneModel.State) -> Void)?
@@ -153,10 +154,16 @@ final class EngineClient {
     }
 
     @discardableResult
-    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, background: Bool) -> Bool {
+    func launch(requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, model: String?, background: Bool) -> Bool {
         var request: [String: Any] = ["type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background]
         if let screenshot { request["screenshot"] = screenshot }
+        if let model { request["model"] = model }
         return send(request)
+    }
+
+    @discardableResult
+    func models(kind: AgentKind) -> Bool {
+        send(["type": "models", "kind": kind.rawValue])
     }
 
     @discardableResult
@@ -238,6 +245,7 @@ final class EngineClient {
                 case .snapshot(let agents): onAgents?(agents)
                 case .replyResult(let id, let ok, let error, let message): onReplyResult?(id, ok, error, message)
                 case .installed(let installed): onInstalled?(installed)
+                case .models(let list): onModels?(list)
                 case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)

@@ -140,12 +140,27 @@ enum EngineMessage: Decodable {
     case snapshot(agents: [Agent])
     case replyResult(requestId: String, ok: Bool, error: String?, message: String?)
     case installed(Installed)
+    case models(ModelList)
     case launchResult(requestId: String, ok: Bool, message: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
     case history(agentId: String, supported: Bool, messages: [ChatMessage])
     case october(OctoberLink)
     case phone(PhoneModel.State)
     case other
+
+    /// The models an agent can start with (see engine/src/models.rs). `choosable` is false for
+    /// agents whose model option Lantern doesn't know.
+    struct ModelList: Decodable, Equatable {
+        let kind: AgentKind
+        let choosable: Bool
+        let models: [ModelOption]
+    }
+
+    struct ModelOption: Decodable, Hashable {
+        let id: String
+        let label: String
+        let group: String?
+    }
 
     struct Installed: Decodable {
         let kinds: [AgentKind]
@@ -183,6 +198,8 @@ enum EngineMessage: Decodable {
                 supported: try c.decode(Bool.self, forKey: .supported),
                 messages: try c.decode([ChatMessage].self, forKey: .messages)
             )
+        case "models":
+            self = .models(try ModelList(from: decoder))
         case "installed":
             self = .installed(try c.decode(Installed.self, forKey: .installed))
         case "launchResult", "attachResult":

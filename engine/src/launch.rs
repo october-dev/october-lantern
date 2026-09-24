@@ -50,7 +50,7 @@ pub fn program(kind: Kind) -> &'static str {
     }
 }
 
-fn shell() -> String {
+pub(crate) fn shell() -> String {
     std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into())
 }
 
@@ -116,8 +116,11 @@ pub fn first_message(prompt: Option<&str>, screenshot: Option<&Path>) -> Option<
     }
 }
 
-pub(crate) fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>) -> String {
+pub(crate) fn agent_command(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>, model: Option<&str>) -> String {
     let mut cmd = format!("cd {} && exec {}", quote(&cwd.to_string_lossy()), program(kind));
+    if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
+        cmd.push_str(&format!(" {flag} {}", quote(m)));
+    }
     // Let the agent read the screenshot without asking (it's outside the project), or attach it.
     if let Some(s) = screenshot {
         let dir = quote(&s.parent().unwrap_or(s).to_string_lossy());
@@ -151,7 +154,14 @@ fn open_in_terminal(name: &str, script: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&Path>, mode: Mode) -> Result<Launched> {
+pub fn launch(
+    kind: Kind,
+    cwd: &Path,
+    prompt: Option<&str>,
+    screenshot: Option<&Path>,
+    model: Option<&str>,
+    mode: Mode,
+) -> Result<Launched> {
     if !cwd.is_dir() {
         bail!("{} is not a folder", cwd.display());
     }
@@ -162,6 +172,15 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&
         let inside = s.canonicalize().ok().zip(screenshots_dir().canonicalize().ok()).is_some_and(|(s, dir)| s.starts_with(dir));
         if !inside || !s.is_file() {
             bail!("the screenshot wasn't saved; try again");
+        }
+    }
+    let model = model.map(str::trim).filter(|m| !m.is_empty());
+    if let Some(m) = model {
+        if crate::models::flag(kind).is_none() {
+            bail!("Lantern doesn't know how to choose a model for {}; leave the model on Default", program(kind));
+        }
+        if !crate::models::valid(m) {
+            bail!("\"{m}\" doesn't look like a model id");
         }
     }
     let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), screenshot);
@@ -175,7 +194,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&
             bail!("Without tmux, Lantern can't hand {} a first message. Leave the message empty, or install tmux.", program(kind));
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
-        open_in_terminal(&name, &agent_command(kind, cwd, prompt, screenshot))?;
+        open_in_terminal(&name, &agent_command(kind, cwd, prompt, screenshot, model))?;
         return Ok(Launched { session: None });
     }
 
@@ -186,7 +205,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, screenshot: Option<&
     let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
-        .arg(agent_command(kind, cwd, prompt, screenshot));
+        .arg(agent_command(kind, cwd, prompt, screenshot, model));
     let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
         bail!("tmux couldn't start the session");
