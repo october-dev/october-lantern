@@ -260,5 +260,26 @@ MainActor.assumeIsolated {
     let delegate = AppDelegate()
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
+    app.mainMenu = editMenu()
     app.run()
+}
+
+/// Lantern has no menu bar of its own, but text fields only get ⌘C, ⌘V, ⌘X, ⌘A and ⌘Z from the
+/// main menu's key equivalents, so it has a hidden one with just the Edit commands.
+@MainActor
+func editMenu() -> NSMenu {
+    let main = NSMenu()
+    let editItem = NSMenuItem()
+    main.addItem(editItem)
+    let edit = NSMenu(title: "Edit")
+    edit.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+    let redo = edit.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+    redo.keyEquivalentModifierMask = [.command, .shift]
+    edit.addItem(.separator())
+    edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editItem.submenu = edit
+    return main
 }

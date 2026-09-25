@@ -46,9 +46,21 @@ struct AccountCard: View {
                 } else {
                     HStack(spacing: 6) {
                         ForEach(OctoberAccount.Provider.allCases) { p in
-                            Button(p.label) { account.signIn(with: p) }.buttonStyle(SecondaryButtonStyle())
+                            Button { account.signIn(with: p) } label: {
+                                HStack(spacing: 6) {
+                                    ProviderMark(provider: p)
+                                    Text(p.label)
+                                }
+                            }
+                            .buttonStyle(SecondaryButtonStyle())
                         }
-                        Button("Email") { useEmail = true }.buttonStyle(SecondaryButtonStyle())
+                        Button { useEmail = true } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "envelope.fill").font(.system(size: 11))
+                                Text("Email")
+                            }
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
                     }
                 }
                 if let error = account.error {
@@ -80,5 +92,23 @@ struct AccountCard: View {
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.06)))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+    }
+}
+
+/// The sign-in provider's logo: Apple's from SF Symbols, Google's and GitHub's from the bundle.
+struct ProviderMark: View {
+    let provider: OctoberAccount.Provider
+
+    var body: some View {
+        Group {
+            switch provider {
+            case .apple: Image(systemName: "applelogo").font(.system(size: 12, weight: .medium)).offset(y: -1)
+            case .google, .github:
+                if let img = Assets.image("brands/\(provider.rawValue).svg") {
+                    Image(nsImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                }
+            }
+        }
+        .frame(width: 13, height: 13)
     }
 }
