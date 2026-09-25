@@ -690,3 +690,35 @@ fn bus_launches_reach_each_agent() {
     let msg = first_message(Some("fix it"), Extras { bus_note: Some(&note), ..Default::default() }).unwrap();
     assert!(msg.starts_with("fix it") && msg.contains("October Bus"));
 }
+
+/// Gemini CLI and Qwen Code get a system settings file of Lantern's: the Mac's own system settings,
+/// kept as they are, plus the Bus.
+#[test]
+fn bus_settings_keep_existing_system_settings() {
+    let bus = br#"{"mcpServers":{"october_bus":{"command":"/b","args":["mcp","stdio"]}}}"#;
+    let base = br#"{"general":{"vimMode":true},"mcpServers":{"theirs":{"command":"x"}}}"#;
+    let merged: serde_json::Value = serde_json::from_slice(&crate::bus::merge_settings(Some(base), bus).unwrap()).unwrap();
+    assert_eq!(merged["general"]["vimMode"], true);
+    assert_eq!(merged["mcpServers"]["theirs"]["command"], "x");
+    assert_eq!(merged["mcpServers"]["october_bus"]["command"], "/b");
+    let alone: serde_json::Value = serde_json::from_slice(&crate::bus::merge_settings(None, bus).unwrap()).unwrap();
+    assert_eq!(alone["mcpServers"]["october_bus"]["args"][0], "mcp");
+    for kind in [Kind::Gemini, Kind::Qwen, Kind::Copilot, Kind::Goose, Kind::Claude, Kind::Codex, Kind::Opencode, Kind::October] {
+        assert!(crate::bus::supported(kind), "{kind:?}");
+    }
+    assert!(!crate::bus::supported(Kind::Grok) && !crate::bus::supported(Kind::Cursor) && !crate::bus::supported(Kind::Pi));
+}
+
+/// Goose takes the Bus as one quoted `--with-extension` command; Copilot as an `@file`.
+#[test]
+fn bus_reaches_goose_and_copilot() {
+    use crate::bus::Attach;
+    use crate::launch::agent_command;
+    use std::path::Path;
+    let goose = Attach { args: vec!["session".into(), "--with-extension".into(), "'/b mcp stdio'".into()], ..Default::default() };
+    let cmd = agent_command(Kind::Goose, Path::new("/p"), None, None, None, Some(&goose));
+    assert!(cmd.contains("goose session --with-extension"), "{cmd}");
+    let copilot = Attach { args: vec!["--additional-mcp-config".into(), "'@/b/c.json'".into()], ..Default::default() };
+    let cmd = agent_command(Kind::Copilot, Path::new("/p"), Some("hi"), None, None, Some(&copilot));
+    assert!(cmd.contains("--additional-mcp-config"), "{cmd}");
+}

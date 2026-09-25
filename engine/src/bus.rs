@@ -11,8 +11,10 @@
 //! Each agent gets an MCP entry that registers it with the Bus when the agent starts it
 //! (`october-bus mcp stdio --scope lantern --agent <id>`), passed per launch so no config file of
 //! the user's is changed: Claude Code `--mcp-config`, Codex `-c` overrides, OpenCode
-//! `OPENCODE_CONFIG`. The October harness talks to the Bus natively and runs under
-//! `october-bus agent run`. Other agents start without the Bus for now.
+//! `OPENCODE_CONFIG`, GitHub Copilot `--additional-mcp-config`, Goose `--with-extension`, and
+//! Gemini CLI / Qwen Code a system-settings file of Lantern's (its own copy of any system settings
+//! already there, plus the Bus). The October harness talks to the Bus natively and runs under
+//! `october-bus agent run`. Grok, Cursor and Pi have no per-launch way yet and start without it.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -106,7 +108,7 @@ pub fn ensure_installed() -> Result<PathBuf> {
 
 /// Which agents Lantern can connect.
 pub fn supported(kind: Kind) -> bool {
-    matches!(kind, Kind::Claude | Kind::Codex | Kind::Opencode | Kind::October)
+    matches!(kind, Kind::Claude | Kind::Codex | Kind::Opencode | Kind::October | Kind::Gemini | Kind::Qwen | Kind::Copilot | Kind::Goose)
 }
 
 fn bus(args: &[&str], limit: Duration) -> Result<std::process::Output> {
@@ -214,6 +216,31 @@ pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
             generate("opencode", &file)?;
             a.env.push(("OPENCODE_CONFIG".into(), file.to_string_lossy().into_owned()));
         }
+        Kind::Copilot => {
+            let file = dir.join(format!("{id}.copilot.json"));
+            generate("copilot-cli", &file)?;
+            a.args = vec!["--additional-mcp-config".into(), quote(&format!("@{}", file.to_string_lossy()))];
+        }
+        Kind::Gemini | Kind::Qwen => {
+            let (host, var, system) = if kind == Kind::Gemini {
+                ("gemini-cli", "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "/Library/Application Support/GeminiCli/settings.json")
+            } else {
+                ("qwen-code", "QWEN_CODE_SYSTEM_SETTINGS_PATH", "/Library/Application Support/QwenCode/settings.json")
+            };
+            let file = dir.join(format!("{id}.{host}.json"));
+            generate(host, &file)?;
+            // These read one system settings file; keep whatever the Mac's own one says.
+            let existing = std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(system));
+            let merged = merge_settings(std::fs::read(&existing).ok().as_deref(), &std::fs::read(&file)?)?;
+            crate::hooks::write_atomic(&file, &merged)?;
+            a.env.push((var.into(), file.to_string_lossy().into_owned()));
+        }
+        Kind::Goose => {
+            // `goose session --with-extension '<command>'`, the command in one shell-quoted string.
+            let mut words = vec![quote(&bin)];
+            words.extend(mcp_args(id, name).iter().map(|w| quote(w)));
+            a.args = vec!["session".into(), "--with-extension".into(), quote(&words.join(" "))];
+        }
         Kind::October => {
             a.wrap = vec![quote(&bin), "agent".into(), "run".into(), "--scope".into(), SCOPE.into(), "--id".into(), quote(id)];
             a.wrap.extend(["--name".into(), quote(name), "--".into()]);
@@ -221,6 +248,19 @@ pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
         _ => bail!("October Bus isn't set up for this agent yet"),
     }
     Ok(a)
+}
+
+/// A settings file with the Bus's `mcpServers.october_bus` added to `base` (another settings file,
+/// kept as it is otherwise).
+pub(crate) fn merge_settings(base: Option<&[u8]>, bus: &[u8]) -> Result<Vec<u8>> {
+    let bus: serde_json::Value = serde_json::from_slice(bus).context("October Bus wrote an unreadable settings file")?;
+    let mut out =
+        base.and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok()).filter(|v| v.is_object()).unwrap_or(serde_json::json!({}));
+    if !out["mcpServers"].is_object() {
+        out["mcpServers"] = serde_json::json!({});
+    }
+    out["mcpServers"]["october_bus"] = bus["mcpServers"]["october_bus"].clone();
+    Ok(serde_json::to_vec_pretty(&out)?)
 }
 
 /// `october-bus mcp stdio` arguments that register the agent when the agent starts it.
