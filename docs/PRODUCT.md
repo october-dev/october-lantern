@@ -158,7 +158,7 @@ Lantern is in **beta (v0.3.9)**.
 | Connect to October Desktop | ✅ Read-only with any October version that runs october-core (lists October's terminals). Full connection (October's agent names and questions, replies through October's safe delivery, Open on the canvas) needs October 1.0.52 or later, after the user clicks Connect and allows Lantern in October. |
 | October phone app | ⚠️ Built, not yet tested against the real phone app and relay: sign in, then pair the phone by QR. Needs a plan that includes mobile. Lantern appears as its own computer on the October account. Treat as experimental until a live pairing and reply have been confirmed. |
 | Windows or Linux | ❌ Not yet |
-| Pricing | The core app is free forever. No account needed; signing in to October is optional. A paid October plan adds its extras, like cloud agents and multiplayer, automatically after sign-in. |
+| Pricing | The core app is free forever. No account needed; signing in to October is optional. A paid October plan adds its extras, like cloud agents, automatically after sign-in. Multiplayer: coming soon (no date). |
 
 ## Privacy
 
@@ -258,7 +258,7 @@ That's how Lantern types your reply into the right Terminal or iTerm2 tab. It as
 Settings › About › Uninstall October Lantern. See [Installing, updating and uninstalling](#installing-updating-and-uninstalling).
 
 **Is it free?**
-Yes. The core app is free forever, and no account is needed. A paid October plan adds extras like cloud agents and multiplayer after you sign in.
+Yes. The core app is free forever, and no account is needed. A paid October plan adds extras like cloud agents after you sign in. Multiplayer is coming soon.
 
 ---
 

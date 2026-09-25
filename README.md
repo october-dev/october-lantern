@@ -108,7 +108,7 @@ No. Keep opening your agents in your usual terminals. Lantern discovers supporte
 <details>
 <summary><strong>Is Lantern free? Does it work on Windows or Linux?</strong></summary>
 
-The core Mac app is free, and it stays free forever. The source code is licensed under Apache 2.0. If you have a paid October plan, sign in and your plan's extras, like cloud agents and multiplayer, are available in Lantern automatically. Lantern currently runs on macOS 14 or later, on Apple silicon and Intel. Windows and Linux apps aren't available yet.
+The core Mac app is free, and it stays free forever. The source code is licensed under Apache 2.0. If you have a paid October plan, sign in and your plan's extras, like cloud agents, are available in Lantern automatically. Multiplayer is coming soon. Lantern currently runs on macOS 14 or later, on Apple silicon and Intel. Windows and Linux apps aren't available yet.
 
 </details>
 
