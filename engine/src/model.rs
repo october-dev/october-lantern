@@ -130,6 +130,10 @@ pub struct HostApp {
     pub app: String,
     pub pid: u32,
     pub bundle_path: String,
+    /// For an agent in October Desktop: the canvas its terminal is on (`OCTOBER_BUS_CANVAS` in
+    /// its environment), so Open can show that canvas without pairing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

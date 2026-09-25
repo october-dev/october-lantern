@@ -294,10 +294,15 @@ final class AppModel: ObservableObject {
         track(id, .focus(agentId: agent.id), sent: engine.focus(requestId: id, agentId: agent.id))
         if let host = agent.host {
             // An app session that isn't running: open its app.
-            if host.pid == 0 {
-                NSWorkspace.shared.open(URL(fileURLWithPath: host.bundlePath))
-            } else if let app = NSRunningApplication(processIdentifier: host.pid) {
-                app.activate()
+            // The process above the agent can be one of the app's helpers (October's terminals
+            // run under a helper process), so bring the app forward by its bundle.
+            let bundle = URL(fileURLWithPath: host.bundlePath).standardizedFileURL
+            let running = NSWorkspace.shared.runningApplications.first { $0.bundleURL?.standardizedFileURL == bundle }
+                ?? (host.pid == 0 ? nil : NSRunningApplication(processIdentifier: host.pid))
+            if let running, running.activationPolicy == .regular {
+                running.activate()
+            } else {
+                NSWorkspace.shared.open(bundle)
             }
         }
     }

@@ -78,7 +78,7 @@ fn host_app(table: &ProcTable, pid: u32) -> Option<HostApp> {
         let idx = exe.find(".app/Contents/")?;
         let bundle = &exe[..idx + 4];
         let app = basename(&bundle[..bundle.len() - 4]).to_string();
-        Some(HostApp { app, pid: p.pid, bundle_path: bundle.to_string() })
+        Some(HostApp { app, pid: p.pid, bundle_path: bundle.to_string(), canvas: None })
     })
 }
 
@@ -160,6 +160,10 @@ impl Scanner {
                 }
                 None => host_app(&table, p.pid),
             };
+            let mut host = host;
+            if let Some(h) = host.as_mut().filter(|h| h.app == "October") {
+                h.canvas = self.environ(p.pid, "OCTOBER_BUS_CANVAS").filter(|c| is_canvas_id(c));
+            }
             let route = self.route(p.pid, p.tty.as_deref(), tmux_pane.is_some(), host.as_ref());
             let cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
             out.push(Agent {
@@ -221,6 +225,7 @@ impl Scanner {
                 app: b.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
                 pid: 0,
                 bundle_path: b.to_string_lossy().into_owned(),
+                canvas: None,
             });
             let id = format!("{}:session:{}", kind.as_str(), r.session_id);
             let a = self.app_agent(id, kind, r.source, status, r.cwd.clone(), false, host, 0, 0, &r.path);
@@ -233,6 +238,16 @@ impl Scanner {
         out
     }
 
+    /// A variable from a process's environment.
+    fn environ(&self, pid: u32, key: &str) -> Option<String> {
+        let prefix = format!("{key}=");
+        self.sys
+            .process(Pid::from_u32(pid))?
+            .environ()
+            .iter()
+            .find_map(|e| e.to_str().and_then(|e| e.strip_prefix(&prefix)).filter(|v| !v.is_empty()).map(String::from))
+    }
+
     /// How Lantern can type into this agent: tmux first (it's exact), then the terminal app's own
     /// mechanism.
     fn route(&self, pid: u32, tty: Option<&str>, in_tmux: bool, host: Option<&HostApp>) -> Route {
@@ -240,14 +255,7 @@ impl Scanner {
             return Route::Tmux;
         }
         let app = host.map(|h| h.app.as_str()).unwrap_or("");
-        let env = |key: &str| -> Option<String> {
-            let prefix = format!("{key}=");
-            self.sys
-                .process(Pid::from_u32(pid))?
-                .environ()
-                .iter()
-                .find_map(|e| e.to_str().and_then(|e| e.strip_prefix(&prefix)).filter(|v| !v.is_empty()).map(String::from))
-        };
+        let env = |key: &str| self.environ(pid, key);
         let dev_tty = tty.map(|t| format!("/dev/{t}"));
         match app {
             "cmux" if std::path::Path::new(crate::deliver::CMUX).exists() => match (env("CMUX_WORKSPACE_ID"), env("CMUX_SURFACE_ID")) {
@@ -543,4 +551,9 @@ fn merge(hook: Option<&HookEvent>, transcript: Option<SessionStatus>) -> (Sessio
         (None, Some(t)) => (t, StateSource::Transcript),
         (None, None) => (SessionStatus::default(), StateSource::None),
     }
+}
+
+/// An October canvas id: a UUID (what `october://canvas/<id>` accepts).
+pub(crate) fn is_canvas_id(s: &str) -> bool {
+    s.len() == 36 && s.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
 }

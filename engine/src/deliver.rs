@@ -186,6 +186,16 @@ pub fn focus(agent: &Agent) -> Result<()> {
             tmux::run(p, &["select-pane", "-t", &p.pane_id])
         }
         Route::October { .. } => Ok(()),
+        Route::None if agent.host.as_ref().and_then(|h| h.canvas.as_ref()).is_some() => {
+            // An agent in October Desktop that Lantern isn't paired with: open its canvas.
+            let canvas = agent.host.as_ref().and_then(|h| h.canvas.as_deref()).unwrap_or_default();
+            let url = format!("october://canvas/{canvas}");
+            let out = output_within(Command::new("/usr/bin/open").arg(&url), SEND_LIMIT, false)?;
+            if !out.status.success() {
+                bail!("October didn't open the canvas");
+            }
+            Ok(())
+        }
         Route::Cmux { workspace, .. } => cmux(&["select-workspace", "--workspace", workspace]),
         Route::Terminal { tty } => osascript(TERMINAL_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),

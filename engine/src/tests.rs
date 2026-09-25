@@ -722,3 +722,13 @@ fn bus_reaches_goose_and_copilot() {
     let cmd = agent_command(Kind::Copilot, Path::new("/p"), Some("hi"), None, None, Some(&copilot));
     assert!(cmd.contains("--additional-mcp-config"), "{cmd}");
 }
+
+/// Open on an agent in October uses its canvas id from the environment, only when it's a UUID.
+#[test]
+fn october_canvas_ids() {
+    use crate::scanner::is_canvas_id;
+    assert!(is_canvas_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"));
+    assert!(!is_canvas_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa"));
+    assert!(!is_canvas_id("not-a-canvas"));
+    assert!(!is_canvas_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa/"));
+}
