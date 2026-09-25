@@ -322,7 +322,7 @@ final class PointAsk: ObservableObject {
     /// The screenshot as a JPEG for the model: at most 1600 pixels on its longer side and under
     /// 2.5 MB (October's server takes requests up to 4.5 MB, and base64 adds a third), smaller and
     /// more compressed if it has to be.
-    private static func jpeg(_ image: CGImage) -> Data? {
+    static func jpeg(_ image: CGImage) -> Data? {
         for (side, quality) in [(1600.0, 0.82), (1600.0, 0.6), (1200.0, 0.6), (900.0, 0.5)] {
             let longest = CGFloat(max(image.width, image.height))
             let scale = min(1, side / longest)

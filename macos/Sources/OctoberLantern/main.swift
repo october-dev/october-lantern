@@ -17,6 +17,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Development: `--snapshot <dir>` draws the welcome pages and settings tabs offscreen into
         // PNGs and quits, for checking layouts without putting windows on screen.
+        // Development: `--ask <image> <question>` asks October's AI once, prints the answer and quits.
+        if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 2 < CommandLine.arguments.count {
+            let image = NSImage(contentsOfFile: CommandLine.arguments[i + 1])?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            Task { @MainActor in
+                do {
+                    let request = OctoberAI.Request(turns: [], question: CommandLine.arguments[i + 2],
+                                                    image: image.flatMap(PointAsk.jpeg), context: "App: Safari")
+                    for try await piece in OctoberAI.stream(request) {
+                        switch piece {
+                        case .text(let t): print(t, terminator: "")
+                        case .note(let n): print("\n[note] \(n)")
+                        }
+                        fflush(stdout)
+                    }
+                    print("\n[done]")
+                } catch {
+                    print("\n[error] \((error as? LocalizedError)?.errorDescription ?? "\(error)")")
+                }
+                exit(0)
+            }
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count {
             model.start()
             snapshot(into: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
