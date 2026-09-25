@@ -167,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if name == "chat", let first = self.model.inbox.first ?? self.model.agents.first { self.model.openChat(first) }
             }))
         }
+        jobs.append(("account-signed-out", AnyView(AccountCard(account: .detached()).padding(14).frame(width: 380).background(Color.black))))
         jobs.append(("point-ask", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: false) })))
         jobs.append(("point-ask-answer", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: true) })))
         func next() {

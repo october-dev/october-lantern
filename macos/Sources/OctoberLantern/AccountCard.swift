@@ -44,23 +44,24 @@ struct AccountCard: View {
                         }
                     }
                 } else {
-                    HStack(spacing: 6) {
-                        ForEach(OctoberAccount.Provider.allCases) { p in
-                            Button { account.signIn(with: p) } label: {
-                                HStack(spacing: 6) {
-                                    ProviderMark(provider: p)
-                                    Text(p.label)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            ForEach(OctoberAccount.Provider.allCases) { p in
+                                Button { account.signIn(with: p) } label: {
+                                    HStack(spacing: 6) {
+                                        ProviderMark(provider: p)
+                                        Text(p.label).lineLimit(1).fixedSize()
+                                    }
+                                    .frame(maxWidth: .infinity)
                                 }
+                                .buttonStyle(SecondaryButtonStyle())
                             }
-                            .buttonStyle(SecondaryButtonStyle())
                         }
                         Button { useEmail = true } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "envelope.fill").font(.system(size: 11))
-                                Text("Email")
-                            }
+                            Label("Use email and password", systemImage: "envelope")
+                                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.muted)
                         }
-                        .buttonStyle(SecondaryButtonStyle())
+                        .buttonStyle(.plain)
                     }
                 }
                 if let error = account.error {
