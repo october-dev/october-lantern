@@ -77,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch what.split(separator: ":").first ?? "" {
                 case "welcome": self.showWelcome(step: page)
                 case "settings": self.showSettings(tab: page)
+                case "point": PointAsk.shared.showDemo()
                 default:
                     self.model.panel = ["agents": .agents, "new": .newSession, "october": .october][what] ?? .inbox
                     if what == "chat", let first = self.model.inbox.first ?? self.model.agents.first {

@@ -57,7 +57,7 @@ final class PointAsk: ObservableObject {
 
     private let overlay = SelectionOverlay()
     private var panel: FloatingPanel?
-    private var host: NSHostingView<PointAskCard>?
+    private var host: NSHostingController<PointAskCard>?
     private var pressedAt: Date?
     private var shot: CGImage?
     private var selection: (rect: NSRect, screen: NSScreen)?
@@ -379,6 +379,16 @@ final class PointAsk: ObservableObject {
         text = answered ? "" : "Why is this payment failing?"
     }
 
+    /// Opens the card with sample content beside a box in the middle of the screen, for
+    /// `--open point`.
+    func showDemo() {
+        guard let screen = NSScreen.main else { return }
+        let f = screen.visibleFrame
+        selection = (NSRect(x: f.midX - 420, y: f.midY - 150, width: 400, height: 300), screen)
+        demo(answered: false)
+        showCard()
+    }
+
     // MARK: The card
 
     static let cardWidth: CGFloat = 400
@@ -386,14 +396,14 @@ final class PointAsk: ObservableObject {
     private func showCard() {
         let panel = self.panel ?? FloatingPanel(keyable: true)
         if self.panel == nil {
-            let host = NSHostingView(rootView: PointAskCard(point: self))
+            let host = NSHostingController(rootView: PointAskCard(point: self))
             host.sizingOptions = []
-            panel.contentView = GlassContainer(content: host, cornerRadius: 20, tint: 0.62)
+            panel.contentView = GlassContainer(content: host.view, cornerRadius: 20, tint: 0.62)
             self.host = host
             self.panel = panel
             // Grow and shrink with the answer, keeping the top edge where it is.
             resize = objectWillChange
-                .merge(with: dictation.objectWillChange)
+                .throttle(for: .milliseconds(60), scheduler: RunLoop.main, latest: true)
                 .receive(on: RunLoop.main)
                 .sink { [weak self] in self?.fit(keepTop: true) }
         }
@@ -404,8 +414,11 @@ final class PointAsk: ObservableObject {
     /// Sizes the card to its content and places it beside the selection, on screen.
     private func fit(keepTop: Bool) {
         guard let panel, let host, let selection else { return }
-        let height = min(host.fittingSize.height, (selection.screen.visibleFrame.height) - 16)
-        let size = NSSize(width: Self.cardWidth, height: max(height, 120))
+        // The card's height at its fixed width (the hosting view's own fitting size isn't reliable
+        // before it's in a window).
+        let wanted = host.sizeThatFits(in: NSSize(width: Self.cardWidth, height: 10_000)).height
+        let height = min(wanted, selection.screen.visibleFrame.height - 16)
+        let size = NSSize(width: Self.cardWidth, height: max(height, 160))
         if keepTop, panel.isVisible {
             guard abs(panel.frame.height - size.height) > 0.5 else { return }
             let top = panel.frame.maxY

@@ -2,10 +2,11 @@ import Foundation
 
 /// One question to October's AI, for Point & Ask's Ask.
 ///
-/// It goes to October's inference gateway (`https://www.october.dev/v1`, OpenAI-compatible), signed
-/// in with the October account's access token, and the answer streams back. Lantern picks a model
-/// from the gateway's list that can see images (the screenshot goes with the first question); if
-/// the model or plan only takes text, it asks again with the text alone.
+/// It goes to Lantern's endpoint on October (`POST /api/lantern/ask`), signed in with the October
+/// account's access token: October picks the model by plan, bills paid plans' credit, and the
+/// answer streams back. Until that endpoint is live, it uses October's inference gateway
+/// (`/v1`, OpenAI-compatible) with a model that can see images, asking with text alone when the
+/// image is refused.
 ///
 /// What's sent: the question, the screenshot of the selected area, and the app, window title,
 /// page address and selected text shown on the card. Nothing else.
@@ -23,11 +24,12 @@ enum OctoberAI {
     }
 
     enum Failure: LocalizedError {
-        case signedOut, plan(String), limited(String), unavailable(String)
+        case signedOut, plan(String), limited(String), unavailable(String), notDeployed
 
         var errorDescription: String? {
             switch self {
             case .signedOut: "Sign in to October to ask."
+            case .notDeployed: "October's AI isn't available right now."
             case .plan(let m), .limited(let m), .unavailable(let m): m
             }
         }
@@ -45,6 +47,13 @@ enum OctoberAI {
             let task = Task {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
+                    do {
+                        try await ask(request, token: token, into: continuation)
+                        continuation.finish()
+                        return
+                    } catch Failure.notDeployed {
+                        // Lantern's own endpoint isn't live yet: use the inference gateway.
+                    }
                     let model = try await pickModel(token: token, needsVision: request.image != nil)
                     do {
                         try await run(body(request, model: model.id, withImage: request.image != nil && model.vision), token: token, into: continuation)
@@ -61,7 +70,52 @@ enum OctoberAI {
         }
     }
 
-    // MARK: The request
+    // MARK: Lantern's endpoint
+
+    static let askURL = URL(string: "https://www.october.dev/api/lantern/ask")!
+
+    /// `POST /api/lantern/ask`: October picks the model (by plan) and bills the answer; the answer
+    /// streams back as `start`, `delta`… and `done` events.
+    private static func ask(_ r: Request, token: String, into continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
+        var json: [String: Any] = [
+            "question": String(r.question.prefix(4000)),
+            "history": Array(r.turns.flatMap { [["role": "user", "content": $0.question], ["role": "assistant", "content": $0.answer]] }.suffix(20)),
+            "client": ["app": "lantern", "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"],
+        ]
+        if !r.context.isEmpty { json["context"] = String(r.context.prefix(6000)) }
+        if let image = r.image { json["image"] = image.base64EncodedString() }
+        var req = URLRequest(url: askURL)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 90
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        req.httpBody = try JSONSerialization.data(withJSONObject: json)
+        let (bytes, response) = try await URLSession.shared.bytes(for: req)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 404 || status == 405 { throw Failure.notDeployed }
+        guard status == 200 else {
+            var data = Data()
+            for try await b in bytes {
+                data.append(b)
+                if data.count > 64_000 { break }
+            }
+            throw failure(status: status, data: data)
+        }
+        for try await line in bytes.lines {
+            guard line.hasPrefix("data:"),
+                  let data = line.dropFirst(5).trimmingCharacters(in: .whitespaces).data(using: .utf8),
+                  let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            switch event["type"] as? String {
+            case "delta": if let text = event["text"] as? String { continuation.yield(text) }
+            case "error": throw Failure.unavailable(event["message"] as? String ?? "October's AI stopped answering.")
+            case "done": return
+            default: continue
+            }
+        }
+    }
+
+    // MARK: The gateway (until Lantern's endpoint is live)
 
     private static func body(_ r: Request, model: String, withImage: Bool) -> Data {
         var messages: [[String: Any]] = [["role": "system", "content": system]]
@@ -127,8 +181,9 @@ enum OctoberAI {
         switch (status, code) {
         case (401, _): return .signedOut
         case (_, "plan_required"): return .plan(message ?? "This needs an October Pro or Max plan.")
-        case (402, _), (_, "credit_exhausted"): return .plan("You've used this period's October AI credit.")
-        case (429, _): return .limited("Too many questions for now. Try again in a minute.")
+        case (402, _), (_, "credit_exhausted"): return .plan(message ?? "You've used this period's October AI credit.")
+        case (_, "free_limit"): return .limited(message ?? "That's today's free questions. Upgrade to October Pro for more.")
+        case (429, _): return .limited(message ?? "Too many questions for now. Try again in a minute.")
         case (400, _): return .unavailable(message ?? "October's AI couldn't read the request.")
         default: return .unavailable(message ?? "October's AI isn't available right now (\(status)). Try again soon.")
         }
