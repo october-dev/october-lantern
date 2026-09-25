@@ -42,7 +42,7 @@ enum OctoberAI {
     wrong and how to fix it. If you can't see enough to answer, say what you'd need.
     """
 
-    static func stream(_ request: Request) -> AsyncThrowingStream<String, Error> {
+    static func stream(_ request: Request) -> AsyncThrowingStream<Piece, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -70,13 +70,26 @@ enum OctoberAI {
         }
     }
 
+    /// A piece of the answer, or a note about the account to show under it.
+    enum Piece {
+        case text(String)
+        case note(String)
+    }
+
+    /// "18 free questions left today" from a free account's `done` event.
+    static func note(done event: [String: Any]) -> String? {
+        guard let remaining = event["remaining"] as? [String: Any], remaining["kind"] as? String == "free",
+              let left = remaining["questions"] as? Int, left <= 10 else { return nil }
+        return left == 0 ? "That was today's last free question." : "\(left) free question\(left == 1 ? "" : "s") left today."
+    }
+
     // MARK: Lantern's endpoint
 
     static let askURL = URL(string: "https://www.october.dev/api/lantern/ask")!
 
     /// `POST /api/lantern/ask`: October picks the model (by plan) and bills the answer; the answer
     /// streams back as `start`, `delta`… and `done` events.
-    private static func ask(_ r: Request, token: String, into continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
+    private static func ask(_ r: Request, token: String, into continuation: AsyncThrowingStream<Piece, Error>.Continuation) async throws {
         var json: [String: Any] = [
             "question": String(r.question.prefix(4000)),
             "history": Array(r.turns.flatMap { [["role": "user", "content": $0.question], ["role": "assistant", "content": $0.answer]] }.suffix(20)),
@@ -107,9 +120,11 @@ enum OctoberAI {
                   let data = line.dropFirst(5).trimmingCharacters(in: .whitespaces).data(using: .utf8),
                   let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             switch event["type"] as? String {
-            case "delta": if let text = event["text"] as? String { continuation.yield(text) }
+            case "delta": if let text = event["text"] as? String { continuation.yield(.text(text)) }
             case "error": throw Failure.unavailable(event["message"] as? String ?? "October's AI stopped answering.")
-            case "done": return
+            case "done":
+                if let note = note(done: event) { continuation.yield(.note(note)) }
+                return
             default: continue
             }
         }
@@ -140,7 +155,7 @@ enum OctoberAI {
     }
 
     /// Sends the request and yields the answer's text as it streams in (OpenAI's server-sent events).
-    private static func run(_ body: Data, token: String, into continuation: AsyncThrowingStream<String, Error>.Continuation) async throws {
+    private static func run(_ body: Data, token: String, into continuation: AsyncThrowingStream<Piece, Error>.Continuation) async throws {
         var req = URLRequest(url: base.appendingPathComponent("chat/completions"))
         req.httpMethod = "POST"
         req.timeoutInterval = 90
@@ -169,7 +184,7 @@ enum OctoberAI {
             }
             let choice = (obj["choices"] as? [[String: Any]])?.first
             if let piece = (choice?["delta"] as? [String: Any])?["content"] as? String, !piece.isEmpty {
-                continuation.yield(piece)
+                continuation.yield(.text(piece))
             }
         }
     }

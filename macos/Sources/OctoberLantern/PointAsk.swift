@@ -44,6 +44,8 @@ final class PointAsk: ObservableObject {
         let question: String
         var answer: String
         var failed = false
+        /// About the account, e.g. free questions left today.
+        var note: String?
     }
 
     @Published var text = ""
@@ -174,7 +176,10 @@ final class PointAsk: ObservableObject {
             do {
                 for try await piece in OctoberAI.stream(request) {
                     guard index < turns.count else { return }
-                    turns[index].answer += piece
+                    switch piece {
+                    case .text(let text): turns[index].answer += text
+                    case .note(let note): turns[index].note = note
+                    }
                 }
                 if turns.indices.contains(index), turns[index].answer.isEmpty {
                     turns[index].answer = "No answer came back. Try again."
@@ -314,17 +319,23 @@ final class PointAsk: ObservableObject {
         }
     }
 
-    /// The screenshot as a JPEG for the model, at most 1600 pixels on its longer side.
+    /// The screenshot as a JPEG for the model: at most 1600 pixels on its longer side and under
+    /// 2.5 MB (October's server takes requests up to 4.5 MB, and base64 adds a third), smaller and
+    /// more compressed if it has to be.
     private static func jpeg(_ image: CGImage) -> Data? {
-        let longest = CGFloat(max(image.width, image.height))
-        let scale = min(1, 1600 / longest)
-        let w = Int(CGFloat(image.width) * scale), h = Int(CGFloat(image.height) * scale)
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
-        ctx.interpolationQuality = .high
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let scaled = ctx.makeImage() else { return nil }
-        return NSBitmapImageRep(cgImage: scaled).representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+        for (side, quality) in [(1600.0, 0.82), (1600.0, 0.6), (1200.0, 0.6), (900.0, 0.5)] {
+            let longest = CGFloat(max(image.width, image.height))
+            let scale = min(1, side / longest)
+            let w = Int(CGFloat(image.width) * scale), h = Int(CGFloat(image.height) * scale)
+            guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+            ctx.interpolationQuality = .high
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            guard let scaled = ctx.makeImage(),
+                  let data = NSBitmapImageRep(cgImage: scaled).representation(using: .jpeg, properties: [.compressionFactor: quality]) else { return nil }
+            if data.count <= 2_500_000 { return data }
+        }
+        return nil
     }
 
     /// The page's address in a browser (AppleScript, asked once per browser) and the selected text
@@ -556,6 +567,9 @@ struct PointAskCard: View {
                                     .foregroundStyle(turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            if let note = turn.note {
+                                Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted)
                             }
                         }
                         .id(turn.id)
