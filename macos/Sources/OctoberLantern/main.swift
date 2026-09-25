@@ -166,6 +166,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if name == "chat", let first = self.model.inbox.first ?? self.model.agents.first { self.model.openChat(first) }
             }))
         }
+        jobs.append(("point-ask", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: false) })))
+        jobs.append(("point-ask-answer", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: true) })))
         func next() {
             guard !jobs.isEmpty else { NSApp.terminate(nil); return }
             let (name, view) = jobs.removeFirst()
@@ -206,6 +208,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppContext.shared.capture()
             self?.show(.newSession)
         }
+        let point = item("Point & Ask…") { PointAsk.shared.start(fromPill: true) }
+        if Preferences.shared.pointAsk != .none { point.title += "  \(Preferences.shared.pointAsk.label)" }
         let compose = item("Message an Agent…") { [weak self] in self?.model.compose(to: nil) }
         if Preferences.shared.hotkey != .none { compose.title += "  \(Preferences.shared.hotkey.label)" }
         menu.addItem(.separator())

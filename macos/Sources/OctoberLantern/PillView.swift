@@ -49,6 +49,10 @@ struct PillView: View {
                     PillIcon(symbol: "plus", active: model.panel == .newSession, help: "New session, or a task for the app you're in") {
                         model.startNew()
                     }
+                    PillIcon(symbol: "cursorarrow.and.square.on.square.dashed",
+                             help: "Point & Ask: select part of the screen and ask about it") {
+                        PointAsk.shared.start(fromPill: true)
+                    }
                     PillIcon(symbol: dictation.isActive ? "mic.fill" : "mic",
                              tint: dictation.isRecording ? Theme.red : dictation.isActive ? Theme.amber : nil,
                              help: dictation.isAuthorizing ? "Waiting for microphone permission… click to cancel" : dictation.isRecording ? "Stop dictating" : "Dictate") {
