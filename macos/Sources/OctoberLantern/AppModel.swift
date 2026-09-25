@@ -77,6 +77,8 @@ final class AppModel: ObservableObject {
         /// The ticket says which draft revision was sent, so only that is cleared when it arrives.
         case reply(Drafts.Ticket)
         case keys(agentId: String)
+        /// A message sent without the composer (Point & Ask).
+        case direct(agentId: String)
         case launch
         case focus(agentId: String)
     }
@@ -300,6 +302,20 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Sends `text` to `agent` without touching the composer's drafts (Point & Ask). Agents Lantern
+    /// can't type into get it copied, and their app comes forward.
+    func sendDirect(_ text: String, to agent: Agent) {
+        if agent.canReply {
+            let id = request("d")
+            track(id, .direct(agentId: agent.id), sent: engine.reply(requestId: id, agentId: agent.id, text: text))
+        } else {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            open(agent)
+            show("Copied. Paste into @\(agent.handle) in \(agent.host?.app ?? "its terminal") with ⌘V")
+        }
+    }
+
     /// Answers a permission prompt: "1" allows once, Escape declines. The engine refuses if the
     /// prompt on screen is no longer the one shown here.
     func answerPermission(_ agent: Agent, allow: Bool) {
@@ -459,7 +475,7 @@ final class AppModel: ObservableObject {
     /// `reached`: the engine had the request, so a reply or key may have been typed after all.
     private func fail(_ id: String, _ message: String, reached: Bool) {
         switch pending[id] {
-        case .reply, .keys: replyFinished(id, ok: false, uncertain: reached, message: message)
+        case .reply, .keys, .direct: replyFinished(id, ok: false, uncertain: reached, message: message)
         case .launch, .focus: actionFinished(id, ok: false, message: message)
         case nil: pendingSince[id] = nil
         }
@@ -470,7 +486,7 @@ final class AppModel: ObservableObject {
     func expire(_ id: String) {
         guard let op = pending[id] else { return pendingSince[id] = nil }
         switch op {
-        case .reply, .keys:
+        case .reply, .keys, .direct:
             fail(id, "no answer from Lantern's engine yet. It may still type it: check the terminal before sending again", reached: true)
             overdue[id] = op
         case .launch, .focus:
@@ -545,7 +561,7 @@ final class AppModel: ObservableObject {
             } else {
                 show("Couldn't send to @\(handle(agentId)): \(message ?? "unknown error")")
             }
-        case .keys(let agentId):
+        case .keys(let agentId), .direct(let agentId):
             if ok {
                 show("Sent to @\(handle(agentId))")
             } else if uncertain {
@@ -573,7 +589,7 @@ final class AppModel: ObservableObject {
             }
         case .focus(let agentId):
             if !ok { show("Couldn't open @\(handle(agentId)): \(message ?? "unknown error")") }
-        case .reply, .keys:
+        case .reply, .keys, .direct:
             break
         }
     }
@@ -585,7 +601,7 @@ final class AppModel: ObservableObject {
         let unsure = pending.values.compactMap { op -> String? in
             switch op {
             case .reply(let ticket): ticket.recipient
-            case .keys(let agentId): agentId
+            case .keys(let agentId), .direct(let agentId): agentId
             default: nil
             }
         }

@@ -38,6 +38,10 @@ struct SettingsView: View {
             Picker("Shortcut to message an agent", selection: $prefs.hotkey) {
                 ForEach(HotKeyPreset.allCases) { Text($0.label).tag($0) }
             }
+            Picker("Point & Ask (hold, point, speak)", selection: $prefs.pointAsk) {
+                ForEach(PointAskPreset.allCases) { Text($0.label).tag($0) }
+            }
+            .help("Hold the shortcut, point at something on screen and say what you want. A card shows a screenshot around the pointer; Enter sends it to the agent.")
             if Updater.shared.available {
                 Toggle("Check for updates automatically", isOn: $autoUpdate)
                     .onChange(of: autoUpdate) { _, on in Updater.shared.automaticallyChecks = on }

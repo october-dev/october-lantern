@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: WindowController!
     private var statusItem: NSStatusItem!
     private var hotKey: HotKey?
+    private var pointAskKey: HotKey?
     private var welcomeWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var subscriptions = Set<AnyCancellable>()
@@ -37,6 +38,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Preferences.shared.$hotkey
             .sink { [weak self] preset in self?.registerHotKey(preset) }
+            .store(in: &subscriptions)
+        PointAsk.shared.model = model
+        Preferences.shared.$pointAsk
+            .sink { [weak self] preset in self?.registerPointAsk(preset) }
             .store(in: &subscriptions)
 
         Notifier.shared.setUp()
@@ -85,6 +90,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         Analytics.shared.persist()
         model.stop()
+    }
+
+    /// Point & Ask: hold the shortcut, point and speak, let go to see the card.
+    private func registerPointAsk(_ preset: PointAskPreset) {
+        pointAskKey = nil
+        guard let code = preset.keyCode else { return }
+        pointAskKey = HotKey(
+            keyCode: code, modifiers: preset.modifiers, id: 2,
+            onRelease: { Task { @MainActor in PointAsk.shared.released() } }
+        ) { Task { @MainActor in PointAsk.shared.pressed() } }
     }
 
     private func registerHotKey(_ preset: HotKeyPreset) {

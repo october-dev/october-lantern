@@ -13,6 +13,8 @@ final class Preferences: ObservableObject {
     @Published var mutedKinds: Set<String> { didSet { d.set(Array(mutedKinds), forKey: "mutedKinds") } }
     @Published var hotkey: HotKeyPreset { didSet { d.set(hotkey.rawValue, forKey: "hotkey") } }
     @Published var edge: String { didSet { d.set(edge, forKey: "pillEdge") } }
+    /// Hold to point at something on screen and ask an agent about it.
+    @Published var pointAsk: PointAskPreset { didSet { d.set(pointAsk.rawValue, forKey: "pointAsk") } }
     /// New sessions start with a screenshot of the screen you're on (New Session can turn it off
     /// for one session).
     @Published var screenshotNewSessions: Bool { didSet { d.set(screenshotNewSessions, forKey: "screenshotNewSessions") } }
@@ -28,6 +30,7 @@ final class Preferences: ObservableObject {
         mutedKinds = Set(d.stringArray(forKey: "mutedKinds") ?? [])
         hotkey = HotKeyPreset(rawValue: d.string(forKey: "hotkey") ?? "") ?? .controlOptionSpace
         edge = d.string(forKey: "pillEdge") ?? "right"
+        pointAsk = PointAskPreset(rawValue: d.string(forKey: "pointAsk") ?? "") ?? .controlOptionP
         screenshotNewSessions = d.bool(forKey: "screenshotNewSessions")
         toolkitInSessions = d.bool(forKey: "toolkitInSessions")
         d.register(defaults: ["busForSessions": true])
