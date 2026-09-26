@@ -125,9 +125,12 @@ private struct DesktopArtwork: View {
     let connected: Bool
     let pairing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The link flows for a few seconds when the card appears or connects, then holds still:
+    /// every frame redraws the whole glass panel, which is costly for the window server.
+    @State private var flowing = false
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: !connected || reduceMotion)) { context in
+        TimelineView(.animation(minimumInterval: 1 / 30, paused: !connected || reduceMotion || !flowing)) { context in
             let phase = context.date.timeIntervalSinceReferenceDate
             GeometryReader { geo in
                 let w = geo.size.width, h = geo.size.height
@@ -167,6 +170,12 @@ private struct DesktopArtwork: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.black.opacity(0.22)))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityHidden(true)
+        .task(id: connected) {
+            guard connected else { return }
+            flowing = true
+            try? await Task.sleep(for: .seconds(4))
+            flowing = false
+        }
     }
 
     private func icon(_ image: NSImage?, fallback: String) -> some View {

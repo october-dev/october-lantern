@@ -37,8 +37,8 @@ struct TeamCard: View {
 }
 
 /// A dotted canvas with teammates' cursors drifting over it, Figma-style, and their avatars in the
-/// corner. Motion is deterministic (sine loops), stops when the card is off screen, and holds still
-/// when Reduce Motion is on.
+/// corner. Motion is deterministic (sine loops), runs for a few seconds after the card appears,
+/// and holds still when Reduce Motion is on.
 private struct CursorCanvas: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visible = false
@@ -80,7 +80,13 @@ private struct CursorCanvas: View {
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.black.opacity(0.18)))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Theme.hairline))
-        .onAppear { visible = true }
+        // Moves for a few seconds when the card appears, then holds still: every frame redraws the
+        // whole glass panel, which is costly for the window server.
+        .task {
+            visible = true
+            try? await Task.sleep(for: .seconds(6))
+            visible = false
+        }
         .onDisappear { visible = false }
         .accessibilityHidden(true)
     }
