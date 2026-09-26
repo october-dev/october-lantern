@@ -31,6 +31,8 @@ pub enum Op {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     Done,
+    /// October accepted the entire message for its queue; final typing is not confirmed.
+    Queued,
     /// Nothing was typed.
     Failed {
         code: &'static str,
@@ -73,7 +75,7 @@ impl Ticket {
         self.0.compare_exchange(QUEUED, STARTED, Ordering::SeqCst, Ordering::SeqCst).is_ok()
     }
 
-    fn canceled(&self) -> bool {
+    pub(crate) fn canceled(&self) -> bool {
         self.0.load(Ordering::SeqCst) == CANCELED
     }
 }
@@ -166,7 +168,13 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
     }
     let result = match op {
         Op::Text(text) => match agent.route {
-            Route::October { .. } => link.send_text(agent, &text),
+            Route::October { .. } => {
+                return match link.send_text(agent, &text) {
+                    Ok(delivery) if delivery == "delivered" => Outcome::Done,
+                    Ok(_) => Outcome::Queued,
+                    Err(outcome) => outcome,
+                };
+            }
             _ => deliver::send_text(agent, &text).map_err(classify),
         },
         Op::Keys { keys, .. } => {

@@ -116,15 +116,15 @@ final class AppModel: ObservableObject {
         }
         engine.onHistory = { [weak self] agentId, supported, messages in
             guard let self, agentId == self.chatAgentId else { return }
-            self.chatLoading = false
-            self.chatSupported = supported
+            if self.chatLoading { self.chatLoading = false }
+            if self.chatSupported != supported { self.chatSupported = supported }
             if messages != self.chatMessages { self.chatMessages = messages }
         }
         engine.onOctober = { [weak self] link in
             if link.status == "connected", self?.octoberLink?.status != "connected" {
                 Analytics.shared.capture("october_desktop_connected")
             }
-            self?.octoberLink = link
+            if self?.octoberLink != link { self?.octoberLink = link }
         }
         engine.onPhone = { state in PhoneModel.shared.receive(state) }
         PhoneModel.shared.engine = engine
@@ -232,8 +232,9 @@ final class AppModel: ObservableObject {
     }
 
     func closeChat() {
-        chatAgentId = nil
-        chatMessages = []
+        engine.cancelHistory()
+        if chatAgentId != nil { chatAgentId = nil }
+        if !chatMessages.isEmpty { chatMessages = [] }
         chatPoll?.cancel()
         chatPoll = nil
     }
@@ -395,6 +396,7 @@ final class AppModel: ObservableObject {
         kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, model: String? = nil, context: String? = nil,
         toolkit: Bool = false, taskApp: String? = nil, background: Bool
     ) {
+        guard !launching, !pending.values.contains(where: { if case .launch = $0 { return true }; return false }) else { return }
         if let taskApp {
             var folders = UserDefaults.standard.dictionary(forKey: "taskFolders") as? [String: String] ?? [:]
             folders[taskApp] = folder
@@ -494,7 +496,19 @@ final class AppModel: ObservableObject {
         case .reply, .keys, .direct:
             fail(id, "no answer from Lantern's engine yet. It may still type it: check the terminal before sending again", reached: true)
             overdue[id] = op
-        case .launch, .focus:
+        case .launch:
+            // Preparation may still be finishing, or the session may already have started.
+            // Keep its ticket and disable duplicate launches until the engine confirms the
+            // outcome. The engine uses this same deadline before creating any session.
+            pendingSince[id] = nil
+            show("Still preparing the session. Waiting for the engine to confirm its outcome.")
+            // A hard ceiling, so a launch the engine never answers can't block new sessions.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 180) { [weak self] in
+                guard let self, case .launch = self.pending[id] else { return }
+                self.pending[id] = nil
+                self.show("The engine never confirmed that session. Check Agents before starting it again.")
+            }
+        case .focus:
             fail(id, "no answer from Lantern's engine", reached: true)
         }
     }
@@ -506,10 +520,12 @@ final class AppModel: ObservableObject {
     // MARK: Engine events
 
     func update(_ fresh: [Agent]) {
-        agents = fresh
+        if agents != fresh { agents = fresh }
         openLaunched()
         Analytics.shared.dailyActive(kinds: Dictionary(fresh.map { ($0.kind.rawValue, 1) }, uniquingKeysWith: +))
-        drafts.prune(keeping: Set(fresh.map(\.id)))
+        var pruned = drafts
+        pruned.prune(keeping: Set(fresh.map(\.id)))
+        if pruned != drafts { drafts = pruned }
         noticeNewTurns()
         // Keep an open conversation current.
         if let chatAgentId {
@@ -543,7 +559,7 @@ final class AppModel: ObservableObject {
         pendingSince[requestId] = nil
         if let late = overdue.removeValue(forKey: requestId), case .reply(let ticket) = late {
             if ok { drafts.sent(ticket) }
-            show(ok ? "Sent to @\(handle(ticket.recipient)) after all" : "@\(handle(ticket.recipient)): \(message ?? "not sent")")
+            show(ok ? "\(message ?? "Sent") to @\(handle(ticket.recipient)) after all" : "@\(handle(ticket.recipient)): \(message ?? "not sent")")
             return
         }
         guard let request = pending.removeValue(forKey: requestId) else { return }
@@ -558,7 +574,7 @@ final class AppModel: ObservableObject {
             if ok {
                 // Only the draft revision that was sent is cleared; anything typed since stays.
                 drafts.sent(ticket)
-                show("Sent to @\(handle(agentId))")
+                show("\(message ?? "Sent") to @\(handle(agentId))")
                 if let chatAgentId { engine.history(agentId: chatAgentId) }
             } else if uncertain {
                 // It may have gone in: keep the draft, but don't suggest sending it again.
@@ -568,7 +584,7 @@ final class AppModel: ObservableObject {
             }
         case .keys(let agentId), .direct(let agentId):
             if ok {
-                show("Sent to @\(handle(agentId))")
+                show("\(message ?? "Sent") to @\(handle(agentId))")
             } else if uncertain {
                 show("@\(handle(agentId)): \(message ?? "not sure it went in. Check the terminal.")")
             } else {

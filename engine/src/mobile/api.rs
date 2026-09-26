@@ -97,8 +97,17 @@ fn ok(request_id: &Value, result: Value) -> (u16, Value) {
     (200, json!({"apiVersion": 2, "requestId": request_id, "ok": true, "result": result}))
 }
 
-fn err(request_id: &Value, code: &str, message: &str) -> (u16, Value) {
+pub(super) fn err(request_id: &Value, code: &str, message: &str) -> (u16, Value) {
     (400, json!({"apiVersion": 2, "requestId": request_id, "ok": false, "error": {"code": code, "message": message, "retryable": false}}))
+}
+
+pub(super) fn delivery_result(id: &Value, outcome: Outcome) -> (u16, Value) {
+    match outcome {
+        Outcome::Done => ok(id, json!({"accepted": true, "delivery": "delivered"})),
+        Outcome::Queued => ok(id, json!({"accepted": true, "delivery": "queued"})),
+        Outcome::Failed { message, .. } => ok(id, json!({"accepted": false, "reason": message})),
+        Outcome::Uncertain(_) => ok(id, json!({"accepted": true, "delivery": "queued", "reason": "not-confirmed-check-the-terminal"})),
+    }
 }
 
 /// Answers already given to requests with an idempotency key, so a retried mutation is answered
@@ -234,16 +243,11 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
             let text = text.trim().to_string();
             match ctx.agents.iter().find(|a| node_id(&a.id) == node) {
                 None => err(id, "NOT_FOUND", "that agent isn't running any more"),
-                Some(_) if text.is_empty() || text.len() > 8000 => err(id, "INVALID_ARGUMENT", "message must be 1–8000 characters"),
+                Some(_) if text.is_empty() || text.chars().count() > 8000 => {
+                    err(id, "INVALID_ARGUMENT", "message must be 1–8000 characters")
+                }
                 Some(a) if !a.can_reply => ok(id, json!({"accepted": false, "reason": "Lantern can't type into this terminal yet"})),
-                Some(a) => match deliver(a, &text, deadline) {
-                    Outcome::Done => ok(id, json!({"accepted": true, "delivery": "delivered"})),
-                    Outcome::Failed { message, .. } => ok(id, json!({"accepted": false, "reason": message})),
-                    // It may have gone in: don't invite a retry that could type it twice.
-                    Outcome::Uncertain(_) => {
-                        ok(id, json!({"accepted": true, "delivery": "queued", "reason": "not-confirmed-check-the-terminal"}))
-                    }
-                },
+                Some(a) => delivery_result(id, deliver(a, &text, deadline)),
             }
         }
         _ => err(id, "PERMISSION_DENIED", "not available in Lantern"),

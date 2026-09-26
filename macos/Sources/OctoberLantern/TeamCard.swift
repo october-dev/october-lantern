@@ -80,8 +80,7 @@ private struct CursorCanvas: View {
         .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.black.opacity(0.18)))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Theme.hairline))
-        // Moves for a few seconds when the card appears, then holds still: every frame redraws the
-        // whole glass panel, which is costly for the window server.
+        // Keep decorative motion brief when the card appears.
         .task {
             visible = true
             try? await Task.sleep(for: .seconds(6))

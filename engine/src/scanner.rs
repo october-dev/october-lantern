@@ -1,6 +1,7 @@
 //! Finds agent processes and works out what each one is doing.
 
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 
 use sysinfo::{Pid, System};
@@ -13,6 +14,7 @@ use crate::transcripts::Transcripts;
 
 pub struct Scanner {
     sys: System,
+    history_cache: HashMap<String, (HistoryStamp, Vec<crate::history::ChatMessage>)>,
     proc_cache: ProcCache,
     /// Agent pid → the child process that holds its session file open (Codex's native binary).
     children: HashMap<u32, u32>,
@@ -32,6 +34,12 @@ pub struct Scanner {
     app_handles: HashMap<String, (String, usize)>,
     /// App sessions that aren't running, re-read every 30 s.
     recent: Option<(std::time::Instant, Vec<crate::apps::Recent>)>,
+}
+
+#[derive(PartialEq)]
+enum HistoryStamp {
+    File(Kind, PathBuf, u64, u64, std::time::SystemTime),
+    OpenCode(PathBuf, u64, (u64, u64)),
 }
 
 /// Arguments that mean the process is a helper or a headless run, not an interactive agent.
@@ -78,7 +86,7 @@ fn host_app(table: &ProcTable, pid: u32) -> Option<HostApp> {
         let idx = exe.find(".app/Contents/")?;
         let bundle = &exe[..idx + 4];
         let app = basename(&bundle[..bundle.len() - 4]).to_string();
-        Some(HostApp { app, pid: p.pid, bundle_path: bundle.to_string(), canvas: None })
+        Some(HostApp { app, pid: p.pid, bundle_path: bundle.to_string(), canvas: None, node: None })
     })
 }
 
@@ -86,6 +94,7 @@ impl Scanner {
     pub fn new() -> Self {
         Scanner {
             sys: System::new(),
+            history_cache: HashMap::new(),
             proc_cache: ProcCache::default(),
             children: HashMap::new(),
             transcripts: Transcripts::default(),
@@ -163,6 +172,7 @@ impl Scanner {
             let mut host = host;
             if let Some(h) = host.as_mut().filter(|h| h.app == "October") {
                 h.canvas = self.environ(p.pid, "OCTOBER_BUS_CANVAS").filter(|c| is_canvas_id(c));
+                h.node = h.canvas.as_ref().and_then(|_| self.environ(p.pid, "OCTOBER_BUS_NODE")).filter(|n| n.len() <= 128);
             }
             let route = self.route(p.pid, p.tty.as_deref(), tmux_pane.is_some(), host.as_ref());
             let cwd = p.cwd.as_ref().map(|c| c.to_string_lossy().into_owned());
@@ -226,6 +236,7 @@ impl Scanner {
                 pid: 0,
                 bundle_path: b.to_string_lossy().into_owned(),
                 canvas: None,
+                node: None,
             });
             let id = format!("{}:session:{}", kind.as_str(), r.session_id);
             let a = self.app_agent(id, kind, r.source, status, r.cwd.clone(), false, host, 0, 0, &r.path);
@@ -345,36 +356,70 @@ impl Scanner {
 
     /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions.
     pub fn history(&mut self, agent: &Agent) -> Option<Vec<crate::history::ChatMessage>> {
-        if let Some((kind, path)) = self.app_paths.get(&agent.id) {
-            return Some(match kind {
-                Kind::Codex => crate::history::codex(path),
-                _ => crate::history::claude(path),
-            });
-        }
-        match agent.kind {
-            _ if agent.session_match == SessionMatch::Ambiguous => None,
-            Kind::Claude => Some(self.claude_paths.get(&agent.pid).map(|(p, _)| crate::history::claude(p)).unwrap_or_default()),
-            Kind::Codex => {
-                let path = self
+        let source = if let Some((kind, path)) = self.app_paths.get(&agent.id) {
+            Some((*kind, path.clone()))
+        } else {
+            if agent.session_match == SessionMatch::Ambiguous {
+                return None;
+            }
+            match agent.kind {
+                Kind::Claude => self.claude_paths.get(&agent.pid).map(|(p, _)| (Kind::Claude, p.clone())),
+                Kind::Codex => self
                     .transcripts
                     .codex_path_for_pid(agent.pid)
-                    .or_else(|| self.children.get(&agent.pid).copied().and_then(|c| self.transcripts.codex_path_for_pid(c)));
-                Some(path.map(|p| crate::history::codex(&p)).unwrap_or_default())
-            }
-            Kind::Pi | Kind::October | Kind::Gemini | Kind::Opencode => {
-                let (cwd, start) = self.started.get(&agent.pid).cloned()?;
-                Some(match agent.kind {
-                    Kind::Opencode => crate::readers::opencode::history(&cwd, start),
-                    Kind::Gemini => {
-                        crate::readers::gemini::session_file(&cwd, start).map(|p| crate::readers::gemini::history(&p)).unwrap_or_default()
+                    .or_else(|| self.children.get(&agent.pid).copied().and_then(|c| self.transcripts.codex_path_for_pid(c)))
+                    .map(|p| (Kind::Codex, p)),
+                Kind::Pi | Kind::October | Kind::Gemini => {
+                    let (cwd, start) = self.started.get(&agent.pid)?;
+                    let path = if agent.kind == Kind::Gemini {
+                        crate::readers::gemini::session_file(cwd, *start)
+                    } else {
+                        crate::readers::pi::session_file(cwd, *start, agent.kind == Kind::October)
+                    };
+                    path.map(|p| (agent.kind, p))
+                }
+                Kind::Opencode => {
+                    let (cwd, start) = self.started.get(&agent.pid)?.clone();
+                    let Some(stamp) = crate::readers::opencode::stamp() else { return Some(Vec::new()) };
+                    let stamp = HistoryStamp::OpenCode(cwd.clone(), start, stamp);
+                    if let Some((old, messages)) = self.history_cache.get(&agent.id)
+                        && *old == stamp
+                    {
+                        return Some(messages.clone());
                     }
-                    k => crate::readers::pi::session_file(&cwd, start, k == Kind::October)
-                        .map(|p| crate::readers::pi::history(&p))
-                        .unwrap_or_default(),
-                })
+                    let messages = crate::readers::opencode::history(&cwd, start);
+                    self.remember_history(&agent.id, stamp, &messages);
+                    return Some(messages);
+                }
+                _ => return None,
             }
-            _ => None,
+        };
+        let Some((kind, path)) = source else { return Some(Vec::new()) };
+        // A session file that's gone (or not written yet) is an empty conversation, not an
+        // unsupported agent.
+        let Ok(metadata) = std::fs::metadata(&path) else { return Some(Vec::new()) };
+        let Ok(modified) = metadata.modified() else { return Some(Vec::new()) };
+        let stamp = HistoryStamp::File(kind, path.clone(), metadata.ino(), metadata.len(), modified);
+        if let Some((old, messages)) = self.history_cache.get(&agent.id)
+            && *old == stamp
+        {
+            return Some(messages.clone());
         }
+        let messages = match kind {
+            Kind::Codex => crate::history::codex(&path),
+            Kind::Pi | Kind::October => crate::readers::pi::history(&path),
+            Kind::Gemini => crate::readers::gemini::history(&path),
+            _ => crate::history::claude(&path),
+        };
+        self.remember_history(&agent.id, stamp, &messages);
+        Some(messages)
+    }
+
+    fn remember_history(&mut self, id: &str, stamp: HistoryStamp, messages: &[crate::history::ChatMessage]) {
+        if self.history_cache.len() >= 64 {
+            self.history_cache.clear();
+        }
+        self.history_cache.insert(id.to_string(), (stamp, messages.to_vec()));
     }
 
     fn handle_number(&mut self, pid: u32, kind: Kind) -> usize {
@@ -556,4 +601,32 @@ fn merge(hook: Option<&HookEvent>, transcript: Option<SessionStatus>) -> (Sessio
 /// An October canvas id: a UUID (what `october://canvas/<id>` accepts).
 pub(crate) fn is_canvas_id(s: &str) -> bool {
     s.len() == 36 && s.chars().enumerate().all(|(i, c)| if [8, 13, 18, 23].contains(&i) { c == '-' } else { c.is_ascii_hexdigit() })
+}
+
+#[cfg(test)]
+mod history_cache_tests {
+    use super::*;
+    #[test]
+    fn cached_history_is_invalidated_by_file_changes_and_session_switches() {
+        let root = std::env::temp_dir().join(format!("lantern-history-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("first.jsonl");
+        let write = |path: &std::path::Path, text: &str| {
+            std::fs::write(path, format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")).unwrap();
+        };
+        write(&path, "first");
+        let mut scanner = Scanner::new();
+        let a = crate::tests::agent_for(123, 1, Some("ttys001"));
+        scanner.app_paths.insert(a.id.clone(), (Kind::Claude, path.clone()));
+        assert_eq!(scanner.history(&a).unwrap()[0].text, "first");
+        assert_eq!(scanner.history(&a).unwrap()[0].text, "first");
+        assert_eq!(scanner.history_cache.len(), 1);
+        write(&path, "changed message");
+        assert_eq!(scanner.history(&a).unwrap()[0].text, "changed message");
+        let second = root.join("second.jsonl");
+        write(&second, "new session");
+        scanner.app_paths.insert(a.id.clone(), (Kind::Claude, second));
+        assert_eq!(scanner.history(&a).unwrap()[0].text, "new session");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

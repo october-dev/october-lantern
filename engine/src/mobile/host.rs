@@ -7,7 +7,7 @@
 //! compare, and paired phones authenticate with a credential Lantern issued and then send
 //! October core requests, answered from Lantern's agents (`api.rs`). Replies are typed by the
 //! serve loop's delivery workers (the one place that delivers). The phone hears delivered, not
-//! delivered (canceled before typing), or not confirmed; see `deliver_and_wait`.
+//! delivered (canceled before typing), or not confirmed; see `Delivery`.
 
 use std::collections::HashMap;
 use std::net::TcpStream;
@@ -57,6 +57,7 @@ const DELIVER_TIMEOUT: Duration = Duration::from_secs(20);
 const STARTED_GRACE: Duration = Duration::from_secs(15);
 /// Connecting to the relay, its TLS and WebSocket handshakes, and any single write.
 const CONNECT_LIMIT: Duration = Duration::from_secs(10);
+const MAX_PENDING_DELIVERIES: usize = 16;
 /// Answers remembered per (phone, idempotency key), so a retried mutation isn't typed twice.
 const REMEMBERED_ANSWERS: usize = 256;
 
@@ -137,12 +138,23 @@ struct Host {
     last_heartbeat: Instant,
     /// Answers already given to mutations, by (phone, idempotency key).
     answered: api::Answers,
+    pending: Vec<PendingReply>,
 }
 
 impl Host {
     fn new(token: String, rx: Receiver<Cmd>, agents: Arc<Mutex<Vec<Agent>>>, emit: fn(&Value), deliver: Sender<Incoming>) -> Result<Host> {
-        let id = HostIdentity::load_or_create()?;
-        Ok(Host {
+        Ok(Self::with_identity(HostIdentity::load_or_create()?, token, rx, agents, emit, deliver))
+    }
+
+    fn with_identity(
+        id: HostIdentity,
+        token: String,
+        rx: Receiver<Cmd>,
+        agents: Arc<Mutex<Vec<Agent>>>,
+        emit: fn(&Value),
+        deliver: Sender<Incoming>,
+    ) -> Host {
+        Host {
             id,
             token,
             rx,
@@ -164,7 +176,8 @@ impl Host {
             last_digest: String::new(),
             last_heartbeat: Instant::now(),
             answered: api::Answers::new(REMEMBERED_ANSWERS),
-        })
+            pending: Vec::new(),
+        }
     }
 
     fn publish(&self) {
@@ -200,6 +213,7 @@ impl Host {
                 }
                 self.publish();
             }
+            self.finish_deliveries();
             self.expire_pairing();
             // Connect while there is a phone to serve or one being paired.
             let wanted = !self.parked && ((self.id.registered && self.has_devices()) || self.pairing.is_some());
@@ -245,6 +259,7 @@ impl Host {
             }
             Cmd::Decide(allow) => self.decide(allow)?,
             Cmd::Revoke(bind) => {
+                self.cancel_deliveries(Some(&bind));
                 let body = json!({"hostId": self.id.host_id, "bind": bind});
                 let result = control::signed_post("mobile-device-revoke", "device-revoke", &body, &self.id, &self.token);
                 store::remove_device(&bind)?;
@@ -403,6 +418,7 @@ impl Host {
         if let Some(mut ws) = self.ws.take() {
             let _ = ws.close(None);
         }
+        self.cancel_deliveries(None);
         self.sessions.clear();
         self.status = status;
     }
@@ -410,6 +426,7 @@ impl Host {
     /// The socket is gone: every phone session with it. Reconnect after a pause.
     fn lost(&mut self, message: String) {
         self.ws = None;
+        self.cancel_deliveries(None);
         self.sessions.clear();
         self.status = "connecting";
         self.message = Some(message);
@@ -428,6 +445,7 @@ impl Host {
             Ok(Message::Close(frame)) => {
                 let code: u16 = frame.map(|f| f.code.into()).unwrap_or(1000);
                 self.ws = None;
+                self.cancel_deliveries(None);
                 self.sessions.clear();
                 match code {
                     4409 => self.park("offline", "Another copy of Lantern connected with this identity."),
@@ -455,6 +473,7 @@ impl Host {
     }
 
     fn close_session(&mut self, bind: &str, code: u16) {
+        self.cancel_deliveries(Some(bind));
         if let Some(s) = self.sessions.remove(bind)
             && let Ok(f) = frames::encode_outer(frames::OUTER_CLOSE, bind, s.connection_id, &code.to_be_bytes())
         {
@@ -467,6 +486,7 @@ impl Host {
         self.send_outer(frames::host_ack(outer.connection_id, bytes.len()));
         match outer.kind {
             frames::OUTER_OPEN => {
+                self.cancel_deliveries(Some(&outer.bind));
                 // Who is this? Ask October, never the phone.
                 let Some(binding) = control::resolve_binding(&self.id.host_id, &outer.bind, &self.token)? else {
                     self.sessions.remove(&outer.bind);
@@ -493,7 +513,10 @@ impl Host {
                 );
             }
             frames::OUTER_CLOSE => {
-                self.sessions.remove(&outer.bind);
+                if self.sessions.get(&outer.bind).is_some_and(|s| s.connection_id == outer.connection_id) {
+                    self.cancel_deliveries(Some(&outer.bind));
+                    self.sessions.remove(&outer.bind);
+                }
             }
             frames::OUTER_DATA => {
                 if let Err(e) = self.receive_data(&outer.bind, outer.connection_id, &outer.payload) {
@@ -592,6 +615,32 @@ impl Host {
                     self.send_frame(bind, Kind::Res, &res, id);
                     return Ok(());
                 }
+                let connection_id = self.sessions.get(bind).map(|s| s.connection_id).unwrap_or(0);
+                if let Some(pending) =
+                    self.pending.iter_mut().find(|p| p.bind == bind && remembered.is_some() && p.remembered == remembered)
+                {
+                    if pending.request["method"] == request["method"] && pending.request["payload"] == request["payload"] {
+                        if !pending.waiters.iter().any(|w| w.connection_id == connection_id && w.frame == id) {
+                            if pending.waiters.len() >= 8 {
+                                bail!("too many retries for one pending reply");
+                            }
+                            pending.waiters.push(ReplyTo { connection_id, frame: id, request_id: request["requestId"].clone() });
+                        }
+                        return Ok(());
+                    }
+                    let (status, body) =
+                        api::err(&request["requestId"], "INVALID_ARGUMENT", "this idempotency key belongs to a different pending request");
+                    let res = frames::encode_response(status, crate::hooks::now_ms(), &serde_json::to_vec(&body)?);
+                    self.send_frame(bind, Kind::Res, &res, id);
+                    return Ok(());
+                }
+                if self
+                    .pending
+                    .iter()
+                    .any(|p| p.bind == bind && p.waiters.iter().any(|w| w.connection_id == connection_id && w.frame == id))
+                {
+                    bail!("request id already in flight");
+                }
                 let agents = self.agents.lock().map(|a| a.clone()).unwrap_or_default();
                 let ctx = api::Context {
                     agents: &agents,
@@ -601,9 +650,26 @@ impl Host {
                     process_start: &self.process_start,
                     credential: &credential,
                 };
-                let deliver = &self.deliver;
-                let mut typed = |a: &Agent, text: &str, deadline_ms: Option<u64>| deliver_and_wait(deliver, a, text, deadline_ms);
-                let (status, body) = api::handle(&ctx, &request, &mut typed);
+                let mut to_deliver = None;
+                let mut typed = |a: &Agent, text: &str, deadline_ms: Option<u64>| {
+                    to_deliver = Some((a.clone(), text.to_string(), deadline_ms));
+                    Outcome::Queued
+                };
+                let (mut status, mut body) = api::handle(&ctx, &request, &mut typed);
+                if let Some((agent, text, deadline)) = to_deliver {
+                    if self.pending.len() >= MAX_PENDING_DELIVERIES {
+                        (status, body) = api::err(&request["requestId"], "BUSY", "Too many replies are pending. Nothing was sent.");
+                    } else {
+                        self.pending.push(PendingReply {
+                            bind: bind.to_string(),
+                            waiters: vec![ReplyTo { connection_id, frame: id, request_id: request["requestId"].clone() }],
+                            request,
+                            remembered,
+                            delivery: Delivery::start(&self.deliver, &agent, &text, deadline),
+                        });
+                        return Ok(());
+                    }
+                }
                 let res = frames::encode_response(status, crate::hooks::now_ms(), &serde_json::to_vec(&body)?);
                 if let Some(key) = remembered {
                     self.answered.remember(key, &request, status, body);
@@ -626,10 +692,52 @@ impl Host {
                 }
             }
             Kind::Ping => self.send_frame(bind, Kind::Pong, &[], id),
-            Kind::Cancel => {}
+            Kind::Cancel => {
+                let connection_id = self.sessions.get(bind).map(|s| s.connection_id);
+                for p in self
+                    .pending
+                    .iter()
+                    .filter(|p| p.bind == bind && p.waiters.iter().any(|w| Some(w.connection_id) == connection_id && w.frame == id))
+                {
+                    p.delivery.ticket.cancel();
+                }
+            }
             _ => bail!("frame not allowed in an active session"),
         }
         Ok(())
+    }
+
+    fn cancel_deliveries(&self, bind: Option<&str>) {
+        for p in self.pending.iter().filter(|p| bind.is_none_or(|b| b == p.bind)) {
+            p.delivery.ticket.cancel();
+        }
+    }
+
+    fn finish_deliveries(&mut self) {
+        let mut completed = Vec::new();
+        for (index, pending) in self.pending.iter_mut().enumerate() {
+            if let Some(outcome) = pending.delivery.poll(Instant::now()) {
+                completed.push((index, outcome));
+            }
+        }
+        for (index, outcome) in completed.into_iter().rev() {
+            let pending = self.pending.remove(index);
+            let (status, body) = api::delivery_result(&pending.request["requestId"], outcome);
+            if let Some(key) = pending.remembered {
+                self.answered.remember(key, &pending.request, status, body.clone());
+            }
+            for waiter in pending.waiters {
+                if self.sessions.get(&pending.bind).is_none_or(|s| s.connection_id != waiter.connection_id) {
+                    continue;
+                }
+                let mut response = body.clone();
+                response["requestId"] = waiter.request_id;
+                if let Ok(bytes) = serde_json::to_vec(&response) {
+                    let res = frames::encode_response(status, crate::hooks::now_ms(), &bytes);
+                    self.send_frame(&pending.bind, Kind::Res, &res, waiter.frame);
+                }
+            }
+        }
     }
 
     /// Encrypts and sends one inner message (chunked) to a phone.
@@ -699,30 +807,89 @@ impl Host {
     }
 }
 
-/// Hands a reply to the serve loop and waits for it. If typing hasn't started when the wait runs
-/// out, the reply is canceled (it will never be typed); if it has, Lantern waits for its outcome
-/// a little longer and otherwise reports it as uncertain.
-pub(crate) fn deliver_and_wait(deliver: &Sender<Incoming>, a: &Agent, text: &str, deadline_ms: Option<u64>) -> Outcome {
-    let now = crate::hooks::now_ms();
-    let wait_for = deadline_ms.map(|d| Duration::from_millis(d.saturating_sub(now))).unwrap_or(DELIVER_TIMEOUT).min(DELIVER_TIMEOUT);
-    let ticket = Ticket::new();
-    let (done, wait) = channel();
-    let sent = deliver.send(Incoming::Deliver(Deliver {
-        agent_id: a.id.clone(),
-        text: text.to_string(),
-        deadline: Instant::now() + wait_for,
-        ticket: ticket.clone(),
-        done,
-    }));
-    if sent.is_err() {
-        return Outcome::failed("send_failed", "Lantern is shutting down");
+struct ReplyTo {
+    connection_id: u64,
+    frame: u32,
+    request_id: Value,
+}
+
+struct PendingReply {
+    bind: String,
+    waiters: Vec<ReplyTo>,
+    request: Value,
+    remembered: Option<String>,
+    delivery: Delivery,
+}
+
+/// Polled by the socket owner. No wait for a terminal operation runs on that thread.
+struct Delivery {
+    ticket: Arc<Ticket>,
+    result: Receiver<Outcome>,
+    until: Instant,
+    started_grace: bool,
+}
+
+impl Delivery {
+    fn start(deliver: &Sender<Incoming>, a: &Agent, text: &str, deadline_ms: Option<u64>) -> Self {
+        let now = crate::hooks::now_ms();
+        let wait_for = deadline_ms.map(|d| Duration::from_millis(d.saturating_sub(now))).unwrap_or(DELIVER_TIMEOUT).min(DELIVER_TIMEOUT);
+        let ticket = Ticket::new();
+        let (done, result) = channel();
+        let _ = deliver.send(Incoming::Deliver(Deliver {
+            agent_id: a.id.clone(),
+            text: text.to_string(),
+            deadline: Instant::now() + wait_for,
+            ticket: ticket.clone(),
+            done,
+        }));
+        Self { ticket, result, until: Instant::now() + wait_for + Duration::from_millis(500), started_grace: false }
     }
-    wait.recv_timeout(wait_for + Duration::from_millis(500)).unwrap_or_else(|_| {
-        if ticket.cancel() {
-            return Outcome::failed("expired", "Lantern couldn't type it in time. Nothing was typed.");
+
+    fn poll(&mut self, now: Instant) -> Option<Outcome> {
+        match self.result.try_recv() {
+            Ok(outcome) => return Some(outcome),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Some(if self.ticket.cancel() {
+                    Outcome::failed("send_failed", "Lantern's delivery worker stopped before typing")
+                } else {
+                    Outcome::Uncertain("Lantern's delivery worker stopped after typing began".into())
+                });
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        wait.recv_timeout(STARTED_GRACE).unwrap_or_else(|_| Outcome::Uncertain("typing started but didn't finish in time".into()))
-    })
+        if self.ticket.canceled() {
+            return Some(Outcome::failed("canceled", "Canceled before Lantern typed it."));
+        }
+        if now < self.until {
+            return None;
+        }
+        if self.started_grace {
+            return Some(Outcome::Uncertain("typing started but didn't finish in time".into()));
+        }
+        if self.ticket.cancel() {
+            return Some(Outcome::failed("expired", "Lantern couldn't type it in time. Nothing was typed."));
+        }
+        self.started_grace = true;
+        self.until = now + STARTED_GRACE;
+        None
+    }
+}
+
+impl Drop for Delivery {
+    fn drop(&mut self) {
+        self.ticket.cancel();
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn deliver_and_wait(deliver: &Sender<Incoming>, a: &Agent, text: &str, deadline_ms: Option<u64>) -> Outcome {
+    let mut pending = Delivery::start(deliver, a, text, deadline_ms);
+    loop {
+        if let Some(outcome) = pending.poll(Instant::now()) {
+            return outcome;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn describe(e: &anyhow::Error) -> String {
@@ -749,4 +916,112 @@ fn machine_model() -> String {
     crate::run::output(std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.model"]), Duration::from_secs(3))
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    fn host(deliver: Sender<Incoming>, agent: Agent) -> Host {
+        let identity = serde_json::from_value(json!({"hostId": "host", "signSeed": B64.encode([0u8; 32]),
+            "staticSecret": B64.encode([0u8; 32]), "staticPublic": B64.encode([0u8; 32]), "canvasId": "canvas"}))
+        .unwrap();
+        let (_, rx) = channel();
+        let mut h = Host::with_identity(identity, String::new(), rx, Arc::new(Mutex::new(vec![agent])), |_| {}, deliver);
+        for bind in ["phone-a", "phone-b"] {
+            h.sessions.insert(
+                bind.into(),
+                Session {
+                    connection_id: 1,
+                    binding: Binding {
+                        bind: bind.into(),
+                        pairing: false,
+                        device_static: [0; 32],
+                        device_static_raw: String::new(),
+                        device_sign_pub: String::new(),
+                        label: String::new(),
+                        platform: String::new(),
+                        intent_id: None,
+                        state_version: None,
+                    },
+                    stage: None,
+                    assembler: Assembler::default(),
+                    last: Instant::now(),
+                },
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn pending_retries_share_delivery_and_cancel_is_scoped_to_the_phone() {
+        let (sender, incoming) = channel();
+        let a = crate::tests::agent_for(123, 1, Some("ttys001"));
+        let request = json!({"apiVersion": 2, "requestId": "first", "idempotencyKey": "k", "method": "bus.mutate",
+            "payload": {"operation": "userSend", "args": ["canvas", {"id": api::node_id(&a.id), "kind": "terminal"}, "hello"]}});
+        let mut h = host(sender, a);
+        let send = |h: &mut Host, bind: &str, frame, request: &Value| {
+            h.active_frame(bind, Some("credential".into()), Kind::Req, frame, serde_json::to_vec(request).unwrap()).unwrap();
+        };
+        send(&mut h, "phone-a", 1, &request);
+        let Ok(Incoming::Deliver(first)) = incoming.try_recv() else { panic!("first not submitted") };
+        let mut retry = request.clone();
+        retry["requestId"] = json!("retry");
+        send(&mut h, "phone-a", 2, &retry);
+        assert_eq!(h.pending.len(), 1);
+        assert_eq!(h.pending[0].waiters.len(), 2);
+        assert!(incoming.try_recv().is_err(), "A pending retry must not type twice");
+        send(&mut h, "phone-b", 1, &request);
+        let Ok(Incoming::Deliver(second)) = incoming.try_recv() else { panic!("second not submitted") };
+        h.active_frame("phone-b", Some("credential".into()), Kind::Cancel, 1, Vec::new()).unwrap();
+        assert!(!second.ticket.start());
+        assert!(first.ticket.start(), "Cancel must not affect a different phone using the same frame id");
+        first.done.send(Outcome::Done).unwrap();
+        h.finish_deliveries();
+        assert!(h.pending.is_empty());
+        let (_, body) = h.answered.replay("phone-a|k", &retry).unwrap();
+        assert_eq!(body["requestId"], "retry");
+        assert_eq!(body["result"]["delivery"], "delivered");
+        let (_, body) = h.answered.replay("phone-b|k", &request).unwrap();
+        assert_eq!(body["result"]["accepted"], false);
+    }
+
+    #[test]
+    fn pending_delivery_is_polled_without_blocking_other_work() {
+        let (sender, incoming) = channel();
+        let a = crate::tests::agent_for(123, 1, Some("ttys001"));
+        let mut pending = Delivery::start(&sender, &a, "test", None);
+        let Ok(Incoming::Deliver(d)) = incoming.try_recv() else { panic!("not submitted") };
+        assert!(pending.poll(Instant::now()).is_none());
+        assert!(d.ticket.start());
+        d.done.send(Outcome::Done).unwrap();
+        assert_eq!(pending.poll(Instant::now()), Some(Outcome::Done));
+    }
+
+    #[test]
+    fn cancel_and_disconnect_prevent_queued_typing() {
+        let (sender, incoming) = channel();
+        let a = crate::tests::agent_for(123, 1, Some("ttys001"));
+        let mut pending = Delivery::start(&sender, &a, "test", None);
+        let Ok(Incoming::Deliver(d)) = incoming.try_recv() else { panic!("not submitted") };
+        assert!(pending.ticket.cancel());
+        assert!(matches!(pending.poll(Instant::now()), Some(Outcome::Failed { code: "canceled", .. })));
+        assert!(!d.ticket.start());
+        let pending = Delivery::start(&sender, &a, "second", None);
+        let Ok(Incoming::Deliver(d)) = incoming.try_recv() else { panic!("not submitted") };
+        drop(pending);
+        assert!(!d.ticket.start(), "Dropping a host must cancel deliveries that have not started");
+    }
+
+    #[test]
+    fn a_started_delivery_expires_as_uncertain_not_failed() {
+        let (sender, incoming) = channel();
+        let a = crate::tests::agent_for(123, 1, Some("ttys001"));
+        let mut pending = Delivery::start(&sender, &a, "test", None);
+        let Ok(Incoming::Deliver(d)) = incoming.try_recv() else { panic!("not submitted") };
+        assert!(d.ticket.start());
+        let timeout = pending.until;
+        assert!(pending.poll(timeout).is_none());
+        assert!(matches!(pending.poll(timeout + STARTED_GRACE), Some(Outcome::Uncertain(_))));
+    }
 }

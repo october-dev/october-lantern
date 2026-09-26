@@ -288,7 +288,7 @@ impl Client {
         if !self.paired() {
             bail!("connect Lantern to October first");
         }
-        let text: String = text.chars().take(8000).collect();
+        validate_message(text)?;
         let node = json!({"id": a.node_id, "kind": "terminal", "displayName": a.name.clone().unwrap_or_default()});
         let r = self.call("bus.mutate", json!({"operation": "userSend", "args": [a.canvas_id, node, text]}), true)?;
         if r["accepted"] == false {
@@ -310,6 +310,13 @@ impl Client {
         let _ = std::process::Command::new("/usr/bin/open").arg(format!("october://canvas/{}", a.canvas_id)).status();
         Ok(())
     }
+}
+
+pub(crate) fn validate_message(text: &str) -> Result<()> {
+    if text.chars().count() > 8000 {
+        bail!("October accepts at most 8,000 characters per message. Shorten the message; nothing was sent.");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

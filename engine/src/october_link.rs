@@ -52,8 +52,8 @@ impl Link {
         let _ = self.tx.send(cmd);
     }
 
-    /// October's view of a Lantern agent that runs inside October Desktop, matched by folder and
-    /// harness (October's terminals are ordinary processes Lantern also sees).
+    /// Resolve the addressed node exactly once a route exists. Never retarget a queued action
+    /// to another node that happens to run the same harness in the same folder.
     pub fn agent_for(&self, a: &Agent) -> Option<OctoberAgent> {
         let state = self.state.lock().ok()?;
         match_october(&state, a).cloned()
@@ -61,7 +61,8 @@ impl Link {
 
     /// Types a reply through October's safe delivery. A request that October hasn't answered in
     /// time is canceled if it hasn't gone out yet, and reported as uncertain if it has.
-    pub fn send_text(&self, a: &Agent, text: &str) -> Result<(), Outcome> {
+    pub fn send_text(&self, a: &Agent, text: &str) -> Result<String, Outcome> {
+        october_core::validate_message(text).map_err(|e| Outcome::failed("message_too_long", e.to_string()))?;
         let agent = self.agent_for(a).ok_or_else(|| Outcome::failed("send_failed", "October no longer lists this agent"))?;
         let (done, wait) = channel();
         let ticket = Ticket::new();
@@ -74,7 +75,7 @@ impl Link {
             }
             wait.recv_timeout(Duration::from_secs(20)).map_err(|_| Outcome::Uncertain("October didn't confirm the message".into()))
         })?;
-        answer.map(|_| ()).map_err(|e| {
+        answer.map_err(|e| {
             if e.contains("timed out") || e.contains("Timeout") || e.contains("timeout") {
                 Outcome::Uncertain(format!("October didn't confirm the message ({e})"))
             } else {
@@ -95,15 +96,34 @@ impl Link {
     }
 }
 
-/// Exactly one October node in the agent's folder running its harness; a node whose harness
-/// October doesn't report counts only when it's the only node in that folder. Anything else is
-/// ambiguous, and an ambiguous match must not route a reply.
+/// Which October node an agent is:
+/// - its terminal's own node (`OCTOBER_BUS_NODE`, on October's Bus): exact;
+/// - an existing route: kept only while that same node is still listed;
+/// - otherwise exactly one node in the agent's folder running its harness, on the terminal's
+///   canvas when it's known (`OCTOBER_BUS_CANVAS`) or across every listed canvas when it isn't
+///   (October keeps some terminals off the Bus). A node whose harness October doesn't report
+///   counts only when it's the only node in that folder. Anything else is ambiguous, and an
+///   ambiguous match must not route a reply.
+///
+/// Every canvas with a running terminal is listed, so the agent's own node is always a
+/// candidate: "exactly one" can't pick another node while the right one is missing.
 fn match_october<'a>(link: &'a LinkState, a: &Agent) -> Option<&'a OctoberAgent> {
-    if a.host.as_ref().is_none_or(|h| h.app != "October") {
-        return None;
+    let host = a.host.as_ref().filter(|h| h.app == "October")?;
+    let canvas = host.canvas.as_deref();
+    let on_canvas = |o: &&OctoberAgent| canvas.is_none_or(|c| o.canvas_id == c);
+    if let Some(node) = host.node.as_deref() {
+        return link.agents.iter().filter(on_canvas).find(|o| o.node_id == node);
     }
     let cwd = a.cwd.as_deref()?;
-    let same_dir: Vec<_> = link.agents.iter().filter(|o| o.cwd.as_deref() == Some(cwd)).collect();
+    if let Route::October { canvas_id, node_id } = &a.route {
+        return link.agents.iter().filter(on_canvas).find(|o| {
+            o.canvas_id == *canvas_id
+                && o.node_id == *node_id
+                && o.cwd.as_deref() == Some(cwd)
+                && o.harness.as_deref().is_none_or(|h| h.contains(a.kind.as_str()))
+        });
+    }
+    let same_dir: Vec<_> = link.agents.iter().filter(on_canvas).filter(|o| o.cwd.as_deref() == Some(cwd)).collect();
     let by_harness: Vec<_> =
         same_dir.iter().filter(|o| o.harness.as_deref().is_some_and(|h| h.contains(a.kind.as_str()))).copied().collect();
     match (by_harness.len(), same_dir.as_slice()) {
@@ -367,5 +387,54 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
 fn update(state: &Arc<Mutex<LinkState>>, f: impl FnOnce(&mut LinkState)) {
     if let Ok(mut s) = state.lock() {
         f(&mut s);
+    }
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    #[test]
+    fn audit_queued_reply_must_not_retarget_replacement_node() {
+        let mut a = crate::tests::agent_for(123, 1, Some("ttys001"));
+        a.cwd = Some("/project".into());
+        a.host = Some(crate::model::HostApp {
+            app: "October".into(),
+            pid: 1,
+            bundle_path: "/Applications/October.app".into(),
+            canvas: Some("canvas-A".into()),
+            node: None,
+        });
+        a.route = Route::October { canvas_id: "canvas-A".into(), node_id: "original-node".into() };
+        let (tx, _) = channel();
+        let link = Link {
+            tx,
+            state: Arc::new(Mutex::new(LinkState {
+                status: "connected".into(),
+                paired: true,
+                agents: vec![OctoberAgent {
+                    canvas_id: "canvas-A".into(),
+                    node_id: "replacement-node".into(),
+                    kind: "terminal".into(),
+                    name: None,
+                    harness: Some("claude".into()),
+                    cwd: Some("/project".into()),
+                    state: "working".into(),
+                    attention: None,
+                }],
+                ..Default::default()
+            })),
+        };
+        assert!(link.agent_for(&a).is_none(), "The original route vanished; a new node in the same folder is not the addressed recipient");
+        {
+            let mut state = link.state.lock().unwrap();
+            let mut original = state.agents[0].clone();
+            original.node_id = "original-node".into();
+            state.agents.push(original);
+        }
+        assert_eq!(link.agent_for(&a).unwrap().node_id, "original-node", "An addressed node remains valid even with another matching node");
+        a.route = Route::None;
+        assert!(link.agent_for(&a).is_none(), "An unaddressed ambiguous terminal must not be guessed");
+        link.state.lock().unwrap().agents[0].canvas_id = "different-canvas".into();
+        assert_eq!(link.agent_for(&a).unwrap().node_id, "original-node", "Association stays within the terminal's canvas");
     }
 }

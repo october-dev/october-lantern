@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, Write};
 use std::sync::Arc;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender, SyncSender};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -51,6 +51,8 @@ enum Request {
         #[serde(default)]
         bus: bool,
         background: bool,
+        #[serde(default = "launch_timeout")]
+        timeout_ms: u64,
     },
     /// Download October Bus now if it isn't here (answered with `bus`), so the first session with
     /// the Bus doesn't wait for it.
@@ -121,6 +123,10 @@ enum Request {
     PhoneStop,
 }
 
+fn launch_timeout() -> u64 {
+    45_000
+}
+
 /// A reply from the phone, typed like a reply from the app. The phone host keeps `ticket` to
 /// cancel it if it gives up waiting.
 pub struct Deliver {
@@ -137,6 +143,37 @@ pub enum Incoming {
     /// stdin closed: the app is gone.
     Closed,
     Deliver(Deliver),
+    Scanned(Vec<Agent>),
+    LaunchFinished(Value),
+    HistoryRead {
+        request_id: String,
+        agent_id: String,
+        messages: Option<Vec<crate::history::ChatMessage>>,
+    },
+}
+
+enum ReadRequest {
+    Scan,
+    History { request_id: String, agent: Box<Agent> },
+}
+
+/// One bounded reader owns the scanner and its caches. Slow file/helper reads never occupy
+/// command dispatch; at most one scan and one history read are outstanding.
+fn reader(tx: Sender<Incoming>, mut read: impl FnMut(ReadRequest) -> Incoming + Send + 'static) -> SyncSender<ReadRequest> {
+    let (send, receive) = mpsc::sync_channel(2);
+    std::thread::spawn(move || {
+        while let Ok(request) = receive.recv() {
+            // A panic here would leave scans stopped and history always busy: exit instead, and
+            // the app starts a fresh engine.
+            let Ok(result) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(request))) else {
+                std::process::exit(70);
+            };
+            if tx.send(result).is_err() {
+                break;
+            }
+        }
+    });
+    send
 }
 
 fn emit(v: &Value) {
@@ -172,7 +209,23 @@ pub fn run() -> Result<()> {
     let link = october_link::start();
     let mut executor = Executor::new(link.clone());
     let mut last_october = String::new();
-    let mut scanner = Scanner::new();
+    let reads = reader(tx.clone(), {
+        let mut scanner = Scanner::new();
+        let mut known = Vec::<Agent>::new();
+        move |request| match request {
+            ReadRequest::Scan => {
+                known = scanner.scan();
+                Incoming::Scanned(known.clone())
+            }
+            ReadRequest::History { request_id, agent } => {
+                let messages = known.iter().find(|a| a.id == agent.id).and_then(|a| scanner.history(a));
+                Incoming::HistoryRead { request_id, agent_id: agent.id, messages }
+            }
+        }
+    });
+    let mut scan_pending = false;
+    let mut history_pending = false;
+    let mut launch_pending = false;
     let mut agents: Vec<Agent> = Vec::new();
     let mut last_emit = Instant::now() - HEARTBEAT;
     let mut next_scan = Instant::now();
@@ -180,29 +233,42 @@ pub fn run() -> Result<()> {
 
     loop {
         if Instant::now() >= next_scan {
-            let mut fresh = scanner.scan();
-            let october = link.snapshot();
-            october_link::merge(&mut fresh, &october);
-            if let Some(p) = &phone {
-                // App sessions that aren't running have nothing to reply to.
-                p.update_agents(&fresh.iter().filter(|a| a.live).cloned().collect::<Vec<_>>());
-            }
-            let summary = serde_json::to_string(&october).unwrap_or_default();
-            if summary != last_october {
-                emit(&json!({"type": "october", "october": october}));
-                last_october = summary;
-            }
-            if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
-                agents = fresh;
-                executor.retain(&agents);
-                emit(&json!({"type": "snapshot", "generatedAt": now_ms(), "agents": agents}));
-                last_emit = Instant::now();
+            if !scan_pending && reads.try_send(ReadRequest::Scan).is_ok() {
+                scan_pending = true;
             }
             next_scan = Instant::now() + SCAN_EVERY;
+        }
+        let october = link.snapshot();
+        let summary = serde_json::to_string(&october).unwrap_or_default();
+        if summary != last_october {
+            emit(&json!({"type": "october", "october": october}));
+            last_october = summary;
         }
 
         let wait = next_scan.saturating_duration_since(Instant::now());
         match rx.recv_timeout(wait) {
+            Ok(Incoming::LaunchFinished(result)) => {
+                launch_pending = false;
+                emit(&result);
+            }
+            Ok(Incoming::Scanned(mut fresh)) => {
+                scan_pending = false;
+                october_link::merge(&mut fresh, &link.snapshot());
+                if let Some(p) = &phone {
+                    p.update_agents(&fresh.iter().filter(|a| a.live).cloned().collect::<Vec<_>>());
+                }
+                if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
+                    agents = fresh;
+                    executor.retain(&agents);
+                    emit(&json!({"type": "snapshot", "generatedAt": now_ms(), "agents": agents}));
+                    last_emit = Instant::now();
+                }
+            }
+            Ok(Incoming::HistoryRead { request_id, agent_id, messages }) => {
+                history_pending = false;
+                emit(&json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
+                    "supported": messages.is_some(), "messages": messages.unwrap_or_default()}));
+            }
             Ok(Incoming::Deliver(d)) => {
                 let done = d.done;
                 match reachable(&agents, &d.agent_id) {
@@ -230,7 +296,15 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, context, toolkit, bus, background }) => {
+                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, context, toolkit, bus, background, timeout_ms }) => {
+                    if launch_pending {
+                        emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false,
+                            "message": "Another session is still starting. Wait for its outcome before starting another."}));
+                        continue;
+                    }
+                    launch_pending = true;
+                    let finished = tx.clone();
+                    let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(45_000));
                     // Off the loop: it may wait for the agent to start before typing its first message.
                     std::thread::spawn(move || {
                         let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
@@ -243,15 +317,22 @@ pub fn run() -> Result<()> {
                             bus,
                             bus_note: None,
                         };
-                        match launch::launch(kind, std::path::Path::new(&cwd), prompt.as_deref(), extras, model.as_deref(), mode) {
-                            Ok(l) => emit(&json!({
+                        let result = match launch::launch(
+                            kind,
+                            std::path::Path::new(&cwd),
+                            prompt.as_deref(),
+                            extras,
+                            model.as_deref(),
+                            mode,
+                            deadline,
+                        ) {
+                            Ok(l) => json!({
                                 "type": "launchResult", "requestId": request_id, "ok": true, "session": l.session,
                                 "warning": l.bus_problem.map(|p| format!("Started without October Bus: {p}"))
-                            })),
-                            Err(e) => {
-                                emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}))
-                            }
-                        }
+                            }),
+                            Err(e) => json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}),
+                        };
+                        let _ = finished.send(Incoming::LaunchFinished(result));
                     });
                     next_scan = Instant::now() + Duration::from_millis(1500);
                 }
@@ -276,11 +357,20 @@ pub fn run() -> Result<()> {
                     });
                 }
                 Ok(Request::History { request_id, agent_id }) => {
-                    let messages = agents.iter().find(|a| a.id == agent_id).and_then(|a| scanner.history(a));
-                    emit(&json!({
-                        "type": "historyResult", "requestId": request_id, "agentId": agent_id,
-                        "supported": messages.is_some(), "messages": messages.unwrap_or_default()
-                    }));
+                    let agent = agents.iter().find(|a| a.id == agent_id).cloned();
+                    if let Some(agent) = agent {
+                        if !history_pending
+                            && reads.try_send(ReadRequest::History { request_id: request_id.clone(), agent: Box::new(agent) }).is_ok()
+                        {
+                            history_pending = true;
+                        } else {
+                            emit(&json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
+                                "busy": true, "supported": true, "messages": []}));
+                        }
+                    } else {
+                        emit(&json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
+                            "supported": false, "messages": []}));
+                    }
                 }
                 Ok(Request::Keys { request_id, agent_id, keys, prompt_id }) => {
                     let parsed: Option<Vec<deliver::Key>> = keys.iter().map(|k| deliver::Key::parse(k)).collect();
@@ -390,10 +480,40 @@ fn app_action(agent: &Agent, op: Op, kind: &'static str, request_id: String) -> 
 fn result_json(kind: &str, request_id: &str, outcome: &Outcome) -> Value {
     match outcome {
         Outcome::Done => json!({"type": kind, "requestId": request_id, "ok": true}),
+        Outcome::Queued => json!({"type": kind, "requestId": request_id, "ok": true, "delivery": "queued", "message": "Queued in October"}),
         Outcome::Failed { code, message } => json!({"type": kind, "requestId": request_id, "ok": false, "error": code, "message": message}),
         Outcome::Uncertain(message) => json!({
             "type": kind, "requestId": request_id, "ok": false, "error": "uncertain",
             "message": format!("Not sure it went in: {message}. Check the terminal before sending again.")
         }),
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+
+    #[test]
+    fn a_blocked_reader_does_not_block_incoming_commands() {
+        let (events, incoming) = mpsc::channel();
+        let (release, wait) = mpsc::channel::<()>();
+        let (started, did_start) = mpsc::channel();
+        let jobs = reader(events.clone(), move |_| {
+            let _ = started.send(());
+            let _ = wait.recv();
+            Incoming::Scanned(Vec::new())
+        });
+        assert!(jobs.try_send(ReadRequest::Scan).is_ok());
+        assert!(did_start.recv_timeout(Duration::from_secs(1)).is_ok());
+        assert!(jobs.try_send(ReadRequest::Scan).is_ok());
+        assert!(jobs.try_send(ReadRequest::Scan).is_ok());
+        assert!(jobs.try_send(ReadRequest::Scan).is_err(), "The slow-work queue must stay bounded");
+        assert!(events.send(Incoming::Line("{\"type\":\"phone.stop\"}".into())).is_ok());
+        assert!(
+            matches!(incoming.recv_timeout(Duration::from_secs(1)), Ok(Incoming::Line(_))),
+            "Dispatch must receive controls while the reader is blocked"
+        );
+        drop(release);
+        drop(jobs);
     }
 }

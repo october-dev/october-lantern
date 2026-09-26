@@ -121,17 +121,15 @@ struct StatusPill: View {
 
 /// October's canvas with its agent nodes on the left, Lantern on the right, and the link between
 /// them: dashed until they're connected, then a flowing line.
-private struct DesktopArtwork: View {
+struct DesktopArtwork: View {
     let connected: Bool
     let pairing: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    /// The link flows for a few seconds when the card appears or connects, then holds still:
-    /// every frame redraws the whole glass panel, which is costly for the window server.
+    /// Keep decorative motion brief when the card appears or connects.
     @State private var flowing = false
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30, paused: !connected || reduceMotion || !flowing)) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate
             GeometryReader { geo in
                 let w = geo.size.width, h = geo.size.height
                 let october = CGPoint(x: w * 0.22, y: h * 0.5)
@@ -159,7 +157,7 @@ private struct DesktopArtwork: View {
                     }
                     .stroke(
                         connected ? Theme.green.opacity(0.8) : (pairing ? Theme.amber.opacity(0.7) : Theme.ink.opacity(0.25)),
-                        style: StrokeStyle(lineWidth: 1.5, dash: connected ? [6, 5] : [3, 5], dashPhase: connected ? -phase * 24 : 0)
+                        style: Self.linkStroke(connected: connected, at: context.date)
                     )
                     icon(Self.octoberIcon, fallback: "macwindow").position(october)
                     icon(Assets.logo, fallback: "flame.fill").position(lantern)
@@ -176,6 +174,14 @@ private struct DesktopArtwork: View {
             try? await Task.sleep(for: .seconds(4))
             flowing = false
         }
+    }
+
+    /// Dash offsets repeat every 11 points (6 on, 5 off). An absolute timestamp times the
+    /// speed is billions of points; handing that to the renderer stalls the window server,
+    /// even after the timeline is paused. Keep the rendered offset within one dash cycle.
+    static func linkStroke(connected: Bool, at date: Date) -> StrokeStyle {
+        let phase = connected ? -(date.timeIntervalSinceReferenceDate * 24).truncatingRemainder(dividingBy: 11) : 0
+        return StrokeStyle(lineWidth: 1.5, dash: connected ? [6, 5] : [3, 5], dashPhase: phase)
     }
 
     private func icon(_ image: NSImage?, fallback: String) -> some View {

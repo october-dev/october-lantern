@@ -39,6 +39,7 @@ final class EngineClient {
     private var stdin: FileHandle?
     private var buffer = Data()
     private var supervisor = Supervisor()
+    private var historyRequests = HistoryRequests()
     /// The current process said a compatible hello; until then nothing else it says is used and no
     /// request is sent to it.
     private var ready = false
@@ -82,6 +83,7 @@ final class EngineClient {
     }
 
     private func launch(_ generation: Int) {
+        historyRequests.cancelAll()
         buffer = Data()
         ready = false
         onHealth?(.starting)
@@ -138,6 +140,7 @@ final class EngineClient {
 
     /// Ends the current process without treating it as a crash.
     private func shutDown() {
+        historyRequests.cancelAll()
         ready = false
         stdin = nil
         buffer = Data()
@@ -163,6 +166,7 @@ final class EngineClient {
         var request: [String: Any] = [
             "type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background,
             "toolkit": toolkit, "bus": bus,
+            "timeoutMs": Int(AppModel.launchDeadline * 1000),
         ]
         if let context { request["context"] = context }
         if let screenshot { request["screenshot"] = screenshot }
@@ -188,8 +192,13 @@ final class EngineClient {
 
     @discardableResult
     func history(agentId: String) -> Bool {
-        send(["type": "history", "requestId": "h-\(agentId)", "agentId": agentId])
+        guard let id = historyRequests.begin(for: agentId) else { return true }
+        let sent = send(["type": "history", "requestId": id, "agentId": agentId])
+        if !sent { historyRequests.finish(id, for: agentId) }
+        return sent
     }
+
+    func cancelHistory() { historyRequests.cancelAll() }
 
     @discardableResult
     func keys(requestId: String, agentId: String, keys: [String], promptId: String?) -> Bool {
@@ -266,7 +275,8 @@ final class EngineClient {
                 case .replyResult(let id, let ok, let error, let message): onReplyResult?(id, ok, error, message)
                 case .installed(let installed): onInstalled?(installed)
                 case .models(let list): onModels?(list)
-                case .history(let agentId, let supported, let messages): onHistory?(agentId, supported, messages)
+                case .history(let id, let agentId, let supported, let messages, let busy):
+                    if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
                 case .launchResult(let id, let ok, let message, let session):

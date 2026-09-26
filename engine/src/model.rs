@@ -134,6 +134,9 @@ pub struct HostApp {
     /// its environment), so Open can show that canvas without pairing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canvas: Option<String>,
+    /// And the node it is on that canvas (`OCTOBER_BUS_NODE`), for an exact match when paired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

@@ -170,7 +170,7 @@ enum EngineMessage: Decodable {
     /// `session`: the tmux session a started agent runs in (absent without tmux).
     case launchResult(requestId: String, ok: Bool, message: String?, session: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
-    case history(agentId: String, supported: Bool, messages: [ChatMessage])
+    case history(requestId: String, agentId: String, supported: Bool, messages: [ChatMessage], busy: Bool)
     case october(OctoberLink)
     case phone(PhoneModel.State)
     case other
@@ -195,7 +195,7 @@ enum EngineMessage: Decodable {
     }
 
     private enum Keys: String, CodingKey {
-        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning
+        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning, busy
     }
 
     init(from decoder: Decoder) throws {
@@ -221,9 +221,11 @@ enum EngineMessage: Decodable {
             self = .phone(try PhoneModel.State(from: decoder))
         case "historyResult":
             self = .history(
+                requestId: try c.decode(String.self, forKey: .requestId),
                 agentId: try c.decode(String.self, forKey: .agentId),
                 supported: try c.decode(Bool.self, forKey: .supported),
-                messages: try c.decode([ChatMessage].self, forKey: .messages)
+                messages: try c.decode([ChatMessage].self, forKey: .messages),
+                busy: try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false
             )
         case "models":
             self = .models(try ModelList(from: decoder))

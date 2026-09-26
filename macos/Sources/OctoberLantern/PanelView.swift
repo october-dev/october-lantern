@@ -226,7 +226,10 @@ struct InboxCard: View {
                         }
                         AgentStateChip(agent: agent)
                     }
-                    Text(timeAgo(agent.since)).font(.system(size: 10)).foregroundStyle(Theme.muted)
+                    // Redrawn on its own: unchanged snapshots no longer refresh the row.
+                    TimelineView(.periodic(from: .now, by: 30)) { _ in
+                        Text(timeAgo(agent.since)).font(.system(size: 10)).foregroundStyle(Theme.muted)
+                    }
                 }
             }
 

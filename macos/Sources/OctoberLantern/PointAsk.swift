@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Combine
+import LanternCore
 import ScreenCaptureKit
 import SwiftUI
 
@@ -65,8 +66,21 @@ final class PointAsk: ObservableObject {
     private var selection: (rect: NSRect, screen: NSScreen)?
     private var askTask: Task<Void, Never>?
     private var resize: AnyCancellable?
+    private var captureTask: Task<Void, Never>?
+    private var contextTask: Task<Void, Never>?
+    private var sendTask: Task<Void, Never>?
+    private var selections = Attempts()
+    private var conversations = Attempts()
+    @Published private(set) var capturing = false
+    @Published private(set) var saving = false
+    /// Nothing is in flight. The screenshot is optional (Screen Recording may be off, or the
+    /// capture may have failed): Ask and Send then go without it.
+    var canSendSelection: Bool { !capturing && !saving }
+    /// Whether the card has been shown for this conversation (Esc in Reselect goes back to it).
+    private var cardShown = false
 
-    private init() {
+
+    init() {
         dictation.onText = { [weak self] text, _ in self?.text = text }
         dictation.onError = { [weak self] message in self?.problem = message }
     }
@@ -104,7 +118,9 @@ final class PointAsk: ObservableObject {
     }
 
     private func start(listen: Bool) {
-        askTask?.cancel()
+        invalidateSelection()
+        let conversation = conversations.begin()
+        cardShown = false
         panel?.orderOut(nil)
         text = ""
         problem = nil
@@ -117,7 +133,7 @@ final class PointAsk: ObservableObject {
         let t = AppContext.shared.target
         context = Context(app: t?.name, bundleId: t?.bundleId, window: t?.windowTitle, document: t?.document)
         recipientId = defaultRecipient()?.id
-        Task { await readPageAndSelection(pid: t?.pid, bundleId: t?.bundleId) }
+        contextTask = Task { await readPageAndSelection(pid: t?.pid, bundleId: t?.bundleId, conversation: conversation) }
         if listen { dictation.start(prefix: "", owner: "point-ask") }
         select()
     }
@@ -128,23 +144,59 @@ final class PointAsk: ObservableObject {
         overlay.begin { [weak self] chosen in
             guard let self else { return }
             guard let chosen else {
-                // Cancelled before choosing anything: nothing to ask about.
-                if self.shot == nil { self.cancel() } else { self.panel?.orderFront(nil) }
+                // Esc in Reselect goes back to the card as it was; before any card, it cancels.
+                if self.cardShown { self.panel?.makeKeyAndOrderFront(nil) } else { self.cancel() }
                 return
             }
             self.selection = (chosen.0, chosen.1)
-            self.image = nil
-            self.problem = nil
+            let attempt = self.beginCapture()
             self.showCard()
-            Task { await self.capture(chosen.0, on: chosen.1) }
+            self.captureTask = Task { await self.capture(chosen.0, on: chosen.1, attempt: attempt) }
         }
     }
 
     func cancel() {
-        askTask?.cancel()
+        invalidateSelection()
+        conversations.cancel()
+        contextTask?.cancel()
         overlay.cancel()
         dictation.stop()
         panel?.orderOut(nil)
+    }
+
+    /// Invalidate payloads before starting new async work. A completed old selection must
+    /// never overwrite the current image or finish a newer request's loading state.
+    @discardableResult
+    func beginCapture() -> Int {
+        invalidateSelection()
+        cardShown = true
+        let attempt = selections.begin()
+        capturing = true
+        problem = nil
+        return attempt
+    }
+
+    func completeCapture(_ result: Result<CGImage, Error>, attempt: Int) {
+        guard selections.isCurrent(attempt) else { return }
+        capturing = false
+        switch result {
+        case .success(let raw):
+            shot = raw
+            image = NSImage(cgImage: raw, size: .zero)
+        case .failure(let error): problem = "Couldn't take the screenshot: \(error.localizedDescription)"
+        }
+    }
+
+    private func invalidateSelection() {
+        selections.cancel()
+        captureTask?.cancel()
+        sendTask?.cancel()
+        askTask?.cancel()
+        shot = nil
+        image = nil
+        capturing = false
+        saving = false
+        asking = false
     }
 
     // MARK: Ask
@@ -160,6 +212,7 @@ final class PointAsk: ObservableObject {
             model?.panel = .october
             return
         }
+        guard canSendSelection else { return }
         let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !asking, !words.isEmpty || turns.isEmpty else { return }
         dictation.stop()
@@ -168,6 +221,7 @@ final class PointAsk: ObservableObject {
         turns.append(Turn(question: question, answer: ""))
         asking = true
         let index = turns.count - 1
+        let turnID = turns[index].id
         let request = OctoberAI.Request(
             turns: turns.dropLast().map { ($0.question, $0.answer) }, question: question,
             image: shot.flatMap(Self.jpeg), context: context.lines.joined(separator: "\n")
@@ -175,23 +229,24 @@ final class PointAsk: ObservableObject {
         askTask = Task {
             do {
                 for try await piece in OctoberAI.stream(request) {
-                    guard index < turns.count else { return }
+                    guard !Task.isCancelled, index < turns.count, turns[index].id == turnID else { return }
                     switch piece {
                     case .text(let text): turns[index].answer += text
                     case .note(let note): turns[index].note = note
                     }
                 }
-                if turns.indices.contains(index), turns[index].answer.isEmpty {
+                if !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID, turns[index].answer.isEmpty {
                     turns[index].answer = "No answer came back. Try again."
                     turns[index].failed = true
                 }
             } catch is CancellationError {
             } catch {
-                if turns.indices.contains(index) {
+                if !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
                     turns[index].answer = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                     turns[index].failed = true
                 }
             }
+            guard !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID else { return }
             asking = false
             Analytics.shared.capture("point_ask_asked", ["follow_up": index > 0, "had_url": context.url != nil])
         }
@@ -208,63 +263,40 @@ final class PointAsk: ObservableObject {
     var recipient: Agent? { model?.agents.first { $0.id == recipientId } }
 
     func send() {
-        guard let model, let agent = recipient else { return }
+        guard canSendSelection, let model, let agent = recipient else { return }
+        let shot = self.shot
         var words = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if words.isEmpty, let last = turns.last { words = last.question }
         guard !words.isEmpty || shot != nil else { return }
         dictation.stop()
-        var lines = [words.isEmpty ? "Take a look at what I've selected on my screen." : words]
-        if let path = saveShot(for: agent) {
-            lines.append("\nScreenshot of the part of my screen I selected: \(path)")
-        }
-        let where_ = context.lines
-        if !where_.isEmpty { lines.append(where_.joined(separator: "\n")) }
-        if let last = turns.last(where: { !$0.failed && !$0.answer.isEmpty }) {
-            lines.append("October's quick answer, for reference:\n\(String(last.answer.prefix(3000)))")
-        }
-        model.sendDirect(lines.joined(separator: "\n"), to: agent)
-        Analytics.shared.capture(
-            "point_ask_sent",
-            ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none", "had_url": context.url != nil,
-             "had_selection": !(context.selection ?? "").isEmpty, "after_ask": !turns.isEmpty]
-        )
-        cancel()
-    }
-
-    /// Saves the screenshot in the agent's project (`.lantern/shots/`, excluded from git), or in
-    /// Lantern's screenshots folder when the agent has no folder.
-    private func saveShot(for agent: Agent) -> String? {
-        guard let shot, let png = NSBitmapImageRep(cgImage: shot).representation(using: .png, properties: [:]) else { return nil }
-        let fm = FileManager.default
-        var dir = ScreenCapture.folder
-        if let cwd = agent.cwd, fm.fileExists(atPath: cwd) {
-            let root = URL(fileURLWithPath: cwd)
-            dir = root.appendingPathComponent(".lantern/shots", isDirectory: true)
-            Self.excludeFromGit(root)
-        }
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let stamp = DateFormatter()
-        stamp.dateFormat = "yyyyMMdd-HHmmss"
-        let url = dir.appendingPathComponent("point-\(stamp.string(from: Date())).png")
-        return fm.createFile(atPath: url.path, contents: png) ? url.path : nil
-    }
-
-    /// Adds `.lantern/` to the repository's local exclude file (`.git/info/exclude`), once.
-    static func excludeFromGit(_ root: URL) {
-        let git = root.appendingPathComponent(".git")
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: git.path, isDirectory: &isDir), isDir.boolValue else { return }
-        let exclude = git.appendingPathComponent("info/exclude")
-        let current = (try? String(contentsOf: exclude, encoding: .utf8)) ?? ""
-        guard !current.split(separator: "\n").contains(where: { $0.trimmingCharacters(in: .whitespaces) == ".lantern/" }) else { return }
-        try? FileManager.default.createDirectory(at: exclude.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let line = (current.isEmpty || current.hasSuffix("\n") ? "" : "\n") + "# October Lantern screenshots\n.lantern/\n"
-        if let handle = try? FileHandle(forWritingTo: exclude) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? line.write(to: exclude, atomically: true, encoding: .utf8)
+        let capturedContext = context
+        let answer = turns.last(where: { !$0.failed && !$0.answer.isEmpty })?.answer
+        let fallback = ScreenCapture.folder
+        saving = true
+        sendTask = Task {
+            var path: URL?
+            if let shot {
+                path = await Task.detached {
+                    guard let png = NSBitmapImageRep(cgImage: shot).representation(using: .png, properties: [:]) else { return nil as URL? }
+                    return ScreenshotStore.save(png, cwd: agent.cwd.map { URL(fileURLWithPath: $0) }, fallback: fallback)
+                }.value
+                guard !Task.isCancelled else { return }
+                if path == nil {
+                    saving = false
+                    problem = "Couldn't save the screenshot. Nothing was sent."
+                    return
+                }
+            }
+            saving = false
+            var lines = [words.isEmpty ? "Take a look at what I've selected on my screen." : words]
+            if let path { lines.append("\nScreenshot of the part of my screen I selected: \(path.path)") }
+            let where_ = capturedContext.lines
+            if !where_.isEmpty { lines.append(where_.joined(separator: "\n")) }
+            if let answer { lines.append("October's quick answer, for reference:\n\(String(answer.prefix(3000)))") }
+            model.sendDirect(lines.joined(separator: "\n"), to: agent)
+            Analytics.shared.capture("point_ask_sent", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none",
+                "had_url": capturedContext.url != nil, "had_selection": !(capturedContext.selection ?? "").isEmpty, "after_ask": answer != nil])
+            cancel()
         }
     }
 
@@ -292,16 +324,21 @@ final class PointAsk: ObservableObject {
     // MARK: Context
 
     /// A screenshot of the selected area (global AppKit coordinates), Lantern's windows left out.
-    private func capture(_ rect: NSRect, on screen: NSScreen) async {
+    private func capture(_ rect: NSRect, on screen: NSScreen, attempt: Int) async {
+        guard selections.isCurrent(attempt) else { return }
         guard CGPreflightScreenCaptureAccess() else {
             CGRequestScreenCaptureAccess()
+            capturing = false
             problem = "Allow Screen Recording for October Lantern in System Settings to include a screenshot, then reopen Lantern."
             return
         }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard !Task.isCancelled, selections.isCurrent(attempt) else { return }
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID,
-                  let display = content.displays.first(where: { $0.displayID == number }) else { return }
+                  let display = content.displays.first(where: { $0.displayID == number }) else {
+                throw NSError(domain: "PointAsk", code: 1, userInfo: [NSLocalizedDescriptionKey: "The selected display is no longer available."])
+            }
             let mine = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
             let filter = SCContentFilter(display: display, excludingApplications: mine, exceptingWindows: [])
             // Display-local, top-left origin.
@@ -312,10 +349,9 @@ final class PointAsk: ObservableObject {
             config.height = Int(local.height * screen.backingScaleFactor)
             config.showsCursor = false
             let raw = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-            shot = raw
-            image = NSImage(cgImage: raw, size: .zero)
+            completeCapture(.success(raw), attempt: attempt)
         } catch {
-            problem = "Couldn't take the screenshot: \(error.localizedDescription)"
+            completeCapture(.failure(error), attempt: attempt)
         }
     }
 
@@ -340,7 +376,8 @@ final class PointAsk: ObservableObject {
 
     /// The page's address in a browser (AppleScript, asked once per browser) and the selected text
     /// (Accessibility, when allowed).
-    private func readPageAndSelection(pid: pid_t?, bundleId: String?) async {
+    private func readPageAndSelection(pid: pid_t?, bundleId: String?, conversation: Int) async {
+        guard conversations.isCurrent(conversation), !Task.isCancelled else { return }
         if AXIsProcessTrusted() {
             let system = AXUIElementCreateSystemWide()
             var focused: CFTypeRef?
@@ -368,6 +405,7 @@ final class PointAsk: ObservableObject {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 return s?.isEmpty == false ? s : nil
             }.value
+            guard conversations.isCurrent(conversation), !Task.isCancelled else { return }
             context.url = url
         }
     }
@@ -533,6 +571,9 @@ struct PointAskCard: View {
             }
             .buttonStyle(.plain).padding(6).help("Select a different area")
         }
+        if point.image != nil, let problem = point.problem {
+            Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.red).fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     @ViewBuilder private var contextLines: some View {
@@ -620,7 +661,7 @@ struct PointAskCard: View {
             }
             Spacer()
             if account.signedIn {
-                primaryButton(point.asking ? "Asking…" : "Ask ⏎", enabled: !point.asking) { point.ask() }
+                primaryButton(point.asking ? "Asking…" : "Ask ⏎", enabled: !point.asking && point.canSendSelection) { point.ask() }
             } else {
                 Button { point.ask() } label: {
                     Text("Sign in to Ask").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.amber)
@@ -655,7 +696,7 @@ struct PointAskCard: View {
                 .foregroundStyle(point.recipient == nil ? Theme.muted : Theme.ink)
                 .padding(.leading, 10).padding(.trailing, 6).padding(.vertical, 5)
             }
-            .buttonStyle(.plain).disabled(point.recipient == nil)
+            .buttonStyle(.plain).disabled(point.recipient == nil || !point.canSendSelection)
             .help("Send the screenshot and your words to this agent instead")
             if live.count > 1 {
                 Menu {

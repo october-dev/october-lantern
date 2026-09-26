@@ -243,7 +243,7 @@ fn gemini_replay_and_states() {
     assert_eq!(gemini::parse(&path, 0).state, Some(State::Working));
 }
 
-fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
+pub(crate) fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
     Agent {
         id: format!("claude:{pid}:{start_time}"),
         kind: Kind::Claude,
@@ -731,4 +731,110 @@ fn october_canvas_ids() {
     assert!(!is_canvas_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa"));
     assert!(!is_canvas_id("not-a-canvas"));
     assert!(!is_canvas_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa/"));
+}
+
+#[test]
+fn audit_october_must_not_route_across_canvas_identity() {
+    use crate::model::HostApp;
+    use crate::october_core::OctoberAgent;
+    use crate::october_link::{LinkState, merge};
+    let mut a = agent_for(123, 1, Some("ttys001"));
+    a.cwd = Some("/project".into());
+    a.host = Some(HostApp {
+        app: "October".into(),
+        pid: 1,
+        bundle_path: "/Applications/October.app".into(),
+        canvas: Some("canvas-A".into()),
+        node: None,
+    });
+    a.route = Route::None;
+    a.can_reply = false;
+    let link = LinkState {
+        status: "connected".into(),
+        paired: true,
+        agents: vec![OctoberAgent {
+            canvas_id: "canvas-B".into(),
+            node_id: "other-agent".into(),
+            kind: "terminal".into(),
+            name: None,
+            harness: Some("claude".into()),
+            cwd: Some("/project".into()),
+            state: "working".into(),
+            attention: None,
+        }],
+        ..Default::default()
+    };
+    let mut agents = vec![a];
+    merge(&mut agents, &link);
+    assert_eq!(agents[0].route, Route::None, "A process on canvas A must never be sent to the same harness/folder on canvas B");
+}
+
+#[test]
+fn october_messages_are_rejected_without_truncation() {
+    let accepted = "界".repeat(8000);
+    assert!(crate::october_core::validate_message(&accepted).is_ok());
+    let oversized = accepted + "tail instructions";
+    assert!(crate::october_core::validate_message(&oversized).is_err());
+    assert!(oversized.ends_with("tail instructions"));
+}
+
+#[test]
+fn expired_preparation_cannot_start_a_session() {
+    use std::time::{Duration, Instant};
+    assert!(crate::launch::check_launch_deadline(Instant::now() - Duration::from_secs(1)).is_err());
+    assert!(crate::launch::check_launch_deadline(Instant::now() + Duration::from_secs(1)).is_ok());
+}
+
+/// Paired with October: an agent is matched to its own node exactly when its terminal is on the
+/// Bus, and to the one node in its folder when October keeps it off the Bus.
+#[test]
+fn october_agents_match_their_node() {
+    use crate::model::HostApp;
+    use crate::october_core::OctoberAgent;
+    use crate::october_link::{LinkState, merge};
+    let node = |canvas: &str, id: &str| OctoberAgent {
+        canvas_id: canvas.into(),
+        node_id: id.into(),
+        kind: "terminal".into(),
+        name: Some(format!("@{id}")),
+        harness: Some("claude".into()),
+        cwd: Some("/project".into()),
+        state: "working".into(),
+        attention: None,
+    };
+    let link = LinkState {
+        status: "connected".into(),
+        paired: true,
+        agents: vec![node("canvas-A", "one"), node("canvas-A", "two")],
+        ..Default::default()
+    };
+    let agent = |canvas: Option<&str>, id: Option<&str>| {
+        let mut a = agent_for(123, 1, Some("ttys001"));
+        a.cwd = Some("/project".into());
+        a.route = Route::None;
+        a.host = Some(HostApp {
+            app: "October".into(),
+            pid: 1,
+            bundle_path: "/Applications/October.app".into(),
+            canvas: canvas.map(String::from),
+            node: id.map(String::from),
+        });
+        a
+    };
+    // On the Bus: exact, even with two nodes in the same folder.
+    let mut agents = vec![agent(Some("canvas-A"), Some("two"))];
+    merge(&mut agents, &link);
+    assert_eq!(agents[0].route, Route::October { canvas_id: "canvas-A".into(), node_id: "two".into() });
+    // A node id that isn't listed routes nowhere.
+    let mut agents = vec![agent(Some("canvas-A"), Some("gone"))];
+    merge(&mut agents, &link);
+    assert_eq!(agents[0].route, Route::None);
+    // Off the Bus: two candidates is ambiguous; one is a match.
+    let mut agents = vec![agent(None, None)];
+    merge(&mut agents, &link);
+    assert_eq!(agents[0].route, Route::None);
+    let single = LinkState { agents: vec![node("canvas-B", "solo")], ..link.clone() };
+    let mut agents = vec![agent(None, None)];
+    merge(&mut agents, &single);
+    assert_eq!(agents[0].route, Route::October { canvas_id: "canvas-B".into(), node_id: "solo".into() });
 }

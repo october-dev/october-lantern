@@ -230,7 +230,16 @@ fn open_in_terminal(name: &str, script: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, model: Option<&str>, mode: Mode) -> Result<Launched> {
+pub fn launch(
+    kind: Kind,
+    cwd: &Path,
+    prompt: Option<&str>,
+    extras: Extras,
+    model: Option<&str>,
+    mode: Mode,
+    deadline: Instant,
+) -> Result<Launched> {
+    check_launch_deadline(deadline)?;
     let screenshot = extras.screenshot;
     if !cwd.is_dir() {
         bail!("{} is not a folder", cwd.display());
@@ -282,6 +291,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
             bail!("Without tmux, Lantern can't hand {} a first message. Leave the message empty, or install tmux.", program(kind));
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
+        check_launch_deadline(deadline)?;
         open_in_terminal(&name, &agent_command(kind, cwd, prompt, screenshot, model, bus.as_ref()))?;
         if let Some(b) = &bus {
             crate::bus::link_when_ready(b.id.clone());
@@ -297,6 +307,7 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
         .arg(agent_command(kind, cwd, prompt, screenshot, model, bus.as_ref()));
+    check_launch_deadline(deadline)?;
     let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
         bail!("tmux couldn't start the session");
@@ -319,12 +330,60 @@ pub fn launch(kind: Kind, cwd: &Path, prompt: Option<&str>, extras: Extras, mode
     Ok(Launched { session: Some(session), bus_problem })
 }
 
-/// Waits until something other than a shell runs on the pane's terminal (the agent, even when a
-/// wrapper script starts it as a child), and its screen has stopped changing (or it has been up
-/// for 5 s, for interfaces that animate), then types. Gives up after 30 s.
+pub(crate) fn check_launch_deadline(deadline: Instant) -> Result<()> {
+    if Instant::now() >= deadline {
+        bail!("Preparing the session took too long. No session was started; try again.");
+    }
+    Ok(())
+}
+
+/// Build a delivery target only from the expected program's current process identity. This
+/// intentionally does not scan session files: startup readiness needs no transcript/history.
+fn startup_owner(kind: Kind, p: &crate::procs::Proc, live: &crate::procs::Live, pane: &TmuxPane) -> Option<crate::model::Agent> {
+    use crate::model::{Agent, Route, SessionMatch, State, StateSource};
+    if crate::scanner::classify(p) != Some(kind) || p.exe.as_ref().and_then(|e| e.to_str()) != live.exe.as_deref() {
+        return None;
+    }
+    let agent = Agent {
+        id: format!("{}:{}:{}", kind.as_str(), p.pid, p.start_time),
+        kind,
+        handle: kind.as_str().into(),
+        pid: p.pid,
+        start_time: p.start_time,
+        exe: p.exe.as_ref().map(|e| e.to_string_lossy().into_owned()),
+        comm: p.name.clone(),
+        tty: p.tty.clone(),
+        cwd: None,
+        project: None,
+        title: None,
+        session_id: None,
+        state: State::Unknown,
+        state_since: None,
+        last_message: None,
+        question: None,
+        question_kind: None,
+        question_detail: None,
+        prompt_id: None,
+        session_match: SessionMatch::None,
+        source: None,
+        live: true,
+        host: None,
+        tmux: Some(pane.clone()),
+        can_reply: true,
+        route: Route::Tmux,
+        state_source: StateSource::None,
+    };
+    crate::deliver::check(&agent, live).ok().map(|_| agent)
+}
+
+/// Waits for the expected interactive harness in this pane's foreground and a settled screen.
+/// Delivery rechecks the process identity and pane immediately before typing.
 fn type_first_prompt(pane: &TmuxPane, kind: Kind, text: &str) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
     let (mut last, mut steady, mut up_since) = (String::new(), 0, None::<Instant>);
+    let mut processes = sysinfo::System::new();
+    let mut cache = crate::procs::ProcCache::default();
+    let mut owner = String::new();
     loop {
         if Instant::now() >= deadline {
             bail!("{} didn't finish starting within 30 s; type your message in its window", program(kind));
@@ -337,15 +396,27 @@ fn type_first_prompt(pane: &TmuxPane, kind: Kind, text: &str) -> Result<()> {
         if crate::procs::live(pid).is_none() {
             bail!("{} exited", program(kind));
         }
-        // The agent itself, or the runtime it's written in (not a shell plugin's helper).
-        let running = crate::procs::on_tty(tty.trim_start_matches("/dev/")).iter().flatten().any(|exe| {
-            let name = crate::procs::basename(exe);
-            exe.contains(program(kind)) || ["node", "bun", "deno", "python", "uv"].iter().any(|r| name.starts_with(r))
-        });
-        if !running {
+        // Use the same classifier and foreground/identity checks as ordinary replies. A
+        // background runtime or shell startup helper is not proof that the agent is ready.
+        let table = crate::procs::ProcTable::capture(&mut processes, &mut cache);
+        let agent = table
+            .procs
+            .values()
+            .filter(|p| {
+                p.tty.as_deref() == Some(tty.trim_start_matches("/dev/"))
+                    && (p.pid == pid || table.ancestors(p.pid).iter().any(|parent| parent.pid == pid))
+            })
+            .find_map(|p| startup_owner(kind, p, &crate::procs::live(p.pid)?, pane));
+        let Some(agent) = agent else {
             steady = 0;
             up_since = None;
             continue;
+        };
+        if owner != agent.id {
+            owner = agent.id.clone();
+            steady = 0;
+            last.clear();
+            up_since = None;
         }
         let up = *up_since.get_or_insert_with(Instant::now);
         let screen = String::from_utf8_lossy(&tmux::output(pane, &["capture-pane", "-p", "-t", &pane.pane_id])?.stdout).into_owned();
@@ -356,7 +427,10 @@ fn type_first_prompt(pane: &TmuxPane, kind: Kind, text: &str) -> Result<()> {
             last = screen;
         }
         if steady >= 3 || up.elapsed() >= Duration::from_secs(5) {
-            return tmux::send(pane, text);
+            if Instant::now() >= deadline {
+                bail!("{} didn't finish starting within 30 s; type your message in its window", program(kind));
+            }
+            return crate::deliver::send_text(&agent, text);
         }
     }
 }
@@ -371,4 +445,40 @@ pub fn attach_in_terminal(pane: &TmuxPane) -> Result<()> {
     let session = pane.target.split(':').next().unwrap_or(&pane.target);
     let attach = format!("exec {} {socket} attach -t {}", quote(tmux::tmux_bin()), quote(session));
     open_in_terminal(&format!("attach-{}", now_ms()), &attach)
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    #[test]
+    fn first_prompt_requires_the_expected_foreground_program() {
+        let pane = TmuxPane { socket: None, target: "session:0.0".into(), pane_id: "%1".into() };
+        let mut p = crate::procs::Proc {
+            pid: 12,
+            ppid: Some(1),
+            name: "node".into(),
+            exe: Some("/usr/bin/node".into()),
+            cmd: vec!["node".into(), "/usr/bin/copilot".into()],
+            cwd: None,
+            start_time: 1,
+            tty: Some("ttys001".into()),
+        };
+        let mut live = crate::procs::Live {
+            pgid: 12,
+            tpgid: 12,
+            tty: p.tty.clone(),
+            start: 1,
+            exe: Some("/usr/bin/node".into()),
+            comm: "node".into(),
+        };
+        assert!(startup_owner(Kind::Copilot, &p, &live, &pane).is_some());
+        live.tpgid = 99;
+        assert!(startup_owner(Kind::Copilot, &p, &live, &pane).is_none(), "A background runtime is not ready");
+        live.tpgid = 12;
+        p.cmd[1] = "/project/startup-helper.js".into();
+        assert!(startup_owner(Kind::Copilot, &p, &live, &pane).is_none(), "An arbitrary runtime is not the harness");
+        p.cmd[1] = "/usr/bin/copilot".into();
+        live.exe = Some("/bin/zsh".into());
+        assert!(startup_owner(Kind::Copilot, &p, &live, &pane).is_none(), "An exec between discovery and verification must fail");
+    }
 }

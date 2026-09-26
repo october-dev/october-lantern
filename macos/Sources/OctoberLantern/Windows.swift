@@ -46,6 +46,7 @@ final class WindowController {
     private var subscriptions = Set<AnyCancellable>()
     private var outsideClickMonitor: Any?
     private var dragStart: (mouse: NSPoint, origin: NSPoint)?
+    private var layoutScheduled = false
     var onMenu: ((NSView) -> Void)?
 
     private var edge: Edge {
@@ -79,12 +80,13 @@ final class WindowController {
         // Re-lay out whenever the model changes (agent count changes the pill's height).
         model.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.layout() }
+            .sink { [weak self] _ in self?.scheduleLayout() }
             .store(in: &subscriptions)
         model.$panel
+            .map { $0 != nil }
             .removeDuplicates()
             .receive(on: RunLoop.main)
-            .sink { [weak self] mode in self?.setPanelVisible(mode != nil) }
+            .sink { [weak self] visible in self?.setPanelVisible(visible) }
             .store(in: &subscriptions)
         // Expand while the mouse is over the pill; tuck back in shortly after it leaves.
         // Polling the mouse position is reliable for non-activating panels, unlike tracking areas.
@@ -123,6 +125,18 @@ final class WindowController {
         pill.screen ?? NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens[0]
     }
 
+    /// A single user action often changes several published values. Measure after they settle,
+    /// once per run-loop turn, and never submit an unchanged frame to the window server.
+    private func scheduleLayout() {
+        guard !layoutScheduled else { return }
+        layoutScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.layoutScheduled = false
+            self.layout()
+        }
+    }
+
     func layout() {
         guard dragStart == nil else { return }
         let visible = screen.visibleFrame
@@ -130,7 +144,8 @@ final class WindowController {
         let x = edge == .right ? visible.maxX - size.width - 10 : visible.minX + 10
         let top = visible.minY + visible.height * topFraction
         let y = min(max(top - size.height, visible.minY + 8), visible.maxY - size.height - 8)
-        pill.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        let frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        if pill.frame != frame { pill.setFrame(frame, display: true) }
         layoutPanel()
     }
 
@@ -144,7 +159,8 @@ final class WindowController {
         let x = edge == .right ? pill.frame.minX - size.width - 10 : pill.frame.maxX + 10
         // Align the panel's top with the pill's top, kept on screen.
         let y = min(max(pill.frame.maxY - size.height, visible.minY + 8), visible.maxY - size.height - 8)
-        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        let frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 
     private func setPanelVisible(_ visible: Bool) {
