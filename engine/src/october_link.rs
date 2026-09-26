@@ -267,14 +267,20 @@ fn run(state: Arc<Mutex<LinkState>>, rx: Receiver<Command>) {
         }
 
         if Instant::now() >= next_poll {
-            next_poll = Instant::now() + Duration::from_secs(3);
-            refresh(&state, &mut client, pairing.is_some());
+            let slow_down = refresh(&state, &mut client, pairing.is_some());
+            // Every 3 seconds, or slower when a poll needs many reads: at most about 300 a minute,
+            // half of what October allows a connected app. If October still says it's too
+            // often, wait out its one-minute window.
+            let reads = client.as_ref().map(|c| c.last_reads).unwrap_or(1) as u64;
+            let every = if slow_down { 60_000 } else { (reads * 200).max(3_000) };
+            next_poll = Instant::now() + Duration::from_millis(every);
         }
         std::thread::sleep(Duration::from_millis(400));
     }
 }
 
-fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: bool) {
+/// Re-reads October's agents. True when October asked Lantern to slow down.
+fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: bool) -> bool {
     let Some(run) = october_core::discover() else {
         *client = None;
         let status = if october_core::installed() { "notRunning" } else { "notInstalled" };
@@ -285,7 +291,7 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
             s.agent_count = 0;
             s.core_version = None;
         });
-        return;
+        return false;
     };
     // (Re)connect when core restarted or we have no client.
     if client.as_ref().is_none_or(|c| c.run.instance_id != run.instance_id) {
@@ -311,7 +317,7 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
                 s.agent_count = 0;
                 s.message = Some(format!("{e:#}"));
             });
-            return;
+            return false;
         }
         *client = Some(c);
     }
@@ -333,13 +339,18 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
                 s.agent_count = agents.len();
                 s.agents = agents;
             });
+            false
         }
         Err(e) => {
             // Without a fresh list nothing may route through October: a stale node id could
             // deliver to the wrong agent.
-            let msg = format!("{e:#}");
+            let mut msg = format!("{e:#}");
             if msg.contains("revoked") {
                 *client = None;
+            }
+            let slow_down = msg.contains("BACKPRESSURE") || msg.contains("rate limit");
+            if slow_down {
+                msg = "October asked Lantern to slow down. Trying again in a minute.".into();
             }
             update(state, |s| {
                 s.status = "error".into();
@@ -348,6 +359,7 @@ fn refresh(state: &Arc<Mutex<LinkState>>, client: &mut Option<Client>, pairing: 
                 s.agent_count = 0;
                 s.message = Some(msg);
             });
+            slow_down
         }
     }
 }

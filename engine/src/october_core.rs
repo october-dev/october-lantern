@@ -13,8 +13,9 @@
 //! - **Read-only**: before pairing (or with an October version without pairing), Lantern uses
 //!   the credential October gives its own command-line tool, and only lists terminals and agents.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine as _;
@@ -88,7 +89,21 @@ pub struct Client {
     pub principal: Principal,
     agent: ureq::Agent,
     next: u64,
+    /// October's canvases, re-listed every 30 seconds.
+    canvases: Option<(Vec<String>, Instant)>,
+    /// Each canvas's running agents from its last snapshot.
+    snapshots: HashMap<String, Vec<OctoberAgent>>,
+    /// Where the round-robin over quiet canvases is.
+    rotation: usize,
+    /// How many reads the last `agents()` made, so the poll can slow down to stay well under
+    /// October's limit.
+    pub last_reads: usize,
 }
+
+/// How often the canvas list is re-read.
+const CANVAS_LIST_EVERY: Duration = Duration::from_secs(30);
+/// Canvases without running agents re-read per poll, in turn.
+const QUIET_PER_POLL: usize = 5;
 
 /// (status, JSON body) of a POST, whatever the status.
 fn post(agent: &ureq::Agent, url: &str, headers: &[(&str, &str)], body: &Value) -> Result<(u16, Value)> {
@@ -110,7 +125,7 @@ impl Client {
             None => Principal { kind: "cli", id: "october-lantern".into(), credential: run.cli_credential.clone() },
         };
         let agent = ureq::Agent::config_builder().http_status_as_error(false).timeout_global(Some(Duration::from_secs(10))).build().into();
-        Client { run, principal, agent, next: 0 }
+        Client { run, principal, agent, next: 0, canvases: None, snapshots: HashMap::new(), rotation: 0, last_reads: 0 }
     }
 
     pub fn paired(&self) -> bool {
@@ -206,29 +221,39 @@ impl Client {
     pub fn agents(&mut self) -> Result<Vec<OctoberAgent>> {
         let mut out = Vec::new();
         if self.paired() {
-            let canvases = self.call("bus.query", json!({"operation": "listCanvases", "args": []}), false)?;
-            for canvas in canvases.as_array().into_iter().flatten().filter_map(Value::as_str) {
-                let snap = self.call("bus.query", json!({"operation": "currentSnapshot", "args": [canvas]}), false)?;
-                for node in snap["nodes"].as_object().into_iter().flat_map(|m| m.values()) {
-                    let state = node["execution"]["state"].as_str().unwrap_or(match node["status"].as_str() {
-                        Some("live") => "working",
-                        Some("idle") => "idle",
-                        _ => "offline",
-                    });
-                    if state == "offline" {
-                        continue;
-                    }
-                    out.push(OctoberAgent {
-                        canvas_id: canvas.to_string(),
-                        node_id: node["id"].as_str().unwrap_or("").to_string(),
-                        kind: node["kind"].as_str().unwrap_or("terminal").to_string(),
-                        name: node["displayName"].as_str().map(String::from),
-                        harness: node["harness"].as_str().map(String::from),
-                        cwd: node["cwd"].as_str().map(String::from),
-                        state: state.to_string(),
-                        attention: node["attention"]["message"].as_str().map(String::from),
-                    });
-                }
+            // October allows a connected app 600 reads a minute, and someone with many canvases
+            // would pass that re-reading each one every poll. So: the canvas list every 30
+            // seconds, every canvas with running agents each poll, and the quiet ones two at a
+            // time in turn (a new agent on a quiet canvas shows up within a few polls).
+            if self.canvases.as_ref().is_none_or(|(_, at)| at.elapsed() >= CANVAS_LIST_EVERY) {
+                let list = self.call("bus.query", json!({"operation": "listCanvases", "args": []}), false)?;
+                let ids: Vec<String> = list.as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect();
+                self.snapshots.retain(|id, _| ids.contains(id));
+                self.canvases = Some((ids, Instant::now()));
+            }
+            let ids = self.canvases.as_ref().map(|(ids, _)| ids.clone()).unwrap_or_default();
+            let (busy, quiet): (Vec<&String>, Vec<&String>) =
+                ids.iter().partition(|id| self.snapshots.get(*id).is_some_and(|agents| !agents.is_empty()));
+            // Never-read canvases first, then the rest in turn.
+            let mut quiet: Vec<&String> = quiet.into_iter().collect();
+            quiet.sort_by_key(|id| self.snapshots.contains_key(*id));
+            let unread = quiet.iter().filter(|id| !self.snapshots.contains_key(**id)).count();
+            let picked: Vec<String> = if unread > 0 {
+                quiet.iter().take(QUIET_PER_POLL.max(unread.min(10))).map(|s| s.to_string()).collect()
+            } else if quiet.is_empty() {
+                Vec::new()
+            } else {
+                self.rotation = self.rotation.wrapping_add(QUIET_PER_POLL);
+                (0..QUIET_PER_POLL.min(quiet.len())).map(|i| quiet[(self.rotation + i) % quiet.len()].to_string()).collect()
+            };
+            let reads: Vec<String> = busy.into_iter().cloned().chain(picked).collect();
+            self.last_reads = reads.len() + 1;
+            for canvas in &reads {
+                let agents = self.canvas_agents(canvas)?;
+                self.snapshots.insert(canvas.clone(), agents);
+            }
+            for id in &ids {
+                out.extend(self.snapshots.get(id).cloned().unwrap_or_default());
             }
         } else {
             let terminals = self.call("terminal.list", json!({}), false)?;
@@ -247,6 +272,33 @@ impl Client {
                     attention: None,
                 });
             }
+        }
+        Ok(out)
+    }
+
+    /// The running agents on one canvas, from its current snapshot.
+    fn canvas_agents(&mut self, canvas: &str) -> Result<Vec<OctoberAgent>> {
+        let snap = self.call("bus.query", json!({"operation": "currentSnapshot", "args": [canvas]}), false)?;
+        let mut out = Vec::new();
+        for node in snap["nodes"].as_object().into_iter().flat_map(|m| m.values()) {
+            let state = node["execution"]["state"].as_str().unwrap_or(match node["status"].as_str() {
+                Some("live") => "working",
+                Some("idle") => "idle",
+                _ => "offline",
+            });
+            if state == "offline" {
+                continue;
+            }
+            out.push(OctoberAgent {
+                canvas_id: canvas.to_string(),
+                node_id: node["id"].as_str().unwrap_or("").to_string(),
+                kind: node["kind"].as_str().unwrap_or("terminal").to_string(),
+                name: node["displayName"].as_str().map(String::from),
+                harness: node["harness"].as_str().map(String::from),
+                cwd: node["cwd"].as_str().map(String::from),
+                state: state.to_string(),
+                attention: node["attention"]["message"].as_str().map(String::from),
+            });
         }
         Ok(out)
     }
