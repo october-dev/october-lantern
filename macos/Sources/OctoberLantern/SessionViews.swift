@@ -64,7 +64,14 @@ struct NewSessionView: View {
             screenshotOn = task || prefs.screenshotNewSessions
             if screenshotOn { await shot.capture() }
         }
-        .onAppear { kindChanged() }
+        .onAppear {
+            if let fill = model.takeNewSessionPrefill() {
+                prompt = fill.prompt
+                if let f = fill.folder { folder = f }
+                taskDismissed = true
+            }
+            kindChanged()
+        }
         .onChange(of: selectedKind) { kindChanged() }
         .onChange(of: model.launching) { was, now in
             // A start that succeeded moves to the Agents list; one that failed leaves us here.

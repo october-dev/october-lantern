@@ -23,7 +23,8 @@ struct PillView: View {
     var body: some View {
         VStack(spacing: 8) {
             LanternButton(count: model.badgeCount, waiting: !model.inbox.isEmpty, working: model.anyWorking, onTap: {
-                model.toggle(.inbox)
+                // The lantern opens the assistant; Waiting has its own button below.
+                model.toggle(.assistant)
             }, onDrag: onDrag, onDragEnd: onDragEnd)
             .overlay(alignment: .topTrailing) {
                 if let engineProblem {
@@ -135,7 +136,7 @@ struct LanternButton: View {
             }
         }
         .contentShape(Circle())
-        .help(count > 0 ? "\(count) new, waiting on you" : waiting ? "Agents are waiting on you" : "October Lantern")
+        .help(count > 0 ? "\(count) new, waiting on you. Click to ask Lantern" : "Ask Lantern")
         .gesture(
             DragGesture(minimumDistance: 4)
                 .onChanged { _ in onDrag() }

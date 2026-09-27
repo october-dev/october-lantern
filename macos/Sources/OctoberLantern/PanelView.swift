@@ -15,6 +15,8 @@ struct PanelView: View {
             case .october:
                 PanelTitle(title: "October", model: model)
                 OctoberView(model: model)
+            case .assistant:
+                AssistantView(model: model)
             default:
                 if let agent = model.chatAgent {
                     ChatView(agent: agent, model: model)

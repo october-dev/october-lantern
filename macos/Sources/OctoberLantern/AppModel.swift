@@ -3,7 +3,7 @@ import LanternCore
 import SwiftUI
 
 enum PanelMode: Equatable {
-    case inbox, agents, newSession, october
+    case inbox, agents, newSession, october, assistant
 
     /// The inbox and agent list share tabs and the composer; the others are standalone.
     var isList: Bool { self == .inbox || self == .agents }
@@ -382,6 +382,21 @@ final class AppModel: ObservableObject {
         if panel == .newSession { return panel = nil }
         AppContext.shared.capture()
         panel = .newSession
+    }
+
+    /// A message (and folder) for New Session to start with, from the assistant's Do.
+    private(set) var newSessionPrefill: (prompt: String, folder: String?)?
+
+    /// Opens New Session filled in with a task: a plain session, not a task for the app in front.
+    func startNew(prompt: String, folder: String?) {
+        newSessionPrefill = (prompt, folder)
+        if panel == .newSession { panel = nil }
+        panel = .newSession
+    }
+
+    func takeNewSessionPrefill() -> (prompt: String, folder: String?)? {
+        defer { newSessionPrefill = nil }
+        return newSessionPrefill
     }
 
     func refreshToolkit() { engine.refreshToolkit() }

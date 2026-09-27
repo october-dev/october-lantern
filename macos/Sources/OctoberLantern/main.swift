@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] preset in self?.registerHotKey(preset) }
             .store(in: &subscriptions)
         PointAsk.shared.model = model
+        Assistant.shared.model = model
         Preferences.shared.$pointAsk
             .sink { [weak self] preset in self?.registerPointAsk(preset) }
             .store(in: &subscriptions)
@@ -101,7 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "settings": self.showSettings(tab: page)
                 case "point": PointAsk.shared.showDemo()
                 default:
-                    self.model.panel = ["agents": .agents, "new": .newSession, "october": .october][what] ?? .inbox
+                    self.model.panel = ["agents": .agents, "new": .newSession, "october": .october, "assistant": .assistant][what] ?? .inbox
                     if what == "chat", let first = self.model.inbox.first ?? self.model.agents.first {
                         self.model.openChat(first)
                     }
@@ -181,7 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         var jobs: [(String, AnyView)] = (0..<4).map { ("welcome-\($0)", AnyView(WelcomeView(model: model, onDone: {}, step: $0))) }
         jobs += (0..<4).map { ("settings-\($0)", AnyView(SettingsView(model: model, onShowWelcome: {}, tab: $0))) }
-        let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("october", .october), ("chat", .agents)]
+        let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("october", .october), ("chat", .agents), ("assistant", .assistant)]
         jobs += panels.map { name, mode in
             ("panel-\(name)", AnyView(PanelView(model: model, dictation: model.dictation).onAppear {
                 self.model.closeChat()
