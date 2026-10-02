@@ -21,16 +21,20 @@ enum OctoberAI {
         var image: Data?
         /// The app, window, page and selection, as lines of text.
         var context: String
+        /// "chat" for the assistant (its own prompt on the server); nil for Point & Ask.
+        var mode: String? = nil
     }
 
     enum Failure: LocalizedError {
         case signedOut, plan(String), limited(String), unavailable(String), notDeployed
+        /// 400: the server couldn't read the request.
+        case invalid(String)
 
         var errorDescription: String? {
             switch self {
             case .signedOut: "Sign in to October to ask."
             case .notDeployed: "October's AI isn't available right now."
-            case .plan(let m), .limited(let m), .unavailable(let m): m
+            case .plan(let m), .limited(let m), .unavailable(let m), .invalid(let m): m
             }
         }
     }
@@ -48,7 +52,15 @@ enum OctoberAI {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
                     do {
-                        try await ask(request, token: token, into: continuation)
+                        do {
+                            try await ask(request, token: token, into: continuation)
+                        } catch Failure.invalid where request.mode != nil {
+                            // A server without the mode refuses the request as invalid: ask the
+                            // plain way instead.
+                            var plain = request
+                            plain.mode = nil
+                            try await ask(plain, token: token, into: continuation)
+                        }
                         continuation.finish()
                         return
                     } catch Failure.notDeployed {
@@ -57,7 +69,7 @@ enum OctoberAI {
                     let model = try await pickModel(token: token, needsVision: request.image != nil)
                     do {
                         try await run(body(request, model: model.id, withImage: request.image != nil && model.vision), token: token, into: continuation)
-                    } catch Failure.unavailable(let message) where request.image != nil && message.localizedCaseInsensitiveContains("text") {
+                    } catch Failure.invalid(let message) where request.image != nil && message.localizedCaseInsensitiveContains("text") {
                         // The gateway only takes text for this model or plan: ask without the picture.
                         try await run(body(request, model: model.id, withImage: false), token: token, into: continuation)
                     }
@@ -96,6 +108,7 @@ enum OctoberAI {
             "client": ["app": "lantern", "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"],
         ]
         if !r.context.isEmpty { json["context"] = String(r.context.prefix(6000)) }
+        if let mode = r.mode { json["mode"] = mode }
         if let image = r.image { json["image"] = image.base64EncodedString() }
         var req = URLRequest(url: askURL)
         req.httpMethod = "POST"
@@ -199,7 +212,7 @@ enum OctoberAI {
         case (402, _), (_, "credit_exhausted"): return .plan(message ?? "You've used this period's October AI credit.")
         case (_, "free_limit"): return .limited(message ?? "That's today's free questions. Upgrade to October Pro for more.")
         case (429, _): return .limited(message ?? "Too many questions for now. Try again in a minute.")
-        case (400, _): return .unavailable(message ?? "October's AI couldn't read the request.")
+        case (400, _): return .invalid(message ?? "October's AI couldn't read the request.")
         default: return .unavailable(message ?? "October's AI isn't available right now (\(status)). Try again soon.")
         }
     }

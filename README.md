@@ -42,6 +42,8 @@ Lantern watches tools like Claude Code, Codex, October, and Cursor, and brings t
 | You have an answer                 | Type or dictate it, then send it to a supported terminal without hunting for the window. |
 | Claude asks for permission         | Inspect the request and choose Allow or Deny with optional hooks in supported terminals. |
 | You want to start something new    | Pick an installed agent and a folder, then open a terminal or background session.        |
+| Something on screen puzzles you    | Point & Ask: drag a box around it, ask, and get an answer, or send it to an agent.       |
+| You have a quick question          | Click the lantern to ask, like "which agent needs me first?", or describe a task to start. |
 
 Collapsed, it's one small lantern. It stays beside you across desktop Spaces and full-screen apps. Optional notifications let you step away from the bar, too.
 
@@ -57,7 +59,7 @@ Prefer Terminal? One command downloads, installs, and opens the latest release:
 curl -fsSL https://lantern.october.dev/install.sh | sh
 ```
 
-Press **Control + Option + Space** whenever you want to write a reply. Use the mic button to dictate instead. The shortcut is customizable in Settings.
+Press **Control + Option + Space** whenever you want to write a reply, and **Control + Option + P** for Point & Ask. Use the mic button to dictate instead. Both shortcuts are customizable in Settings.
 
 ## Your tools. One place to check.
 
@@ -85,7 +87,8 @@ Optional hooks add prompt completion updates for Codex and permission requests f
 Your code and conversations stay on your Mac when you use Lantern on its own. No account is needed. On its own, Lantern connects to the internet for two things: its update check, and anonymous usage counts, which you can turn off in Settings.
 
 - **On-device dictation.** Audio stays on your Mac. If your language doesn't support on-device recognition, Lantern tells you.
-- **No screen recording.** Lantern reads supported agents' local session files. The one exception is optional: New Session can include a screenshot of your screen for the new agent, only when you turn it on.
+- **No screen recording.** Lantern reads supported agents' local session files. It captures your screen only when you ask it to: the area you select in Point & Ask, or a screenshot for a new session when you turn that on.
+- **Asking October's AI is optional.** Point & Ask's **Ask** and the assistant's **Ask** send your question (and, for Point & Ask, the selected area) to October only when you press Ask, and need an October sign-in. Nothing is stored there; the [privacy guide](docs/PRODUCT.md#privacy) lists exactly what's sent.
 - **You're in control.** Replies are sent when you choose. Optional hooks can be removed in Settings.
 - **Anonymous usage counts.** How often Lantern and its features are used (e.g. "a reply was sent through tmux"), never content. The [privacy guide](docs/PRODUCT.md#privacy) lists exactly what's sent. Off with one switch in Settings; builds from source send nothing.
 - **Optional October connections.** Signing in and connecting other devices introduces network connections; the [privacy guide](docs/PRODUCT.md#privacy) explains each one.

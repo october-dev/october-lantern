@@ -160,6 +160,9 @@ Lantern is in **beta (v0.4.2)**.
 | Welcome guide, Settings, Report a Problem, Uninstall | ✅ |
 | Automatic routing ("send this to whichever agent it's for") | ❌ Not yet. You choose the agent. |
 | Screenshot as context for a new session | ✅ Optional (New Session › Context, or Settings › General). Needs Screen Recording permission. |
+| Point & Ask (drag a box, then Ask October's AI or send to an agent) | ✅ Ask needs October sign-in (free plan: 20 questions a day; Pro and Max: the plan's Assistant credit). Needs Screen Recording permission. |
+| Assistant (click the lantern: Ask, Do) | ✅ Ask needs October sign-in, same allowance as Point & Ask. Do fills in New Session; you press Start. |
+| Memory | ❌ Not yet (planned: kept on your Mac) |
 | Sign in with an October account (Google, GitHub, Apple, email) | ✅ |
 | Connect to October Desktop | ✅ Read-only with any October version that runs october-core (lists October's terminals). Full connection (October's agent names and questions, replies through October's safe delivery, Open on the canvas) needs October 1.0.52 or later, after the user clicks Connect and allows Lantern in October. |
 | October phone app | ⚠️ Built, not yet tested against the real phone app and relay: sign in, then pair the phone by QR. Needs a plan that includes mobile. Lantern appears as its own computer on the October account. Treat as experimental until a live pairing and reply have been confirmed. |

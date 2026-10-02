@@ -24,12 +24,15 @@ What the website needs for the beta. Product facts come from [product guide](doc
   - Full support: Claude Code, Codex, OpenCode, Pi, October harness and Gemini CLI.
   - Replying from Lantern: cmux, Terminal, iTerm2 and tmux.
   - Ghostty, VS Code and Warp: copy and paste for now.
-- **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only if you turn on screenshots), Accessibility (only if you let a Task see which document is open). No Full Disk Access.
+- **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply; browsers, only to read the page address for Point & Ask), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only for Point & Ask and new-session screenshots), Accessibility (only if you let Lantern see which window or document is open, or the selected text). No Full Disk Access.
 - **FAQ entries** from the product guide FAQ, especially "Why did macOS ask whether Lantern can control Terminal?" and "How do I uninstall it?".
 - **Support contact:** hey@october.dev. The app's Report a Problem uses the same address.
+- **Point & Ask** (0.4+): press ⌃⌥P or the pill's dotted-box button, drag a box around anything on screen, then **Ask** (October's AI answers in a card, needs October sign-in; Pro and Max use the plan's Assistant credit, the free plan gets 20 questions a day) or **Send to @agent**. Exact wording and privacy: the product guide's Point & Ask entries.
+- **The assistant** (0.4.3+): click the lantern. **Ask** chats with October's AI and knows what your agents are doing ("which agent needs me first?"); **Do** turns a request into a filled-in New Session that you start yourself. Waiting has its own tray button.
 
 ## Don't claim
 
-- Automatic routing ("say it once and it picks the agent") doesn't exist yet. Screenshot context exists only when starting a new session, not for replies.
+- Automatic routing ("say it once and it picks the agent") doesn't exist yet. Screenshots go with new sessions and Point & Ask, not with ordinary replies.
+- The assistant's **Do** doesn't start anything by itself: it fills in New Session, and you press Start.
 - October connections: describe them exactly as in the product guide's "What's true today" table. Full October Desktop support needs October 1.0.52+. The phone connection is built but has not been tested against the real phone app: don't advertise it until a live pairing and reply have been confirmed.
 - Windows or Linux.

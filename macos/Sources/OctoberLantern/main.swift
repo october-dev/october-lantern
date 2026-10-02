@@ -17,13 +17,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Development: `--snapshot <dir>` draws the welcome pages and settings tabs offscreen into
         // PNGs and quits, for checking layouts without putting windows on screen.
-        // Development: `--ask <image> <question>` asks October's AI once, prints the answer and quits.
+        // Development: `--ask <image> <question>` asks October's AI once, prints the answer and quits
+        // (`--ask chat <question>` asks the way the assistant does: no image, chat mode).
         if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 2 < CommandLine.arguments.count {
             let image = NSImage(contentsOfFile: CommandLine.arguments[i + 1])?.cgImage(forProposedRect: nil, context: nil, hints: nil)
             Task { @MainActor in
                 do {
+                    let chat = CommandLine.arguments[i + 1] == "chat"
                     let request = OctoberAI.Request(turns: [], question: CommandLine.arguments[i + 2],
-                                                    image: image.flatMap(PointAsk.jpeg), context: "App: Safari")
+                                                    image: chat ? nil : image.flatMap(PointAsk.jpeg),
+                                                    context: chat ? "- @claude-1 (Claude Code) in october-lantern: waiting; asking: Run the release script?" : "App: Safari",
+                                                    mode: chat ? "chat" : nil)
                     for try await piece in OctoberAI.stream(request) {
                         switch piece {
                         case .text(let t): print(t, terminator: "")

@@ -59,7 +59,7 @@ final class Assistant: ObservableObject {
         let id = turns[turns.count - 1].id
         let request = OctoberAI.Request(
             turns: turns.dropLast().filter { !$0.failed }.map { ($0.question, $0.answer) },
-            question: question, image: nil, context: agentSummary()
+            question: question, image: nil, context: agentSummary(), mode: "chat"
         )
         task = Task {
             do {

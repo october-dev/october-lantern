@@ -176,8 +176,10 @@ struct WelcomeView: View {
             Text("You're set").font(.system(size: 24, weight: .bold)).foregroundStyle(Theme.ink)
             VStack(alignment: .leading, spacing: 10) {
                 Tip(symbol: "arrow.right.to.line", text: "The lantern sits on the \(prefs.edge) edge of your screen. Drag it to move it.")
-                Tip(symbol: "cursorarrow", text: "Hover over it to see everything it can do. Click it to see who's waiting.")
+                Tip(symbol: "cursorarrow", text: "Hover over it to see everything it can do. The tray button shows who's waiting.")
                 Tip(symbol: "bubble.left.and.bubble.right", text: "Click any agent to read its conversation and reply to it.")
+                Tip(symbol: "sparkles", text: "Click the lantern to ask anything, like \"which agent needs me first?\", or to set up a task.")
+                Tip(symbol: "cursorarrow.and.square.on.square.dashed", text: "Point & Ask: press \(Preferences.shared.pointAsk == .none ? "the dotted-box button" : Preferences.shared.pointAsk.label), drag a box around anything on screen and ask about it.")
                 Tip(symbol: "plus", text: "Start a new session with any agent from the + button.")
                 Tip(symbol: "menubar.rectangle", text: "Settings, updates and help are in the lantern in your menu bar.")
             }
