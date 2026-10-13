@@ -96,6 +96,7 @@ impl Lantern {
         self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
         self.refresh_folders();
         self.open_launched();
+        self.track_tasks();
         // Keep an open conversation current; close it when its agent is gone.
         if let Some(chat) = &self.model.chat {
             if live.contains(&chat.agent_id) {
@@ -121,6 +122,11 @@ impl Lantern {
 
     fn history_result(&mut self, event: &Value) {
         let Some(id) = text(event, "requestId") else { return };
+        if self.asking.watch_request.as_deref() == Some(id.as_str()) {
+            self.asking.watch_request = None;
+            self.pending.remove(&id);
+            return self.watch_result(event);
+        }
         if self.history_request.as_deref() != Some(id.as_str()) {
             return; // stale: a newer request (or another chat) took over
         }

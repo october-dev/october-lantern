@@ -62,6 +62,8 @@ pub struct UiState {
     pub assistant_focus: Option<u64>,
     #[serde(skip)]
     pub assistant_scroll_anchor: Option<(u64, u64)>,
+    /// Ask Lantern's Recent shows every saved conversation, not just the last three.
+    pub assistant_show_all: bool,
     pub account_use_email: bool,
     pub account_email: String,
     #[serde(skip)]
@@ -121,6 +123,9 @@ pub struct SessionRequest {
     pub background: bool,
     /// The app a Task is for (its id).
     pub task_app: Option<String>,
+    /// Ask Lantern's task for this turn: it stays in that conversation, so the panel doesn't
+    /// switch to it and how the launch went is reported back (Swift `launchTask(report:)`).
+    pub for_turn: Option<u64>,
 }
 
 /// Visible preferences (Settings).
@@ -204,8 +209,18 @@ pub enum UiAction {
     SendPointAskToAgent,
     CopyPointAskAnswer,
     // Ask Lantern
+    /// Asks Lantern, or replies to the conversation's running agent.
     SubmitAssistant,
+    /// "New chat": the current one stays in Recent.
     ClearAssistant,
+    /// "Ask Lantern instead" ⇄ "Reply to @handle instead".
+    ToggleAskLanternInstead,
+    OpenConversation {
+        id: String,
+    },
+    DeleteConversation {
+        id: String,
+    },
     CancelAssistantTask,
     StartAssistantTaskNow,
     // Account and October Desktop
@@ -403,6 +418,8 @@ mod tests {
             include_str!("../../fixtures/panel-assistant-thread.json"),
             include_str!("../../fixtures/panel-assistant-thinking.json"),
             include_str!("../../fixtures/panel-assistant-error.json"),
+            include_str!("../../fixtures/panel-assistant-recent.json"),
+            include_str!("../../fixtures/panel-assistant-task.json"),
             include_str!("../../fixtures/panel-october.json"),
             include_str!("../../fixtures/panel-october-pending.json"),
             include_str!("../../fixtures/panel-october-email.json"),

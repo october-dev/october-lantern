@@ -732,6 +732,7 @@ fn launch_request(cx: &Ctx) -> Option<SessionRequest> {
         toolkit: task(cx) || cx.model.prefs.toolkit_in_sessions,
         bus: cx.model.prefs.bus_for_sessions,
         background: cx.model.new_session.in_lantern_available && !form.open_in_terminal,
+        for_turn: None,
     })
 }
 

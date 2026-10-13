@@ -1,11 +1,13 @@
-//! Assistant.swift: home, conversation, pending task and the large AskBox.
+//! Assistant.swift: home (with Recent), conversation, the task cards, pending task and the large
+//! AskBox.
 use super::{
-    Ctx, DictationOwner, UiAction,
+    Ctx, DictationOwner, UiAction, chat,
     components::{self as c, MarkdownStyle},
+    feed,
     icons::Icon,
     theme::{self as t, Weight},
 };
-use crate::model::{AssistantTurn, PanelMode, PendingTask};
+use crate::model::{AgentState, AssistantTurn, ChatMessage, Conversation, PanelMode, PendingTask, Role, TaskLink};
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
@@ -52,8 +54,100 @@ fn home(ui: &mut Ui, cx: &mut Ctx) {
                     cx.view.assistant_focus = None;
                 }
             }
+            if !cx.model.assistant.conversations.is_empty() {
+                recent(ui, cx);
+            }
         }
     });
+}
+
+/// Earlier chats: the last three, or all of them (scrolling) after Show all.
+fn recent(ui: &mut Ui, cx: &mut Ctx) {
+    let model = cx.model;
+    let conversations = &model.assistant.conversations;
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            c::label(ui, "Recent", 11.5, Weight::Semibold, t::MUTED);
+            if conversations.len() > 3 {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let title = if cx.view.assistant_show_all { "Show less" } else { "Show all" };
+                    if c::plain_button(ui, title, 11.5, Weight::Medium, t::MUTED).clicked() {
+                        cx.view.assistant_show_all = !cx.view.assistant_show_all;
+                    }
+                });
+            }
+        });
+        ui.add_space(2.0);
+        if cx.view.assistant_show_all {
+            egui::ScrollArea::vertical()
+                .id_salt("assistant-recent")
+                .max_height(260.0)
+                .min_scrolled_height(0.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for conversation in conversations {
+                        conversation_row(ui, cx, conversation);
+                    }
+                });
+        } else {
+            for conversation in conversations.iter().take(3) {
+                conversation_row(ui, cx, conversation);
+            }
+        }
+    });
+}
+
+fn conversation_row(ui: &mut Ui, cx: &mut Ctx, conversation: &Conversation) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), Sense::click());
+    if response.hovered() || response.has_focus() {
+        ui.painter().rect_filled(rect, 8.0, t::FAINT);
+    }
+    let icon = if conversation.turns.iter().any(|turn| turn.task.is_some()) { Icon::PlayCircle } else { Icon::Bubble };
+    c::paint_icon(
+        ui.painter(),
+        Rect::from_center_size(egui::pos2(rect.left() + 14.0, rect.center().y), egui::Vec2::splat(11.0)),
+        icon,
+        t::MUTED,
+    );
+    let when = crate::model::parse_iso8601(&conversation.updated).map_or(String::new(), |ms| ago(ms, cx.env.now_ms));
+    let age = ui.painter().layout_no_wrap(when, t::font(11.0, Weight::Regular), t::MUTED);
+    let age_left = rect.right() - 6.0 - age.size().x;
+    ui.painter().galley(egui::pos2(age_left, rect.center().y - age.size().y / 2.0), age, t::MUTED);
+    let mut title = egui::text::LayoutJob::single_section(
+        conversation.title.clone(),
+        egui::TextFormat { font_id: t::font(12.5, Weight::Regular), color: t::white(0.9), ..Default::default() },
+    );
+    title.wrap = egui::text::TextWrapping::truncate_at_width((age_left - 8.0 - (rect.left() + 30.0)).max(10.0));
+    let title = ui.painter().layout_job(title);
+    ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - title.size().y / 2.0), title, t::white(0.9));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &conversation.title));
+    if response.clicked() {
+        cx.emit(UiAction::OpenConversation { id: conversation.id.clone() });
+    }
+    response.context_menu(|ui| {
+        if ui.button("Delete").clicked() {
+            cx.emit(UiAction::DeleteConversation { id: conversation.id.clone() });
+            ui.close();
+        }
+    });
+}
+
+/// How long ago, as the Mac's numeric narrow relative date ("2m ago", "3h ago", "1d ago").
+fn ago(since_ms: f64, now_ms: f64) -> String {
+    let seconds = ((now_ms - since_ms) / 1000.0).max(0.0) as u64;
+    let (n, unit) = match seconds {
+        0..60 => (seconds, "s"),
+        60..3600 => (seconds / 60, "m"),
+        3600..86_400 => (seconds / 3600, "h"),
+        86_400..604_800 => (seconds / 86_400, "d"),
+        604_800..2_592_000 => (seconds / 604_800, "w"),
+        2_592_000..31_536_000 => (seconds / 2_592_000, "mo"),
+        _ => (seconds / 31_536_000, "y"),
+    };
+    format!("{n}{unit} ago")
 }
 
 fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
@@ -61,14 +155,16 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
     let anchor = cx.model.assistant.turns.last().map(|turn| {
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         turn.answer.hash(&mut hash);
+        cx.model.assistant.watched.as_ref().map(|watched| watched.messages.len()).hash(&mut hash);
         (turn.id, hash.finish())
     });
+    let latest_task = cx.model.assistant.latest_task().map(|(turn, _)| turn);
     let scroll_to_last = anchor != cx.view.assistant_scroll_anchor;
     cx.view.assistant_scroll_anchor = anchor;
     egui::Frame::new().inner_margin(Margin { left: 16, right: 16, top: 14, bottom: 6 }).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 10.0;
         ui.horizontal(|ui| {
-            let galley = ui.painter().layout_no_wrap("New question".into(), t::font(12.0, Weight::Semibold), t::MUTED);
+            let galley = ui.painter().layout_no_wrap("New chat".into(), t::font(12.0, Weight::Semibold), t::MUTED);
             let (rect, response) = ui.allocate_exact_size(egui::vec2(galley.size().x + 17.0, 22.0), Sense::click());
             c::paint_icon(
                 ui.painter(),
@@ -77,8 +173,8 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
                 t::MUTED,
             );
             ui.painter().galley(egui::pos2(rect.left() + 17.0, rect.center().y - galley.size().y / 2.0), galley, t::MUTED);
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New question"));
-            if response.clicked() {
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New chat"));
+            if response.on_hover_text("Start a new chat. This one stays in Recent.").clicked() {
                 cx.emit(UiAction::ClearAssistant);
             }
             close(ui, cx);
@@ -92,8 +188,12 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
             .show(ui, |ui| {
                 egui::Frame::new().inner_margin(Margin::symmetric(0, 4)).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 14.0;
-                    for turn in &cx.model.assistant.turns {
+                    let model = cx.model;
+                    for turn in &model.assistant.turns {
                         ui.push_id(turn.id, |ui| render_turn(ui, cx, turn));
+                        if let Some(link) = &turn.task {
+                            ui.push_id(("task", turn.id), |ui| task_card(ui, cx, turn.id, link, latest_task == Some(turn.id)));
+                        }
                         if scroll_to_last && anchor.is_some_and(|(id, _)| id == turn.id) {
                             ui.scroll_to_cursor(Some(Align::BOTTOM));
                         }
@@ -128,7 +228,7 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
                 cx.emit(UiAction::OpenUrl(link));
             }
         }
-        if let Some(started) = &turn.started {
+        if let Some(started) = turn.started.as_ref().filter(|_| turn.task.is_none()) {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(12.0), Sense::hover());
                 ui.painter().circle_filled(rect.center(), 6.0, t::GREEN);
@@ -139,6 +239,91 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
         if let Some(note) = &turn.note {
             c::label(ui, note, 11.0, Weight::Regular, t::MUTED);
         }
+    });
+}
+
+/// The conversation a task card shows: the agent's live one for the latest task, else what it
+/// last said, without your first message when it's the question above (Swift `TaskCard.messages`).
+fn task_messages<'a>(link: &'a TaskLink, live: Option<&'a [ChatMessage]>) -> &'a [ChatMessage] {
+    let all = live.unwrap_or(&link.transcript);
+    match all.first() {
+        Some(first) if first.role == Role::User && chat::without_lantern_notes(&first.text).trim() == link.prompt => &all[1..],
+        _ => all,
+    }
+}
+
+/// An agent Ask Lantern started, inside the conversation (Swift `TaskCard`): who and where, its
+/// state, Allow/Deny when it asks, and what it has said (live for the latest task, as last seen
+/// for earlier ones).
+fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool) {
+    let model = cx.model;
+    let agent = model.task_agent(link);
+    let live = model
+        .assistant
+        .watched
+        .as_ref()
+        .filter(|watched| latest && agent.is_some_and(|agent| agent.id == watched.agent_id) && !watched.messages.is_empty())
+        .map(|watched| watched.messages.as_slice());
+    let messages = task_messages(link, live);
+    egui::Frame::new().fill(t::black(0.18)).stroke(Stroke::new(1.0, t::HAIRLINE)).corner_radius(12).inner_margin(Margin::same(10)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                match agent {
+                    Some(agent) => c::agent_badge(ui, cx.assets, agent, 20.0),
+                    None => c::harness_logo(ui, cx.assets, &link.kind, 20.0),
+                };
+                let open_width = ui.painter().layout_no_wrap("Open".into(), t::font(11.0, Weight::Medium), t::MUTED).size().x + 31.0;
+                let trailing = agent.map_or(0.0, |agent| c::state_chip_width(ui, agent) + open_width + 16.0);
+                let width = (ui.available_width() - trailing).max(30.0);
+                ui.allocate_ui_with_layout(egui::vec2(width, 28.0), Layout::top_down(Align::Min), |ui| {
+                    ui.set_min_width(width);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let name = agent.map_or_else(|| link.kind.display_name(), |agent| format!("@{}", agent.handle));
+                    ui.add(egui::Label::new(c::text(name, 12.0, Weight::Semibold, t::INK)).truncate());
+                    let folder = chat::folder_name(&link.folder, &cx.env.home);
+                    ui.add(egui::Label::new(c::text(folder, 10.5, Weight::Regular, t::MUTED)).truncate());
+                });
+                if let Some(agent) = agent {
+                    c::state_chip(ui, agent);
+                    if c::small_button(ui, "Open", Icon::Open).clicked() {
+                        cx.emit(UiAction::OpenAgent { agent_id: agent.id.clone() });
+                    }
+                }
+            });
+            if let Some(agent) = agent.filter(|agent| agent.is_permission_prompt()) {
+                ui.add(egui::Label::new(c::text(agent.question.as_deref().unwrap_or(""), 12.0, Weight::Medium, t::AMBER)).wrap());
+                feed::permission_buttons(ui, cx, agent);
+            }
+            for (key, message) in chat::keyed(messages) {
+                chat::bubble(ui, cx, message, &format!("task-{turn}-{key}"));
+            }
+            if let Some(error) = &link.error {
+                c::label(ui, format!("Couldn't start it: {error}"), 11.5, Weight::Regular, t::RED);
+            } else if let Some(agent) = agent {
+                if agent.state == AgentState::Working {
+                    busy(ui, cx.env, "Working…");
+                }
+            } else if link.in_terminal {
+                c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
+            } else if link.agent_id.is_some() || !link.transcript.is_empty() {
+                c::label(ui, "Finished. It isn't running anymore.", 11.0, Weight::Regular, t::MUTED);
+            } else if latest {
+                busy(ui, cx.env, format!("Starting {}…", link.kind.display_name()));
+            }
+        },
+    );
+}
+
+/// A spinner and what's going on.
+fn busy(ui: &mut Ui, env: &super::Env, text: impl Into<String>) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        c::spinner(ui, 10.0, t::MUTED, env);
+        c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
     });
 }
 
@@ -210,6 +395,10 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
             }
             return;
         }
+        let model = cx.model;
+        // With the latest task's agent running, the box replies to it.
+        let agent = model.assistant_agent();
+        let replying = agent.filter(|_| !model.assistant.ask_lantern_instead);
         let id = ui.make_persistent_id("assistant-input");
         let focused = ui.memory(|mem| mem.has_focus(id));
         egui::Frame::new()
@@ -222,11 +411,13 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     let width = ui.available_width() - 56.0;
                     let placeholder = if cx.model.dictating {
-                        "Listening…"
+                        "Listening…".to_string()
+                    } else if let Some(agent) = replying {
+                        format!("Reply to @{}…", agent.handle)
                     } else if cx.model.assistant.turns.is_empty() {
-                        "Ask Lantern, or tell it what to do"
+                        "Ask Lantern, or tell it what to do".into()
                     } else {
-                        "Ask a follow-up"
+                        "Ask a follow-up".into()
                     };
                     let edit = egui::ScrollArea::vertical()
                         .id_salt("assistant-input-scroll")
@@ -268,7 +459,8 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                             {
                                 cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
                             }
-                            let enabled = !cx.inputs.assistant.trim().is_empty() && !cx.model.assistant.asking;
+                            // A reply can go while Lantern is still answering.
+                            let enabled = !cx.inputs.assistant.trim().is_empty() && (replying.is_some() || !cx.model.assistant.asking);
                             let response = ui
                                 .add_enabled_ui(enabled, |ui| {
                                     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(22.0), Sense::click());
@@ -286,6 +478,20 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                     });
                 });
             });
+        if let Some(agent) = agent {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                let (title, icon) = if model.assistant.ask_lantern_instead {
+                    (format!("Reply to @{} instead", agent.handle), Icon::Reply)
+                } else {
+                    ("Ask Lantern instead".to_string(), Icon::Sparkles)
+                };
+                if c::small_button(ui, &title, icon).clicked() {
+                    cx.emit(UiAction::ToggleAskLanternInstead);
+                }
+            });
+        }
     });
 }
 
@@ -314,19 +520,29 @@ mod tests {
             |ui| {
                 height = super::super::render_panel(
                     ui,
-                    &mut Ctx { model, inputs, view, assets, out: &mut actions, env: &Env::default() },
+                    &mut Ctx {
+                        model,
+                        inputs,
+                        view,
+                        assets,
+                        out: &mut actions,
+                        env: &Env { now_ms: 1_790_000_000_000.0, reduce_motion: true, home: "/home/me".into() },
+                    },
                     900.0,
                 );
             },
         );
-        let texts = output
-            .shapes
-            .iter()
-            .filter_map(|shape| match &shape.shape {
-                egui::Shape::Text(text) => Some((text.galley.job.text.clone(), Rect::from_min_size(text.pos, text.galley.size()))),
-                _ => None,
-            })
-            .collect();
+        fn collect(shape: &egui::Shape, texts: &mut Vec<(String, Rect)>) {
+            match shape {
+                egui::Shape::Text(text) => texts.push((text.galley.job.text.clone(), Rect::from_min_size(text.pos, text.galley.size()))),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, texts)),
+                _ => {}
+            }
+        }
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut texts);
+        }
         output.textures_delta.clear();
         (height, actions, texts)
     }
@@ -366,18 +582,127 @@ mod tests {
         assert_eq!(fixture.inputs.assistant, "Join the call.");
         let (height, _, _) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
         assert!(height > 250.0 && height < 450.0, "home height: {height}");
-        let enter = || egui::Event::Key {
-            key: egui::Key::Enter,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        };
         let (_, actions, _) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, vec![enter()]);
         assert_eq!(actions, vec![UiAction::SubmitAssistant]);
         assert_eq!(fixture.inputs.assistant, "Join the call.");
         fixture.model.assistant.asking = true;
         assert!(frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, vec![enter()]).1.is_empty());
+    }
+
+    fn enter() -> egui::Event {
+        egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    fn setup(name: &str) -> (egui::Context, Assets, crate::app::fixture::Fixture) {
+        let ctx = egui::Context::default();
+        t::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let raw = match name {
+            "task" => include_str!("../../fixtures/panel-assistant-task.json"),
+            "recent" => include_str!("../../fixtures/panel-assistant-recent.json"),
+            _ => unreachable!(),
+        };
+        (ctx, assets, serde_json::from_str(raw).unwrap())
+    }
+
+    #[test]
+    fn the_card_drops_the_first_message_when_it_is_the_question() {
+        let message = |role, text: &str| ChatMessage { role, text: text.into(), at: None };
+        let link = TaskLink {
+            prompt: "Find me my thesis document".into(),
+            transcript: vec![
+                message(Role::User, "Find me my thesis document\n\n(Started from October Lantern on Linux.)"),
+                message(Role::Agent, "Found it."),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(task_messages(&link, None), &link.transcript[1..]);
+        let live = [message(Role::User, "Something else"), message(Role::Agent, "Sure.")];
+        assert_eq!(task_messages(&link, Some(&live[..])), &live[..], "a different first message stays");
+        assert!(task_messages(&TaskLink::default(), None).is_empty());
+    }
+
+    #[test]
+    fn a_finished_task_shows_its_saved_messages_in_the_conversation() {
+        let (ctx, assets, mut fixture) = setup("task");
+        let mut view = UiState::default();
+        let (height, actions, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        let has = |value: &str| texts.iter().any(|(text, _)| text == value);
+        assert!(actions.is_empty() && height < 900.0);
+        assert!(has("Claude Code") && has("Home folder") && has("Finished. It isn't running anymore."));
+        assert_eq!(texts.iter().filter(|(text, _)| text == "Find me my thesis document").count(), 1, "the question shows once");
+        assert!(texts.iter().any(|(text, _)| text.contains("Thesis-final.pdf")));
+        assert!(!has("Started Claude Code in me"), "the card replaces the green line");
+        assert!(!has("Ask Lantern instead") && has("Ask a follow-up"));
+        assert!(!has("Open"), "nothing to open once it has ended");
+    }
+
+    #[test]
+    fn with_its_agent_running_the_box_replies_to_it_unless_asked_to_ask_lantern() {
+        let (ctx, assets, mut fixture) = setup("task");
+        fixture.model.agents = vec![crate::model::Agent {
+            id: "demo".into(),
+            kind: crate::model::AgentKind::new("claude"),
+            handle: "claude-1".into(),
+            state: AgentState::Working,
+            can_reply: true,
+            ..Default::default()
+        }];
+        fixture.model.assistant.asking = true;
+        fixture.inputs.assistant = "Open it".into();
+        let mut view = UiState::default();
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
+        assert!(has(&texts, "@claude-1") && has(&texts, "Working…") && has(&texts, "Open"));
+        assert!(!has(&texts, "Finished. It isn't running anymore."));
+        assert!(has(&texts, "Ask Lantern instead"));
+        let (_, actions, _) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, vec![enter()]);
+        assert_eq!(actions, vec![UiAction::SubmitAssistant], "a reply goes while Lantern is answering");
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Ask Lantern instead"),
+            vec![UiAction::ToggleAskLanternInstead]
+        );
+        fixture.model.assistant.ask_lantern_instead = true;
+        let (_, actions, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, vec![enter()]);
+        assert!(actions.is_empty(), "a question waits for Lantern's answer");
+        assert!(has(&texts, "Reply to @claude-1 instead"));
+        fixture.inputs.assistant.clear();
+        fixture.model.assistant.ask_lantern_instead = false;
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(has(&texts, "Reply to @claude-1…"));
+    }
+
+    #[test]
+    fn recent_chats_open_and_show_all_when_there_are_more_than_three() {
+        let (ctx, assets, mut fixture) = setup("recent");
+        let mut view = UiState::default();
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
+        assert!(has(&texts, "Recent") && has(&texts, "2m ago") && has(&texts, "1h ago") && has(&texts, "1d ago"));
+        assert!(!has(&texts, "Show all"));
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Which agent needs me first?"),
+            vec![UiAction::OpenConversation { id: "c2".into() }]
+        );
+        let mut older = fixture.model.assistant.conversations[1].clone();
+        older.id = "c4".into();
+        older.title = "Join the standup".into();
+        fixture.model.assistant.conversations.push(older);
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(has(&texts, "Show all") && !has(&texts, "Join the standup"));
+        assert!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Show all").is_empty());
+        assert!(view.assistant_show_all);
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(has(&texts, "Show less") && has(&texts, "Join the standup"));
+    }
+
+    #[test]
+    fn relative_times_read_like_the_mac() {
+        let now = 1_790_000_000_000.0;
+        assert_eq!(ago(now - 5_000.0, now), "5s ago");
+        assert_eq!(ago(now - 120_000.0, now), "2m ago");
+        assert_eq!(ago(now - 3.0 * 3_600_000.0, now), "3h ago");
+        assert_eq!(ago(now - 86_400_000.0 * 9.0, now), "1w ago");
     }
 
     #[test]
@@ -410,6 +735,6 @@ mod tests {
         assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Start"), vec![UiAction::StartAssistantTaskNow]);
         assert_eq!(fixture.model.assistant.pending_task.as_ref().unwrap().seconds_left, 3);
         assert_eq!(fixture.model.assistant.turns[1].started, None);
-        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "New question"), vec![UiAction::ClearAssistant]);
+        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "New chat"), vec![UiAction::ClearAssistant]);
     }
 }

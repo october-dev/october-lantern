@@ -104,6 +104,12 @@ impl Lantern {
             UiAction::CopyPointAskAnswer => self.copy_point_ask_answer(),
             UiAction::SubmitAssistant => self.submit_assistant(),
             UiAction::ClearAssistant => self.clear_assistant(),
+            UiAction::ToggleAskLanternInstead => {
+                self.model.assistant.ask_lantern_instead = !self.model.assistant.ask_lantern_instead;
+                self.model.compose_focus += 1;
+            }
+            UiAction::OpenConversation { id } => self.open_conversation(&id),
+            UiAction::DeleteConversation { id } => self.delete_conversation(&id),
             UiAction::CancelAssistantTask => self.cancel_assistant_task(),
             UiAction::StartAssistantTaskNow => self.start_pending_task(),
             UiAction::CloseLaunchPreview => self.close_preview(),

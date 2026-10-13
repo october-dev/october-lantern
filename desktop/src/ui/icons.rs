@@ -57,6 +57,10 @@ pub enum Icon {
     ArrowToEdge,
     /// SF `menubar.rectangle`.
     MenuBar,
+    /// SF `play.circle` (Ask Lantern's Recent: a chat that started an agent).
+    PlayCircle,
+    /// SF `bubble.left` (Ask Lantern's Recent).
+    Bubble,
 }
 
 struct Pen<'a> {
@@ -347,6 +351,14 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.rect((2.0, 4.0), (22.0, 20.0), 2.0, false);
             p.rect((2.0, 4.0), (22.0, 8.5), 2.0, true);
         }
+        PlayCircle => {
+            p.circle(12.0, 12.0, 10.0, false);
+            p.closed(&[(9.5, 7.5), (16.5, 12.0), (9.5, 16.5)], true);
+        }
+        Bubble => {
+            p.rect((2.0, 3.0), (22.0, 17.0), 4.0, false);
+            p.line(&[(6.0, 17.0), (5.0, 21.5), (11.0, 17.0)]);
+        }
     }
 }
 
@@ -368,6 +380,8 @@ mod tests {
                 Icon::MenuBar,
                 Icon::CheckCircle,
                 Icon::Refresh,
+                Icon::PlayCircle,
+                Icon::Bubble,
             ] {
                 let mut output = ctx.run_ui(egui::RawInput::default(), |ui| paint_icon(ui.painter(), rect, icon, Color32::WHITE));
                 output.textures_delta.clear();
