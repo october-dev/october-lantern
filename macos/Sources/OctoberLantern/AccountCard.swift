@@ -6,9 +6,12 @@ struct AccountCard: View {
     @State private var useEmail = false
     @State private var email = ""
     @State private var password = ""
+    /// Off where the context already says why (Ask Lantern's sign-in): just the buttons.
+    var showsHeader = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if showsHeader || account.signedIn {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: account.signedIn ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle")
                     .font(.system(size: 16)).foregroundStyle(account.signedIn ? Theme.green : Theme.muted).frame(width: 22)
@@ -21,6 +24,7 @@ struct AccountCard: View {
                 if account.signedIn {
                     Button("Sign Out") { account.signOut() }.buttonStyle(SecondaryButtonStyle())
                 }
+            }
             }
 
             if !account.signedIn {

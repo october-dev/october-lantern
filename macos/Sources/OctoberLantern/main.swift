@@ -203,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }))
         }
+        jobs.append(("panel-assistant-signed-out", AnyView(AssistantHome(model: model, account: .detached()).frame(width: 380).background(Color.black))))
         jobs.append(("account-signed-out", AnyView(AccountCard(account: .detached()).padding(14).frame(width: 380).background(Color.black))))
         jobs.append(("point-ask", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: false) })))
         jobs.append(("point-ask-answer", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: true) })))

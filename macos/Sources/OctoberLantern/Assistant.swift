@@ -605,18 +605,13 @@ struct AskBox: View {
                 }
                 }
             } else {
-                Button { model.panel = .october } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "sparkles").foregroundStyle(Theme.amber)
-                        Text("Sign in to October to ask Lantern anything").foregroundStyle(Theme.muted)
-                        Spacer()
-                        Image(systemName: "chevron.right").foregroundStyle(Theme.muted)
-                    }
-                    .font(.system(size: 12, weight: .medium))
-                    .padding(.horizontal, 11).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))
+                // Sign in right here; afterwards Lantern comes back to this box.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Sign in to ask Lantern").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                    Text("Ask anything about your agents, or tell Lantern what to do. Free accounts get 20 questions a day.")
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    AccountCard(account: account, showsHeader: false)
                 }
-                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 4)
@@ -722,7 +717,7 @@ struct AssistantHome: View {
                 }
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 8)
             }
-            AskBox(model: model, large: true)
+            AskBox(model: model, large: true, account: account)
         }
         .onAppear { model.composeFocusToken += 1 }
     }

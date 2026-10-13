@@ -54,6 +54,7 @@ final class AppModel: ObservableObject {
     /// A launch waiting for October Harness to finish installing.
     private var launchAfterHarness: (() -> Void)?
     private var octoberSessionWatch: AnyCancellable?
+    private var signInWatch: AnyCancellable?
     @Published private(set) var launching = false
     /// Models each agent can start with, by kind, once the engine has listed them.
     @Published private(set) var models: [String: EngineMessage.ModelList] = [:]
@@ -169,6 +170,16 @@ final class AppModel: ObservableObject {
         // in memory (never the refresh token).
         octoberSessionWatch = OctoberAccount.shared.$session.sink { [weak self] session in
             self?.engine.octoberSession(accessToken: session?.accessToken, expiresAt: session?.expiresAt)
+        }
+        // Back from the browser: Lantern comes forward where you were (Ask Lantern if nothing was
+        // open), with your question still in its box.
+        signInWatch = OctoberAccount.shared.$signedInCount.dropFirst().sink { [weak self] _ in
+            guard let self else { return }
+            NSApp.activate()
+            if self.panel == nil { self.panel = .assistant }
+            self.composeFocusToken += 1
+            let who = OctoberAccount.shared.session?.email.map { "Signed in as \($0)" } ?? "Signed in to October"
+            self.show(who)
         }
         engine.onReady = { [weak self] in
             OctoberAccount.shared.engineReady()

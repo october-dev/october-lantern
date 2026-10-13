@@ -52,6 +52,9 @@ final class OctoberAccount: ObservableObject {
     @Published private(set) var session: Session?
     @Published private(set) var plan: Plan?
     @Published private(set) var signingIn = false
+    /// Bumped when you sign in (not when a saved sign-in is restored), so the app can come
+    /// forward and say so.
+    @Published private(set) var signedInCount = 0
     @Published var error: String?
 
     var signedIn: Bool { session != nil }
@@ -227,6 +230,7 @@ final class OctoberAccount: ObservableObject {
         session = s
         Analytics.shared.identify(userId: s.userId, email: s.email)
         Analytics.shared.capture("october_signed_in")
+        signedInCount += 1
         store.save(s)
         PhoneModel.shared.token(s.accessToken)
         scheduleRefresh()
@@ -436,11 +440,11 @@ final class CallbackListener: @unchecked Sendable {
             }
             self.done = true
             if let code = value("code") {
-                self.reply(conn, status: "200 OK", body: Self.page("You're signed in", "You can close this tab and go back to October Lantern."))
+                self.reply(conn, status: "200 OK", body: Self.page("You're signed in to October Lantern", "Lantern is ready. You can close this tab."))
                 completion(.success(code))
             } else {
                 let message = value("error_description") ?? value("error") ?? "Sign-in was cancelled."
-                self.reply(conn, status: "400 Bad Request", body: Self.page("Sign-in didn't finish", message))
+                self.reply(conn, status: "400 Bad Request", body: Self.page("Sign-in didn't finish", "\(message) Go back to Lantern and try again."))
                 completion(.failure(message))
             }
             self.stop()
@@ -452,12 +456,30 @@ final class CallbackListener: @unchecked Sendable {
         conn.send(content: Data(response.utf8), completion: .contentProcessed { _ in conn.cancel() })
     }
 
-    private static func page(_ title: String, _ text: String) -> String {
+    /// The page the browser shows after sign-in: the lantern, what happened, and what to do now.
+    static func page(_ title: String, _ text: String) -> String {
         let esc = { (s: String) in s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;") }
+        let logo = logoDataURL.map { "<img src=\"\($0)\" width=\"88\" height=\"88\" alt=\"\" style=\"filter:drop-shadow(0 0 24px rgba(240,180,80,.45))\">" } ?? ""
         return """
-        <!doctype html><meta charset="utf-8"><title>October Lantern</title>
-        <body style="font:16px -apple-system,sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
-        <div style="text-align:center"><h2>\(esc(title))</h2><p style="color:#aaa">\(esc(text))</p></div></body>
+        <!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>October Lantern</title>
+        <body style="font:16px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#141414;color:#f3efe6;display:grid;place-items:center;min-height:100vh;margin:0">
+        <main style="text-align:center;max-width:420px;padding:24px">\(logo)
+        <h1 style="font-size:22px;margin:18px 0 8px">\(esc(title))</h1>
+        <p style="color:#a8a29a;line-height:1.5;margin:0">\(esc(text))</p></main></body>
         """
     }
+
+    /// The app's logo, small, for the sign-in page.
+    private static let logoDataURL: String? = {
+        guard let logo = Assets.logo else { return nil }
+        let size = NSSize(width: 176, height: 176)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        logo.draw(in: NSRect(origin: .zero, size: size))
+        image.unlockFocus()
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        return "data:image/png;base64," + png.base64EncodedString()
+    }()
 }
