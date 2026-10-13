@@ -5,6 +5,10 @@
 //! The overlay is fullscreen so it covers the top bar and takes the keyboard (Enter, Esc). Wayland
 //! gives Lantern no list of other apps' windows, so "click a window" is the whole screen here
 //! (CONTRACT §8.5); the hint says so.
+//!
+//! On Windows the overlay shows the display as it was just before (captured with Lantern's windows
+//! clear), Snipping Tool style: Windows draws a transparent window covering a whole monitor black.
+//! The selection is cropped from that same still.
 use super::Lantern;
 use crate::model::PointAskPhase;
 use crate::os::shell::{self as platform, CARD_TITLE, Role, SELECT_TITLE};
@@ -28,6 +32,47 @@ pub struct State {
     /// The card's top-left once placed; it keeps its top as the answer grows.
     card_at: Option<Pos2>,
     card_height: f32,
+    /// Windows: the display under the overlay, frozen, and its texture once uploaded.
+    #[cfg(windows)]
+    frozen: Option<crate::os::Frozen>,
+    #[cfg(windows)]
+    frozen_texture: Option<egui::TextureHandle>,
+    /// Windows: the chosen part of the frozen display (image pixels: x, y, width, height).
+    #[cfg(windows)]
+    pub pick: Option<(std::sync::Arc<image::RgbaImage>, [u32; 4])>,
+}
+
+#[cfg(windows)]
+impl State {
+    pub fn freeze(&mut self, frozen: crate::os::Frozen) {
+        self.frozen = Some(frozen);
+        self.frozen_texture = None;
+    }
+    pub fn unfreeze(&mut self) {
+        self.frozen = None;
+        self.frozen_texture = None;
+        self.pick = None;
+    }
+}
+
+/// An overlay-local selection (points) on the screen, in physical pixels.
+pub fn on_screen(selection: Rect, monitor: Rect, scale: f32) -> Rect {
+    Rect::from_min_max(monitor.min + selection.min.to_vec2() * scale, monitor.min + selection.max.to_vec2() * scale)
+}
+
+/// The part of a frozen display under `selection`, in its image's pixels (x, y, width, height).
+/// The overlay's `area` shows the whole `size`-pixel image, so this holds at any scale factor;
+/// `None` when nothing of it is selected.
+#[cfg(any(windows, test))]
+fn crop_pixels(selection: Rect, area: Rect, size: [u32; 2]) -> Option<[u32; 4]> {
+    if area.width() <= 0.0 || area.height() <= 0.0 {
+        return None;
+    }
+    let (width, height) = (size[0] as f32, size[1] as f32);
+    let x = |at: f32| ((at - area.min.x) / area.width() * width).round().clamp(0.0, width) as u32;
+    let y = |at: f32| ((at - area.min.y) / area.height() * height).round().clamp(0.0, height) as u32;
+    let (left, right, top, bottom) = (x(selection.min.x), x(selection.max.x), y(selection.min.y), y(selection.max.y));
+    (right > left && bottom > top).then_some([left, top, right - left, bottom - top])
 }
 
 /// Where the card goes (Swift `fit`): to the right of the selection, else the left, else inside
@@ -55,6 +100,10 @@ impl Lantern {
             _ => {
                 self.windows.select.drag = None;
                 self.windows.select.overlay_adopted = false;
+                #[cfg(windows)]
+                if self.model.point_ask.phase != PointAskPhase::Selecting {
+                    self.windows.select.unfreeze();
+                }
                 if self.model.point_ask.phase == PointAskPhase::Closed {
                     self.windows.select.card_adopted = false;
                     self.windows.select.card_at = None;
@@ -71,25 +120,52 @@ impl Lantern {
     }
 
     fn overlay(&mut self, ctx: &egui::Context, scale: f32) {
-        let Some(monitor) = self.pointing_monitor() else { return };
+        #[cfg(windows)]
+        let frozen_monitor = self.windows.select.frozen.as_ref().map(|frozen| frozen.monitor);
+        #[cfg(not(windows))]
+        let frozen_monitor: Option<Rect> = None;
+        // The frozen display, else the monitor the pill is on.
+        let Some(monitor) = frozen_monitor.or_else(|| self.pointing_monitor()) else { return };
         let points = Rect::from_min_max((monitor.min.to_vec2() / scale).to_pos2(), (monitor.max.to_vec2() / scale).to_pos2());
         let state = &mut self.windows.select;
         if !state.overlay_adopted {
             state.overlay_adopted = platform::adopt(SELECT_TITLE, Role::Card);
         }
+        #[cfg(windows)]
+        let background = match (&state.frozen, &mut state.frozen_texture) {
+            (Some(frozen), texture) => Some(
+                texture
+                    .get_or_insert_with(|| {
+                        let size = [frozen.image.width() as usize, frozen.image.height() as usize];
+                        let image = egui::ColorImage::from_rgba_unmultiplied(size, frozen.image.as_raw());
+                        ctx.load_texture("point-ask/frozen", image, egui::TextureOptions::LINEAR)
+                    })
+                    .id(),
+            ),
+            (None, _) => None,
+        };
+        #[cfg(not(windows))]
+        let background: Option<egui::TextureId> = None;
         let builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title(SELECT_TITLE)
             .with_position(points.min)
             .with_inner_size(points.size())
             .with_decorations(false)
-            .with_transparent(true)
+            // Opaque over a frozen display; transparent over the live one.
+            .with_transparent(background.is_none())
             .with_always_on_top()
             .with_taskbar(false)
             .with_fullscreen(true);
         let window_hit_test = self.model.caps.window_hit_test;
         let mut outcome: Option<Option<Rect>> = None;
+        let mut shown = Rect::NOTHING;
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-select"), builder, |ui, _| {
             let area = ui.max_rect();
+            shown = area;
+            if let Some(texture) = background {
+                ui.painter().image(texture, area, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+            }
             ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
             let response = ui.interact(area, ui.id().with("select"), Sense::click_and_drag());
             if response.drag_started()
@@ -116,9 +192,18 @@ impl Lantern {
         if let Some(chosen) = outcome {
             self.windows.select.drag = None;
             self.windows.select.overlay_adopted = false;
-            // Overlay-local points → screen pixels (the capture and crop are in pixels).
-            let to_screen = |r: Rect| Rect::from_min_max(monitor.min + r.min.to_vec2() * scale, monitor.min + r.max.to_vec2() * scale);
-            self.point_ask_selected(chosen.map(to_screen));
+            #[cfg(windows)]
+            {
+                let frozen = self.windows.select.frozen.take();
+                self.windows.select.unfreeze();
+                self.windows.select.pick = frozen.zip(chosen).and_then(|(frozen, chosen)| {
+                    let crop = crop_pixels(chosen, shown, [frozen.image.width(), frozen.image.height()])?;
+                    Some((frozen.image, crop))
+                });
+            }
+            let _ = shown;
+            // Overlay-local points → screen pixels (the card's placement, and the crop of a live capture).
+            self.point_ask_selected(chosen.map(|r| on_screen(r, monitor, scale)));
         }
     }
 
@@ -143,6 +228,7 @@ impl Lantern {
             state.card_adopted = platform::adopt(CARD_TITLE, Role::Card);
         }
         let builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title(CARD_TITLE)
             .with_inner_size(frame.size())
             .with_position(frame.min)
@@ -245,6 +331,30 @@ mod tests {
         assert_eq!(card_frame(right, 320.0, work()).min.x, 1500.0 - 400.0 - 14.0);
         let wide = Rect::from_min_size(pos2(10.0, 300.0), vec2(1900.0, 200.0));
         assert_eq!(card_frame(wide, 320.0, work()).min.x, 1910.0 - 400.0 - 14.0, "inside its right edge");
+    }
+
+    #[test]
+    fn a_selection_maps_to_screen_pixels_on_any_monitor() {
+        let left = Rect::from_min_size(pos2(-2880.0, 0.0), vec2(2880.0, 1620.0));
+        let chosen = Rect::from_min_size(pos2(100.0, 50.0), vec2(200.0, 100.0));
+        assert_eq!(on_screen(chosen, left, 1.5), Rect::from_min_size(pos2(-2730.0, 75.0), vec2(300.0, 150.0)));
+    }
+
+    #[test]
+    fn a_frozen_display_is_cropped_in_its_own_pixels_at_any_scale() {
+        // 1920 x 1080 pixels shown at 150%: the overlay is 1280 x 720 points.
+        let area = Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 720.0));
+        let chosen = Rect::from_min_size(pos2(100.0, 50.0), vec2(200.0, 200.0));
+        assert_eq!(crop_pixels(chosen, area, [1920, 1080]), Some([150, 75, 300, 300]));
+        assert_eq!(crop_pixels(area, area, [1920, 1080]), Some([0, 0, 1920, 1080]), "a click takes the whole display");
+        // Dragged past the edge: kept to the image.
+        let past = Rect::from_min_max(pos2(1200.0, -20.0), pos2(1400.0, 100.0));
+        assert_eq!(crop_pixels(past, area, [1920, 1080]), Some([1800, 0, 120, 150]));
+        // The overlay a little off its window's origin, and nothing selected.
+        let offset = area.translate(vec2(10.0, 20.0));
+        assert_eq!(crop_pixels(chosen.translate(vec2(10.0, 20.0)), offset, [1920, 1080]), Some([150, 75, 300, 300]));
+        assert_eq!(crop_pixels(Rect::from_min_size(pos2(5.0, 5.0), Vec2::ZERO), area, [1920, 1080]), None);
+        assert_eq!(crop_pixels(chosen, Rect::NOTHING, [1920, 1080]), None);
     }
 
     #[test]

@@ -75,6 +75,7 @@ impl Lantern {
         };
         #[allow(unused_mut)]
         let mut builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title("October Lantern menu")
             .with_inner_size(size)
             .with_position(pos2(x, at.y))

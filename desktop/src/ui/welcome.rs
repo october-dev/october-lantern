@@ -67,8 +67,9 @@ fn footer_bar(ui: &mut Ui, cx: &mut Ctx, bar: Rect, step: usize, primary: &str) 
         if c::amber_button(ui, primary).clicked() {
             advance(cx, step);
         }
-        if step == 1 && c::plain_button(ui, "Back", 13.0, Weight::Regular, t::MUTED).clicked() {
-            cx.view.welcome_step = 0;
+        // Every step after the first can go back to the one before it.
+        if step > 0 && c::plain_button(ui, "Back", 13.0, Weight::Regular, t::MUTED).clicked() {
+            cx.view.welcome_step = step - 1;
         }
     });
 }
@@ -378,11 +379,10 @@ fn tips(cx: &Ctx) -> Vec<(Icon, String)> {
     };
     vec![
         (Icon::ArrowToEdge, format!("The lantern sits on the {edge} edge of your screen. Drag it to move it.")),
-        (Icon::Cursor, "Click it to see who's waiting. Click any agent to read its conversation and reply.".into()),
+        (Icon::Layers, "Hover it and click the stack to see who's waiting. Click any agent to read its conversation and reply.".into()),
         (
             Icon::Sparkles,
-            "Ask Lantern at the bottom of that panel: \"which agent needs me first?\", or tell it what to do and it starts an agent."
-                .into(),
+            "Click the lantern to Ask Lantern: \"which agent needs me first?\", or tell it what to do and it starts an agent.".into(),
         ),
         (Icon::PointAsk, format!("Point & Ask: press {point_ask}, drag a box around anything on screen and ask about it.")),
         (Icon::Plus, "Start a new session with any agent from the + button.".into()),
@@ -486,6 +486,9 @@ mod tests {
         assert!(click(&ctx, &assets, &model, &mut view, "Continue").is_empty());
         assert_eq!(view.welcome_step, 1);
         view.welcome_step = 2;
+        assert!(click(&ctx, &assets, &model, &mut view, "Back").is_empty());
+        assert_eq!(view.welcome_step, 1, "Back on the last step returns to setup");
+        view.welcome_step = 2;
         assert_eq!(click(&ctx, &assets, &model, &mut view, "Start using Lantern"), vec![UiAction::FinishWelcome]);
     }
 
@@ -549,7 +552,9 @@ mod tests {
         assert_eq!(actions, vec![UiAction::FinishWelcome]);
         assert_eq!(height, 560.0);
         assert!(texts.iter().any(|(text, _)| text == "Start using Lantern"));
-        assert!(!texts.iter().any(|(text, _)| text == "Back"), "Back shows only on the setup step");
+        assert!(texts.iter().any(|(text, _)| text == "Back"), "Back shows on the last step too");
+        let (_, _, first) = frame(&ctx, &assets, &model, &mut UiState::default(), Vec::new());
+        assert!(!first.iter().any(|(text, _)| text == "Back"), "the first step has nothing to go back to");
     }
 
     #[test]
@@ -608,6 +613,10 @@ mod tests {
         let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
         let joined: String = texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("on the left edge"));
+        let stack = joined.find("Hover it and click the stack to see who's waiting.").expect("the stack tip");
+        let ask = joined.find("Click the lantern to Ask Lantern: \"which agent needs me first?\"").expect("the Ask Lantern tip");
+        assert!(stack < ask, "the stack tip comes first");
+        assert!(!joined.contains("bottom of that panel"));
         assert!(joined.contains("press Ctrl+Alt+P, drag a box"));
         assert!(joined.contains("Right-click the lantern for Settings and more."));
         model.caps.tray = true;

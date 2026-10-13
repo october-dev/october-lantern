@@ -134,6 +134,7 @@ pub fn run(fixture: &Path, out: PathBuf, scale: f32) -> Result<()> {
     let app = Render { fixture, view, assets: None, out, frames: 0, height: 0.0, requested: false, result: result.clone() };
     #[allow(unused_mut)]
     let mut viewport = egui::ViewportBuilder::default()
+        .with_icon(crate::ui::assets::window_icon())
         .with_title("Lantern fixture")
         .with_inner_size(size)
         .with_position([0.0, 0.0])

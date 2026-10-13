@@ -166,6 +166,13 @@ impl Lantern {
                 self.windows.capture_done();
                 self.point_ask_captured(generation, result);
             }
+            #[cfg(windows)]
+            Event::Frozen { generation, result } => {
+                self.windows.capture_done();
+                self.point_ask_frozen(generation, result);
+            }
+            #[cfg(windows)]
+            Event::PointAskShot { generation, result } => self.point_ask_shot(generation, result),
             Event::PointAsk { generation, turn, piece } => self.point_ask_piece(generation, turn, piece),
             Event::PointAskDone { generation, turn, error } => self.point_ask_done(generation, turn, error),
             Event::PointAskSent { generation, agent_id, text } => self.point_ask_sent(generation, agent_id, text),

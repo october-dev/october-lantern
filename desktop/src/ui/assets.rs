@@ -3,6 +3,7 @@
 use crate::model::AgentKind;
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
 pub struct Assets {
     /// The lantern mascot (repo root logo.png).
@@ -61,6 +62,20 @@ impl Assets {
     }
 }
 
+/// The lantern as every window's icon: the title bar, taskbar and Alt-Tab (Windows), and the
+/// window list (Linux). Decoded once; 64 px reads well from 16 px up to high-DPI taskbars.
+pub fn window_icon() -> Arc<egui::IconData> {
+    static ICON: OnceLock<Arc<egui::IconData>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        let logo = decode("logo", include_bytes!("../../../logo.png"));
+        let icon = image::imageops::resize(&logo, WINDOW_ICON, WINDOW_ICON, image::imageops::FilterType::Lanczos3);
+        Arc::new(egui::IconData { rgba: icon.into_raw(), width: WINDOW_ICON, height: WINDOW_ICON })
+    })
+    .clone()
+}
+
+const WINDOW_ICON: u32 = 64;
+
 /// Gaussian approximation of Welcome's `shadow(radius: 24)`, using sigma 24 at 1x.
 /// A 96pt logo is 96 px, padded 72 px (3 sigma) so its visible falloff has room to fade.
 /// The kernel is deterministic across our platforms; exact SwiftUI filter equivalence is unproven.
@@ -113,6 +128,15 @@ fn upload(ctx: &egui::Context, name: &str, image: &image::RgbaImage) -> TextureH
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_window_icon_is_the_square_lantern_with_transparency() {
+        let icon = super::window_icon();
+        assert_eq!((icon.width, icon.height), (64, 64));
+        assert_eq!(icon.rgba.len(), 64 * 64 * 4);
+        assert!(icon.rgba.chunks(4).any(|pixel| pixel[3] == 0) && icon.rgba.chunks(4).any(|pixel| pixel[3] == 255));
+        assert!(std::sync::Arc::ptr_eq(&icon, &super::window_icon()), "decoded once");
+    }
+
     #[test]
     fn the_logo_shadow_is_a_soft_white_silhouette_with_room_to_fade() {
         let logo = super::decode("logo", include_bytes!("../../../logo.png"));
