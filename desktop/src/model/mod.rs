@@ -415,6 +415,37 @@ pub struct AssistantTurn {
     pub note: Option<String>,
     /// "Started Claude Code in october-lantern", once a task from this answer launched.
     pub started: Option<String>,
+    /// The agent this answer started, shown in the conversation.
+    pub task: Option<TaskLink>,
+}
+
+/// An agent Ask Lantern started (Swift `Assistant.TaskLink`): found by its Lantern session (tmux
+/// on Linux, ConPTY on Windows), then by its id. Its last messages are kept, so the conversation
+/// still shows what it did after it ends.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskLink {
+    pub kind: AgentKind,
+    pub folder: String,
+    pub prompt: String,
+    pub session: Option<String>,
+    pub agent_id: Option<AgentId>,
+    pub error: Option<String>,
+    /// Started without a Lantern session (a Terminal window): nothing to show here.
+    pub in_terminal: bool,
+    /// Its last 60 messages, as last seen.
+    pub transcript: Vec<ChatMessage>,
+}
+
+/// A saved Ask Lantern conversation (Swift `Assistant.Conversation`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Conversation {
+    pub id: String,
+    pub title: String,
+    /// ISO 8601 (`2026-10-13T18:53:28Z`).
+    pub updated: String,
+    pub turns: Vec<AssistantTurn>,
 }
 
 /// A task the answer asked Lantern to start, waiting out its cancel window.
@@ -435,6 +466,82 @@ pub struct AssistantModel {
     pub turns: Vec<AssistantTurn>,
     pub asking: bool,
     pub pending_task: Option<PendingTask>,
+    /// Earlier conversations, newest first (the current one included once it has a question).
+    pub conversations: Vec<Conversation>,
+    /// With an agent at work in the conversation, the box talks to it; this sends the next
+    /// message to Lantern instead.
+    pub ask_lantern_instead: bool,
+    /// The latest task's agent, read every two seconds like an open chat.
+    pub watched: Option<Chat>,
+}
+
+impl AssistantModel {
+    /// The latest task in the conversation, with its turn.
+    pub fn latest_task(&self) -> Option<(u64, &TaskLink)> {
+        self.turns.iter().rev().find_map(|turn| turn.task.as_ref().map(|link| (turn.id, link)))
+    }
+}
+
+/// A conversation's title: its first question's first line, at most 60 characters (Swift
+/// `Assistant.title`).
+pub fn conversation_title(question: &str) -> String {
+    let line = question.split(['\n', '\r']).find(|line| !line.is_empty()).unwrap_or(question);
+    if line.chars().count() > 60 { format!("{}…", line.chars().take(59).collect::<String>()) } else { line.to_string() }
+}
+
+/// Milliseconds since the epoch as ISO 8601 in UTC, to the second.
+pub fn iso8601(ms: f64) -> String {
+    let seconds = (ms / 1000.0).floor() as i64;
+    let (days, time) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", time / 3600, time % 3600 / 60, time % 60)
+}
+
+/// ISO 8601 (`2026-10-13T18:53:28Z`, fractions and offsets allowed) as milliseconds since the epoch.
+pub fn parse_iso8601(text: &str) -> Option<f64> {
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let mut rest = &text[19..];
+    let mut fraction = 0.0_f64;
+    if let Some(digits) = rest.strip_prefix('.') {
+        let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+        fraction = format!("0.{}", &digits[..end]).parse::<f64>().unwrap_or(0.0);
+        rest = &digits[end..];
+    }
+    let offset = match rest.as_bytes().first() {
+        Some(b'+' | b'-') if rest.len() >= 6 => {
+            let sign = if rest.starts_with('-') { -1 } else { 1 };
+            sign * (rest.get(1..3)?.parse::<i64>().ok()? * 3600 + rest.get(4..6)?.parse::<i64>().ok()? * 60)
+        }
+        _ => 0,
+    };
+    let seconds = days_from_civil(year, month as u32, day as u32) * 86_400 + hour * 3600 + minute * 60 + second - offset;
+    Some((seconds as f64 + fraction) * 1000.0)
+}
+
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let doy = (153 * ((month as i64 + 9) % 12) + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    (yoe + era * 400 + i64::from(month <= 2), month, day)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -749,6 +856,19 @@ impl Model {
     pub fn chat_agent(&self) -> Option<&Agent> {
         self.chat.as_ref().and_then(|chat| self.agent(&chat.agent_id))
     }
+    /// The agent a task started, once it's up: by id once known, else by its Lantern session.
+    pub fn task_agent(&self, link: &TaskLink) -> Option<&Agent> {
+        if let Some(id) = &link.agent_id {
+            return self.agent(id);
+        }
+        let session = link.session.as_deref()?;
+        self.agents.iter().find(|agent| agent.in_session(session))
+    }
+    /// The running agent from the latest task in Ask Lantern's conversation: the box replies to it.
+    pub fn assistant_agent(&self) -> Option<&Agent> {
+        let (_, link) = self.assistant.latest_task()?;
+        self.task_agent(link).filter(|agent| agent.is_live())
+    }
     pub fn badge(&self) -> usize {
         self.inbox.new.len()
     }
@@ -807,6 +927,24 @@ mod tests {
         assert_eq!(offered_folders(&prefs, &agents, "/home/me"), ["/p/a", "/p/b", "/p/c"]);
         let many: Vec<Agent> = (0..12).map(|n| agent(&format!("/p/{n}"))).collect();
         assert_eq!(offered_folders(&Prefs::default(), &many, "/home/me").len(), 8);
+    }
+
+    #[test]
+    fn titles_are_the_first_line_cut_at_60_characters() {
+        assert_eq!(conversation_title("Find me my thesis\nIt's a PDF"), "Find me my thesis");
+        assert_eq!(conversation_title("\nSecond line first"), "Second line first");
+        let long = "é".repeat(61);
+        assert_eq!(conversation_title(&long), format!("{}…", "é".repeat(59)));
+        assert_eq!(conversation_title(&"a".repeat(60)), "a".repeat(60));
+    }
+
+    #[test]
+    fn iso_dates_round_trip() {
+        assert_eq!(iso8601(1_790_000_000_000.0), "2026-09-21T14:13:20Z");
+        assert_eq!(parse_iso8601("2026-09-21T14:13:20Z"), Some(1_790_000_000_000.0));
+        assert_eq!(parse_iso8601("2026-09-21T16:13:20.5+02:00"), Some(1_790_000_000_500.0));
+        assert_eq!(iso8601(951_782_400_000.0), "2000-02-29T00:00:00Z");
+        assert_eq!(parse_iso8601("yesterday"), None);
     }
 
     #[test]

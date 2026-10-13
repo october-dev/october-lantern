@@ -1,0 +1,127 @@
+{
+  "surface": "panel",
+  "maxHeight": 1032,
+  "nowMs": 1790000000000,
+  "home": "/home/me",
+  "reduceMotion": true,
+  "model": {
+    "caps": {
+      "platform": "linux",
+      "dense_glass": true
+    },
+    "panel": "assistant",
+    "engine": {
+      "state": "ready"
+    },
+    "account": {
+      "signed_in": {
+        "email": "you@example.com",
+        "plan": "pro"
+      }
+    },
+    "assistant": {
+      "turns": [
+        {
+          "id": 1,
+          "question": "Find me my thesis document",
+          "answer": "On it: Claude Code will look for it.",
+          "started": "Started Claude Code in me",
+          "task": {
+            "kind": "claude",
+            "folder": "/home/me",
+            "prompt": "Find me my thesis document",
+            "agent_id": "demo",
+            "transcript": [
+              {
+                "role": "user",
+                "text": "Find me my thesis document\n\n(Started from October Lantern on Linux.)"
+              },
+              {
+                "role": "tool",
+                "text": "bash · find ~ -iname '*thesis*'"
+              },
+              {
+                "role": "agent",
+                "text": "Found it: **/home/me/Documents/University/Thesis-final.pdf** (edited 3 days ago). There's also an older draft in Downloads."
+              }
+            ]
+          }
+        }
+      ],
+      "conversations": [
+        {
+          "id": "c1",
+          "title": "Find me my thesis document",
+          "updated": "2026-09-21T14:11:20Z",
+          "turns": [
+            {
+              "id": 1,
+              "question": "Find me my thesis document",
+              "answer": "On it: Claude Code will look for it.",
+              "started": "Started Claude Code in me",
+              "task": {
+                "kind": "claude",
+                "folder": "/home/me",
+                "prompt": "Find me my thesis document",
+                "agent_id": "demo",
+                "transcript": [
+                  {
+                    "role": "user",
+                    "text": "Find me my thesis document\n\n(Started from October Lantern on Linux.)"
+                  },
+                  {
+                    "role": "tool",
+                    "text": "bash · find ~ -iname '*thesis*'"
+                  },
+                  {
+                    "role": "agent",
+                    "text": "Found it: **/home/me/Documents/University/Thesis-final.pdf** (edited 3 days ago). There's also an older draft in Downloads."
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "id": "c2",
+          "title": "Which agent needs me first?",
+          "updated": "2026-09-21T13:13:20Z",
+          "turns": []
+        },
+        {
+          "id": "c3",
+          "title": "Fix the Wi-Fi",
+          "updated": "2026-09-20T14:13:20Z",
+          "turns": [
+            {
+              "id": 1,
+              "question": "Find me my thesis document",
+              "answer": "On it: Claude Code will look for it.",
+              "started": "Started Claude Code in me",
+              "task": {
+                "kind": "claude",
+                "folder": "/home/me",
+                "prompt": "Find me my thesis document",
+                "agent_id": "demo",
+                "transcript": [
+                  {
+                    "role": "user",
+                    "text": "Find me my thesis document\n\n(Started from October Lantern on Linux.)"
+                  },
+                  {
+                    "role": "tool",
+                    "text": "bash · find ~ -iname '*thesis*'"
+                  },
+                  {
+                    "role": "agent",
+                    "text": "Found it: **/home/me/Documents/University/Thesis-final.pdf** (edited 3 days ago). There's also an older draft in Downloads."
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

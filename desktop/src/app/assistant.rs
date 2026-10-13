@@ -1,34 +1,109 @@
 //! Ask Lantern (Swift `Assistant.swift` and `AppModel.defaultAgentKind`): a chat with October's AI
 //! that knows what your agents are doing, and starts a task when the answer asks for one, after a
-//! three-second window to cancel.
+//! three-second window to cancel. The task's agent runs in the background and stays in the
+//! conversation: its replies show in the thread and what you type next goes to it. Conversations
+//! are saved on this computer (the most recent 50) and listed on Ask Lantern's home.
 //!
 //! One deliberate difference from the Mac (CONTRACT §9.2): "Started <agent> in <folder>" is written
 //! only once the launch succeeded; a failed one shows its error instead.
-use super::Lantern;
-use crate::model::{AgentKind, AgentState, AssistantTurn, HarnessState, PendingTask, Platform};
+use super::{Lantern, Pending};
+use crate::model::{
+    AgentKind, AgentState, AssistantTurn, Chat, ChatMessage, Conversation, HarnessState, PanelMode, PendingTask, Platform, TaskLink,
+};
 use crate::october_ai::{self, Failure, Piece};
 use crate::os::Event;
 use crate::ui::SessionRequest;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Seconds a proposed task waits before it starts.
 const CANCEL_WINDOW: u32 = 3;
+/// Saved conversations kept, newest first.
+const KEPT_CONVERSATIONS: usize = 50;
+/// A task's messages kept with the conversation.
+const KEPT_MESSAGES: usize = 60;
 
 #[derive(Default)]
 pub(super) struct Asking {
-    /// The question being answered; a newer one (or New question) makes older answers stale.
+    /// The question being answered; a newer one (or New chat) makes older answers stale.
     generation: Arc<AtomicU64>,
     next_id: u64,
     /// When the pending task's countdown started.
     countdown: Option<Instant>,
-    /// The turn whose task is launching, and its "Started …" text for when it succeeds.
-    pub launching: Option<(u64, String)>,
+    /// The conversation being had: its id in the saved list.
+    conversation: String,
+    /// The turns as last seen, and when they last changed: saved a second after changes settle.
+    seen: Vec<AssistantTurn>,
+    changed_at: Option<Instant>,
+    /// Where conversations are saved (none in tests).
+    file: Option<PathBuf>,
+    /// The history request for the watched agent; older answers are stale.
+    pub watch_request: Option<String>,
+    watch_at: Option<Instant>,
+}
+
+impl Asking {
+    pub(super) fn saving_to(file: Option<PathBuf>) -> Self {
+        Self { file, ..Default::default() }
+    }
+}
+
+/// How Ask Lantern's launch went (Swift `LaunchOutcome`): started (in a Lantern session when it
+/// has one), or why not.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum LaunchOutcome {
+    Started { session: Option<String> },
+    Failed(String),
+}
+
+/// Where conversations are saved: `ask-lantern.json` in Lantern's data folder.
+pub(super) fn conversations_path() -> PathBuf {
+    crate::settings::data_dir().join("ask-lantern.json")
+}
+
+pub(super) fn load_conversations(path: &Path) -> Vec<Conversation> {
+    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+/// Puts `conversation` first (replacing its earlier copy), keeping the most recent 50.
+fn remember(conversations: &mut Vec<Conversation>, conversation: Conversation) {
+    conversations.retain(|c| c.id != conversation.id);
+    conversations.insert(0, conversation);
+    conversations.truncate(KEPT_CONVERSATIONS);
+}
+
+fn folder_name(folder: &str) -> String {
+    Path::new(folder).file_name().map_or(folder.to_string(), |f| f.to_string_lossy().into_owned())
 }
 
 impl Lantern {
+    /// Asks Lantern; with the latest task's agent still running, replies to it instead (unless
+    /// "Ask Lantern instead" is on).
     pub(super) fn submit_assistant(&mut self) {
+        if !self.model.assistant.ask_lantern_instead
+            && let Some(agent_id) = self.model.assistant_agent().map(|agent| agent.id.clone())
+        {
+            return self.reply_to_task(&agent_id);
+        }
+        self.ask_assistant();
+        self.model.assistant.ask_lantern_instead = false;
+    }
+
+    /// What you type goes to the agent (Point & Ask's direct send: typed in where Lantern can,
+    /// otherwise copied with its terminal brought forward). Works while Lantern is answering.
+    fn reply_to_task(&mut self, agent_id: &str) {
+        let message = self.inputs.assistant.trim().to_string();
+        if message.is_empty() {
+            return;
+        }
+        self.inputs.assistant.clear();
+        self.send_direct(agent_id, message);
+    }
+
+    fn ask_assistant(&mut self) {
         let question = self.inputs.assistant.trim().to_string();
         let Some(token) = self.session.as_ref().map(|session| session.access.clone()) else { return };
         if question.is_empty() || self.model.assistant.asking {
@@ -112,13 +187,23 @@ impl Lantern {
         self.asking.countdown = Some(Instant::now());
     }
 
-    /// Counts the pending task down, and starts it at zero.
+    /// Counts the pending task down (and starts it at zero), reads the task's agent, and saves
+    /// the conversation once changes settle.
     pub(super) fn assistant_tick(&mut self) {
-        let (Some(started), Some(pending)) = (self.asking.countdown, self.model.assistant.pending_task.as_mut()) else { return };
-        let left = CANCEL_WINDOW.saturating_sub(started.elapsed().as_secs() as u32);
-        pending.seconds_left = left.max(1);
-        if left == 0 {
-            self.start_pending_task();
+        if let (Some(started), Some(pending)) = (self.asking.countdown, self.model.assistant.pending_task.as_mut()) {
+            let left = CANCEL_WINDOW.saturating_sub(started.elapsed().as_secs() as u32);
+            pending.seconds_left = left.max(1);
+            if left == 0 {
+                self.start_pending_task();
+            }
+        }
+        self.watch_tick();
+        if self.model.assistant.turns != self.asking.seen {
+            self.asking.seen = self.model.assistant.turns.clone();
+            self.asking.changed_at = Some(Instant::now());
+        }
+        if self.asking.changed_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(1)) {
+            self.save_conversation();
         }
     }
 
@@ -127,44 +212,204 @@ impl Lantern {
         self.model.assistant.pending_task = None;
     }
 
+    /// Starts the task in the background (a Lantern session: tmux on Linux, ConPTY on Windows)
+    /// when possible, shown right here in the conversation; Open shows its terminal. Otherwise a
+    /// Terminal window. October waits for October Harness to finish installing.
     pub(super) fn start_pending_task(&mut self) {
         self.asking.countdown = None;
         let Some(task) = self.model.assistant.pending_task.take() else { return };
-        // In Lantern when possible (the chat opens here); otherwise a Terminal window.
-        let request = SessionRequest {
+        let background = self.model.new_session.in_lantern_available;
+        let Some(turn) = self.model.assistant.turns.iter_mut().find(|t| t.id == task.turn) else { return };
+        turn.task = Some(TaskLink {
             kind: task.kind.clone(),
             folder: task.folder.clone(),
+            prompt: task.prompt.clone(),
+            in_terminal: !background,
+            ..Default::default()
+        });
+        let request = SessionRequest {
+            kind: task.kind,
+            folder: task.folder,
             prompt: task.prompt,
             toolkit: true,
             bus: self.model.prefs.bus_for_sessions,
-            background: self.model.new_session.in_lantern_available,
+            background,
+            for_turn: Some(task.turn),
             ..Default::default()
         };
-        if self.launch(request) {
-            let folder = std::path::Path::new(&task.folder).file_name().map_or(task.folder.clone(), |f| f.to_string_lossy().into_owned());
-            self.asking.launching = Some((task.turn, format!("Started {} in {folder}", task.kind.display_name())));
-        } else if let Some(turn) = self.model.assistant.turns.iter_mut().find(|t| t.id == task.turn) {
-            turn.note = Some("Another session is still starting. Try again in a moment.".into());
+        if !self.launch(request)
+            && let Some(link) = self.task_link(task.turn)
+        {
+            link.error = Some("Another session is still starting. Try again in a moment.".into());
         }
     }
 
-    /// The task's launch finished (from `launch_result`).
-    pub(super) fn assistant_launch_finished(&mut self, error: Option<&str>) {
-        let Some((turn, started)) = self.asking.launching.take() else { return };
-        if let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) {
-            match error {
-                None => t.started = Some(started),
-                Some(error) => t.note = Some(format!("Couldn't start it: {error}")),
+    fn task_link(&mut self, turn: u64) -> Option<&mut TaskLink> {
+        self.model.assistant.turns.iter_mut().find(|t| t.id == turn)?.task.as_mut()
+    }
+
+    /// How the task's launch went (from `launch_result`).
+    pub(super) fn assistant_launched(&mut self, turn: u64, outcome: LaunchOutcome) {
+        let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) else { return };
+        let Some(link) = t.task.as_mut() else { return };
+        match outcome {
+            LaunchOutcome::Started { session } => {
+                if session.is_some() {
+                    link.session = session;
+                }
+                let started = format!("Started {} in {}", link.kind.display_name(), folder_name(&link.folder));
+                t.started = Some(started);
             }
+            LaunchOutcome::Failed(message) => link.error = Some(message),
+        }
+        self.track_tasks();
+    }
+
+    /// Remembers which agent each task became (found by its session, then kept by id), and what
+    /// the latest one has said (Swift `Assistant.track`).
+    pub(super) fn track_tasks(&mut self) {
+        let model = &self.model;
+        let latest = model.assistant.latest_task().map(|(turn, _)| turn);
+        let updates: Vec<(usize, TaskLink)> = model
+            .assistant
+            .turns
+            .iter()
+            .enumerate()
+            .filter_map(|(i, turn)| {
+                let link = turn.task.as_ref()?;
+                let agent = model.task_agent(link).map(|agent| agent.id.as_str());
+                let mut updated = link.clone();
+                if updated.agent_id.is_none() {
+                    updated.agent_id = agent.map(str::to_string);
+                }
+                if Some(turn.id) == latest
+                    && let Some(watched) = &model.assistant.watched
+                    && agent == Some(watched.agent_id.as_str())
+                    && !watched.messages.is_empty()
+                {
+                    updated.transcript = watched.messages[watched.messages.len().saturating_sub(KEPT_MESSAGES)..].to_vec();
+                }
+                (updated != *link).then_some((i, updated))
+            })
+            .collect();
+        for (i, link) in updates {
+            self.model.assistant.turns[i].task = Some(link);
         }
     }
 
-    /// New question: stops the answer and any pending task, and clears the conversation.
+    /// Only the latest task's agent is read live, every two seconds like an open chat (and
+    /// without disturbing it), while Ask Lantern's conversation shows (Swift `AppModel.watch`).
+    fn watch_tick(&mut self) {
+        let showing = self.model.panel == Some(PanelMode::Assistant) && !self.model.assistant.turns.is_empty();
+        let wanted = if showing { self.model.assistant_agent().map(|agent| agent.id.clone()) } else { None };
+        if wanted != self.model.assistant.watched.as_ref().map(|watched| watched.agent_id.clone()) {
+            self.stop_watching();
+            self.model.assistant.watched =
+                wanted.clone().map(|agent_id| Chat { agent_id, supported: true, loading: true, ..Default::default() });
+        }
+        let Some(agent_id) = wanted else { return };
+        if self.asking.watch_at.is_some_and(|at| at.elapsed() < Duration::from_secs(2)) {
+            return;
+        }
+        self.asking.watch_at = Some(Instant::now());
+        if let Some(old) = self.asking.watch_request.take() {
+            self.pending.remove(&old);
+        }
+        if let Some(id) = self.request(json!({"type": "history", "agentId": agent_id})) {
+            self.pending.insert(id.clone(), Pending::History);
+            self.asking.watch_request = Some(id);
+        }
+    }
+
+    fn stop_watching(&mut self) {
+        if let Some(old) = self.asking.watch_request.take() {
+            self.pending.remove(&old);
+        }
+        self.asking.watch_at = None;
+        self.model.assistant.watched = None;
+    }
+
+    /// The watched agent's conversation arrived (from `history_result`).
+    pub(super) fn watch_result(&mut self, event: &Value) {
+        let Some(watched) = self.model.assistant.watched.as_mut() else { return };
+        if event["agentId"].as_str() != Some(watched.agent_id.as_str()) || event["busy"] == true {
+            return;
+        }
+        let messages: Vec<ChatMessage> = serde_json::from_value(event["messages"].clone()).unwrap_or_default();
+        watched.loading = false;
+        watched.supported = event["supported"] != false;
+        if watched.messages != messages {
+            watched.messages = messages;
+        }
+        self.track_tasks();
+    }
+
+    /// New chat: stops the answer and any pending task; the conversation stays in Recent.
     pub(super) fn clear_assistant(&mut self) {
         self.asking.generation.fetch_add(1, Ordering::SeqCst);
         self.cancel_assistant_task();
+        self.save_conversation();
+        self.reset_conversation();
+    }
+
+    fn reset_conversation(&mut self) {
         self.model.assistant.turns.clear();
         self.model.assistant.asking = false;
+        self.model.assistant.ask_lantern_instead = false;
+        self.stop_watching();
+        self.asking.conversation = uuid::Uuid::new_v4().to_string();
+        self.asking.seen.clear();
+        self.asking.changed_at = None;
+    }
+
+    /// Reopens a saved conversation; an agent from it that's still running is live again.
+    pub(super) fn open_conversation(&mut self, id: &str) {
+        let Some(conversation) = self.model.assistant.conversations.iter().find(|c| c.id == id).cloned() else { return };
+        self.clear_assistant();
+        // Turn ids stay unique across the reopened turns and new ones.
+        self.asking.next_id = self.asking.next_id.max(conversation.turns.iter().map(|t| t.id).max().unwrap_or(0));
+        self.asking.seen = conversation.turns.clone();
+        self.model.assistant.turns = conversation.turns;
+        self.asking.conversation = conversation.id;
+        self.track_tasks();
+    }
+
+    pub(super) fn delete_conversation(&mut self, id: &str) {
+        self.model.assistant.conversations.retain(|c| c.id != id);
+        if self.asking.conversation == id {
+            self.asking.generation.fetch_add(1, Ordering::SeqCst);
+            self.cancel_assistant_task();
+            self.reset_conversation();
+        }
+        self.store_conversations();
+    }
+
+    /// Puts the current conversation first in the saved list (once it has a question).
+    fn save_conversation(&mut self) {
+        self.asking.changed_at = None;
+        let kept: Vec<AssistantTurn> = self.model.assistant.turns.iter().filter(|t| !t.question.is_empty()).cloned().collect();
+        let Some(first) = kept.first() else { return };
+        if self.asking.conversation.is_empty() {
+            self.asking.conversation = uuid::Uuid::new_v4().to_string();
+        }
+        let conversation = Conversation {
+            id: self.asking.conversation.clone(),
+            title: crate::model::conversation_title(&first.question),
+            updated: crate::model::iso8601(Self::now_ms()),
+            turns: kept,
+        };
+        remember(&mut self.model.assistant.conversations, conversation);
+        self.store_conversations();
+    }
+
+    fn store_conversations(&self) {
+        let Some(file) = &self.asking.file else { return };
+        let written = serde_json::to_vec(&self.model.assistant.conversations)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| crate::settings::private_write(file, &bytes));
+        if let Err(error) = written {
+            eprintln!("Lantern: couldn't save Ask Lantern's conversations: {error:#}");
+        }
     }
 
     /// The agent new tasks start with (Swift `defaultAgentKind`): the preference if it can start
@@ -364,7 +609,176 @@ mod tests {
         lantern.engine_event(serde_json::json!({"type": "launchResult", "requestId": id, "ok": false, "message": "tmux is missing"}));
         let t = &lantern.model.assistant.turns[0];
         assert_eq!(t.started, None);
-        assert_eq!(t.note.as_deref(), Some("Couldn't start it: tmux is missing"));
+        assert_eq!(t.task.as_ref().and_then(|link| link.error.as_deref()), Some("tmux is missing"));
+    }
+
+    /// The engine answers the pending launch.
+    fn answer_launch(lantern: &mut Lantern, ok: bool, session: Option<&str>) {
+        let id = lantern.pending.iter().find(|(_, p)| matches!(p, Pending::Launch)).map(|(id, _)| id.clone()).expect("a launch");
+        lantern.engine_event(json!({"type": "launchResult", "requestId": id, "ok": ok, "session": session}));
+    }
+
+    fn running(id: &str, session: &str) -> Agent {
+        Agent {
+            id: id.into(),
+            kind: AgentKind::new("claude"),
+            handle: "claude-1".into(),
+            state: AgentState::Working,
+            can_reply: true,
+            tmux: Some(crate::model::TmuxPane { target: format!("{session}:0.0"), ..Default::default() }),
+            ..Default::default()
+        }
+    }
+
+    /// Ask Lantern with a task whose agent is up in session `claude-x-1`.
+    fn with_running_task(lantern: &mut Lantern) -> u64 {
+        lantern.set_panel(Some(PanelMode::Assistant));
+        let (generation, turn) = with_turn(lantern);
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None });
+        lantern.assistant_done(generation, turn, None);
+        lantern.start_pending_task();
+        answer_launch(lantern, true, Some("claude-x-1"));
+        lantern.engine_event(json!({"type": "snapshot", "agents": [running("claude:9:9", "claude-x-1")]}));
+        turn
+    }
+
+    #[test]
+    fn a_task_launches_quietly_and_reports_back_without_switching_panels() {
+        let mut lantern = lantern(&["claude"]);
+        lantern.set_panel(Some(PanelMode::Assistant));
+        let (generation, turn) = with_turn(&mut lantern);
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "find my thesis".into(), agent: None, project: None });
+        lantern.start_pending_task();
+        let link = lantern.model.assistant.turns[0].task.clone().expect("the task is in the conversation");
+        assert_eq!((link.prompt.as_str(), link.in_terminal, link.session.as_deref()), ("q", false, None));
+        assert_eq!(lantern.model.panel, Some(PanelMode::Assistant));
+        assert!(lantern.model.launch_preview.is_none() && lantern.model.chat.is_none(), "no Starting… preview, no chat");
+        answer_launch(&mut lantern, true, Some("claude-x-1"));
+        assert_eq!(lantern.model.panel, Some(PanelMode::Assistant));
+        assert!(lantern.model.chat.is_none() && lantern.model.toast.is_none());
+        let link = lantern.model.assistant.turns[0].task.clone().unwrap();
+        assert_eq!(link.session.as_deref(), Some("claude-x-1"));
+        // Found by its session, then remembered by id; its chat still doesn't open.
+        lantern.engine_event(json!({"type": "snapshot", "agents": [running("claude:9:9", "claude-x-1")]}));
+        assert_eq!(lantern.model.assistant.turns[0].task.as_ref().unwrap().agent_id.as_deref(), Some("claude:9:9"));
+        assert!(lantern.model.chat.is_none());
+        assert_eq!(lantern.model.assistant_agent().map(|agent| agent.id.as_str()), Some("claude:9:9"));
+        // Its conversation is read live, without opening a chat, and kept with the task.
+        lantern.assistant_tick();
+        assert_eq!(lantern.model.assistant.watched.as_ref().map(|w| w.agent_id.as_str()), Some("claude:9:9"));
+        let request = lantern.asking.watch_request.clone().expect("history asked for");
+        lantern.engine_event(json!({"type": "historyResult", "requestId": request, "agentId": "claude:9:9", "supported": true,
+            "messages": [{"role": "user", "text": "q"}, {"role": "agent", "text": "Found it."}]}));
+        let link = lantern.model.assistant.turns[0].task.clone().unwrap();
+        assert_eq!(link.transcript.len(), 2);
+        assert!(lantern.model.chat.is_none());
+    }
+
+    #[test]
+    fn a_task_without_a_lantern_session_runs_in_a_terminal_window() {
+        let mut lantern = lantern(&["claude"]);
+        lantern.model.new_session.in_lantern_available = false;
+        let (generation, turn) = with_turn(&mut lantern);
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None });
+        lantern.start_pending_task();
+        answer_launch(&mut lantern, true, None);
+        let t = &lantern.model.assistant.turns[0];
+        assert!(t.task.as_ref().unwrap().in_terminal);
+        assert_eq!(t.started.as_deref().map(|s| s.starts_with("Started Claude Code in")), Some(true));
+        assert_ne!(lantern.model.panel, Some(PanelMode::Agents));
+    }
+
+    #[test]
+    fn the_box_replies_to_the_running_agent_unless_asked_to_ask_lantern() {
+        let mut lantern = lantern(&["claude"]);
+        with_running_task(&mut lantern);
+        let directs = |lantern: &Lantern| {
+            lantern.pending.values().filter(|p| matches!(p, Pending::Direct { agent_id } if agent_id == "claude:9:9")).count()
+        };
+        // While Lantern is answering, too.
+        lantern.model.assistant.asking = true;
+        lantern.inputs.assistant = " yes, the PDF ".into();
+        lantern.submit_assistant();
+        assert_eq!(directs(&lantern), 1, "sent to the agent");
+        assert_eq!(lantern.inputs.assistant, "");
+        assert_eq!(lantern.model.assistant.turns.len(), 1, "not a question for Lantern");
+        lantern.model.assistant.asking = false;
+        // Ask Lantern instead: not to the agent (signed out here, so nothing is asked), and the
+        // box goes back to replying afterwards.
+        lantern.apply(crate::ui::UiAction::ToggleAskLanternInstead);
+        assert!(lantern.model.assistant.ask_lantern_instead);
+        lantern.inputs.assistant = "what else is running?".into();
+        lantern.submit_assistant();
+        assert_eq!(directs(&lantern), 1);
+        assert!(!lantern.model.assistant.ask_lantern_instead);
+        // An agent that has stopped takes no replies.
+        lantern.engine_event(json!({"type": "snapshot", "agents": []}));
+        assert!(lantern.model.assistant_agent().is_none());
+        lantern.submit_assistant();
+        assert_eq!(directs(&lantern), 1);
+    }
+
+    #[test]
+    fn conversations_are_saved_newest_first_and_reopen_with_their_agent() {
+        let dir = std::env::temp_dir().join(format!("lantern-ask-{}", uuid::Uuid::new_v4().simple()));
+        let file = dir.join("ask-lantern.json");
+        let mut lantern = lantern(&["claude"]);
+        lantern.asking.file = Some(file.clone());
+        let turn = with_running_task(&mut lantern);
+        lantern.model.assistant.turns[0].question = "Find me my thesis document\nIt's a PDF".into();
+        lantern.clear_assistant();
+        assert!(lantern.model.assistant.turns.is_empty() && lantern.model.assistant.watched.is_none());
+        let saved = load_conversations(&file);
+        assert_eq!(saved, lantern.model.assistant.conversations);
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].title, "Find me my thesis document");
+        assert!(crate::model::parse_iso8601(&saved[0].updated).is_some());
+        assert_eq!(saved[0].turns[0].task.as_ref().unwrap().agent_id.as_deref(), Some("claude:9:9"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        // A second chat goes first; reopening the first brings its running agent back.
+        lantern.inputs.assistant.clear();
+        let (_, _) = with_turn(&mut lantern);
+        lantern.clear_assistant();
+        assert_eq!(lantern.model.assistant.conversations.len(), 2);
+        assert_eq!(lantern.model.assistant.conversations[0].title, "q");
+        let first = lantern.model.assistant.conversations[1].id.clone();
+        lantern.open_conversation(&first);
+        assert_eq!(lantern.model.assistant.turns[0].id, turn);
+        assert_eq!(lantern.model.assistant_agent().map(|agent| agent.id.as_str()), Some("claude:9:9"));
+        assert!(lantern.asking.next_id >= turn);
+        lantern.clear_assistant();
+        lantern.delete_conversation(&first);
+        assert_eq!(load_conversations(&file).len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn at_most_50_conversations_are_kept_newest_first() {
+        let mut conversations = Vec::new();
+        for n in 0..55 {
+            remember(&mut conversations, Conversation { id: n.to_string(), ..Default::default() });
+        }
+        remember(&mut conversations, Conversation { id: "40".into(), title: "again".into(), ..Default::default() });
+        assert_eq!(conversations.len(), 50);
+        assert_eq!((conversations[0].id.as_str(), conversations[0].title.as_str()), ("40", "again"));
+        assert_eq!(conversations[1].id, "54");
+        assert_eq!(conversations.iter().filter(|c| c.id == "40").count(), 1);
+        assert!(!conversations.iter().any(|c| c.id == "4"), "the oldest went");
+    }
+
+    #[test]
+    fn changes_are_saved_a_moment_after_they_settle() {
+        let mut lantern = lantern(&["claude"]);
+        with_turn(&mut lantern);
+        lantern.assistant_tick();
+        assert!(lantern.model.assistant.conversations.is_empty(), "not right away");
+        lantern.asking.changed_at = Some(Instant::now() - Duration::from_secs(2));
+        lantern.assistant_tick();
+        assert_eq!(lantern.model.assistant.conversations.len(), 1);
     }
 
     #[test]

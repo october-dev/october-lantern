@@ -108,6 +108,9 @@ impl Lantern {
         let (prefs, turns) = load_state();
         let mut model = Model { caps: capabilities(), prefs, ..Default::default() };
         model.system.version = env!("CARGO_PKG_VERSION").into();
+        // Ask Lantern's saved conversations (never from tests).
+        let conversations = (!cfg!(test)).then(assistant::conversations_path);
+        model.assistant.conversations = conversations.as_deref().map(assistant::load_conversations).unwrap_or_default();
         let (tx, events) = match ctx {
             Some(ctx) => crate::os::event_pump(move |_| ctx.request_repaint()),
             None => std::sync::mpsc::channel(),
@@ -128,7 +131,7 @@ impl Lantern {
             toast_until: None,
             actions: Vec::new(),
             launching: session::Launching::default(),
-            asking: assistant::Asking::default(),
+            asking: assistant::Asking::saving_to(conversations),
             pointing: point_ask::Pointing::default(),
             upkeep: preferences::Upkeep::default(),
             installed: None,

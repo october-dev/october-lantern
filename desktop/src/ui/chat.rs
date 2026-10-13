@@ -239,7 +239,7 @@ pub fn without_lantern_notes(source: &str) -> &str {
     &source[..MARKERS.iter().filter_map(|marker| source.find(marker)).min().unwrap_or(source.len())]
 }
 
-fn folder_name<'a>(folder: &'a str, home: &str) -> &'a str {
+pub(super) fn folder_name<'a>(folder: &'a str, home: &str) -> &'a str {
     if folder.trim_end_matches(['/', '\\']) == home.trim_end_matches(['/', '\\']) {
         "Home folder"
     } else {
@@ -247,7 +247,7 @@ fn folder_name<'a>(folder: &'a str, home: &str) -> &'a str {
     }
 }
 
-fn keyed(messages: &[ChatMessage]) -> Vec<(String, &ChatMessage)> {
+pub(super) fn keyed(messages: &[ChatMessage]) -> Vec<(String, &ChatMessage)> {
     let mut seen = HashMap::<String, usize>::new();
     messages
         .iter()

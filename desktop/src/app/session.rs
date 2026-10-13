@@ -4,7 +4,7 @@
 //! One deliberate difference from the Mac (CONTRACT §9.1): an In Lantern launch switches to the
 //! list BEFORE showing its preview. On the Mac, setting the panel afterwards closes the chat, which
 //! ends the preview it just showed (and its retry).
-use super::{Lantern, Pending};
+use super::{Lantern, Pending, assistant::LaunchOutcome};
 use crate::model::{AgentKind, Capture, HarnessState, LaunchPreview, PanelMode};
 use crate::os::Event;
 use crate::ui::SessionRequest;
@@ -29,6 +29,9 @@ pub(super) struct Launching {
     after_harness: Option<SessionRequest>,
     /// The screenshot capture whose result counts (older ones are stale).
     capture: u64,
+    /// Ask Lantern's launch in flight (the turn it's for): told how it went, and the panel stays
+    /// where it is (Swift `launchReport`).
+    report: Option<u64>,
 }
 
 impl Lantern {
@@ -118,7 +121,11 @@ impl Lantern {
         if self.model.new_session.launching || self.pending.values().any(|p| matches!(p, Pending::Launch)) {
             return false;
         }
-        if request.background {
+        // Ask Lantern's launch shows in its own conversation: no preview, the panel stays.
+        self.launching.report = request.for_turn;
+        if let Some(turn) = request.for_turn {
+            super::trace!("launch for Ask Lantern's turn {turn}");
+        } else if request.background {
             // §9.1: the list first (that closes any chat), then the preview.
             if !self.model.panel.is_some_and(PanelMode::is_list) {
                 self.set_panel(Some(PanelMode::Inbox));
@@ -216,8 +223,10 @@ impl Lantern {
     }
 
     fn launch_failed(&mut self, message: String) {
-        self.assistant_launch_finished(Some(&message));
         self.model.new_session.launching = false;
+        if let Some(turn) = self.launching.report.take() {
+            return self.assistant_launched(turn, LaunchOutcome::Failed(message));
+        }
         self.model.new_session.launch_error = Some(message.clone());
         if let Some(preview) = &mut self.model.launch_preview {
             preview.error = Some(message);
@@ -230,7 +239,9 @@ impl Lantern {
         if !ok {
             return self.launch_failed(message.unwrap_or_else(|| "unknown error".into()));
         }
-        self.assistant_launch_finished(None);
+        if let Some(turn) = self.launching.report.take() {
+            return self.assistant_launched(turn, LaunchOutcome::Started { session });
+        }
         if let Some(session) = session.filter(|_| !self.launching.preview_closed) {
             self.launching.open_when_seen = Some((session, Instant::now() + PREVIEW_WAIT));
             self.open_launched();
