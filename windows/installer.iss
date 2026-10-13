@@ -34,6 +34,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 OutputDir=..\build
 OutputBaseFilename=October-Lantern-windows-{#Arch}-setup
+; The lantern on Setup and its uninstaller (scripts/make-icon-windows.py); Apps shows the icon
+; embedded in october-lantern.exe (desktop/build.rs).
+SetupIconFile=october-lantern.ico
 UninstallDisplayIcon={app}\october-lantern.exe
 UninstallDisplayName=October Lantern
 LicenseFile=..\LICENSE

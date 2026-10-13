@@ -138,6 +138,7 @@ pub fn options() -> eframe::NativeOptions {
         .unwrap_or(Pos2::new(100.0, 100.0));
     #[allow(unused_mut)]
     let mut viewport = ViewportBuilder::default()
+        .with_icon(crate::ui::assets::window_icon())
         .with_title(PILL_TITLE)
         .with_app_id("dev.october.lantern")
         .with_inner_size(PILL_COLLAPSED)
@@ -333,6 +334,7 @@ impl Lantern {
         let at = egui::pos2(x, pill.y + rect.center().y - size.y / 2.0);
         #[allow(unused_mut)]
         let mut builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title("October Lantern tip")
             .with_inner_size(size)
             .with_position(at)
@@ -373,6 +375,7 @@ impl Lantern {
             w.panel_adopted = platform::adopt(PANEL_TITLE, Role::Panel);
         }
         let builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title(PANEL_TITLE)
             .with_inner_size(frame.size())
             .with_position(frame.min)

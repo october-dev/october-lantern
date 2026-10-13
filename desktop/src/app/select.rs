@@ -78,6 +78,7 @@ impl Lantern {
             state.overlay_adopted = platform::adopt(SELECT_TITLE, Role::Card);
         }
         let builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title(SELECT_TITLE)
             .with_position(points.min)
             .with_inner_size(points.size())
@@ -143,6 +144,7 @@ impl Lantern {
             state.card_adopted = platform::adopt(CARD_TITLE, Role::Card);
         }
         let builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title(CARD_TITLE)
             .with_inner_size(frame.size())
             .with_position(frame.min)

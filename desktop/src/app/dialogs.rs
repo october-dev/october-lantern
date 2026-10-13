@@ -81,6 +81,7 @@ impl Lantern {
         render: fn(&mut egui::Ui, &mut Ctx) -> f32,
     ) -> bool {
         let builder = ViewportBuilder::default()
+            .with_icon(crate::ui::assets::window_icon())
             .with_title(title)
             .with_inner_size(size)
             .with_position(center - size / 2.0)

@@ -54,3 +54,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+# The executable's icon and version details on Windows (windows/october-lantern.ico), for
+# Explorer, the taskbar and Task Manager.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "=0.1.31", default-features = false }
