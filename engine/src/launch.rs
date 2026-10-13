@@ -90,9 +90,12 @@ pub struct Installed {
 pub fn on_path() -> &'static Installed {
     static CACHE: OnceLock<Installed> = OnceLock::new();
     #[cfg(windows)]
-    return CACHE.get_or_init(|| Installed {
-        kinds: ALL.iter().copied().filter(|k| crate::platform::find_on_path(program(*k)).is_some()).collect(),
-        tmux: false,
+    return CACHE.get_or_init(|| {
+        let kinds: Vec<Kind> = ALL.iter().copied().filter(|k| crate::platform::find_on_path(program(*k)).is_some()).collect();
+        if kinds.contains(&Kind::Codex) {
+            check_codex_early();
+        }
+        Installed { kinds, tmux: false }
     });
     #[cfg(unix)]
     CACHE.get_or_init(|| {
@@ -418,29 +421,66 @@ pub(crate) fn agent_argv(
     }
 }
 
-/// Codex runs its TUI through a shared background app-server ("daemon") by default since 0.16x.
+/// Codex runs its TUI through a shared background app-server ("daemon") by default since 0.160.
 /// On Windows that daemon's own install can be missing ("daemon executable not found at
 /// ~\.codex\packages\app-server-daemon\current\bin\codex.exe"), and then every session exits at
 /// once. So Lantern's Codex sessions there run on their own (`--no-daemon`) when that Codex has
-/// the flag; its `--help` is read once per Codex executable.
+/// the flag. Its `--help` is read once per Codex executable (a first run through an npm shim and
+/// Node can be slow, hence the generous wait); when it can't be read, `--version` decides. The
+/// engine starts the check as soon as it finds Codex on PATH ([`on_path`]), so a launch rarely
+/// waits for it; one that does waits for the check already running.
 #[cfg(windows)]
 fn codex_has_no_daemon(found: &Path, program: &Path, args: &[String]) -> bool {
-    static KNOWN: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, bool>>> = std::sync::Mutex::new(None);
-    if let Some(known) = KNOWN.lock().unwrap().as_ref().and_then(|known| known.get(found).copied()) {
-        return known;
-    }
-    let help = crate::run::output(std::process::Command::new(program).args(args).arg("--help"), std::time::Duration::from_secs(5))
-        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
-        .unwrap_or_default();
-    let has = help_lists_no_daemon(&help);
-    KNOWN.lock().unwrap().get_or_insert_with(Default::default).insert(found.to_path_buf(), has);
-    has
+    type Checks = std::collections::HashMap<PathBuf, std::sync::Arc<OnceLock<bool>>>;
+    static KNOWN: std::sync::Mutex<Option<Checks>> = std::sync::Mutex::new(None);
+    let check = KNOWN.lock().unwrap().get_or_insert_with(Default::default).entry(found.to_path_buf()).or_default().clone();
+    *check.get_or_init(|| {
+        let run = |arg: &str, limit: u64| {
+            crate::run::output(std::process::Command::new(program).args(args).arg(arg), Duration::from_secs(limit))
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        match run("--help", 20) {
+            Some(help) if help.contains("Usage") || help.contains("Options") => help_lists_no_daemon(&help),
+            _ => run("--version", 10).is_some_and(|version| version_has_no_daemon(&version)),
+        }
+    })
+}
+
+/// Checks the Codex on PATH for `--no-daemon` in the background, ahead of the first launch.
+#[cfg(windows)]
+fn check_codex_early() {
+    // Working out Codex's arguments asks it, and remembers the answer.
+    std::thread::spawn(|| agent_argv(Kind::Codex, None, None, None, None, None, None).map(drop));
 }
 
 /// Whether `codex --help` offers `--no-daemon` (as an option, not just in prose).
 #[cfg(any(windows, test))]
 pub(crate) fn help_lists_no_daemon(help: &str) -> bool {
     help.lines().any(|line| line.trim_start().split([' ', ',', '\t']).next() == Some("--no-daemon"))
+}
+
+/// The first Codex with the shared daemon, and so with `--no-daemon`.
+#[cfg(any(windows, test))]
+const CODEX_DAEMON_SINCE: (u64, u64, u64) = (0, 160, 0);
+
+/// Whether `codex --version` ("codex-cli 0.160.0") names a Codex with `--no-daemon`.
+#[cfg(any(windows, test))]
+pub(crate) fn version_has_no_daemon(version: &str) -> bool {
+    codex_version(version).is_some_and(|v| v >= CODEX_DAEMON_SINCE)
+}
+
+/// The first `major.minor.patch` in `codex --version`'s output (a `v` prefix and a pre-release or
+/// build suffix are allowed).
+#[cfg(any(windows, test))]
+pub(crate) fn codex_version(text: &str) -> Option<(u64, u64, u64)> {
+    text.split_whitespace().find_map(|word| {
+        let core = word.trim_start_matches(['v', 'V']).split(['-', '+']).next()?;
+        let mut parts = core.split('.').map(|part| part.parse::<u64>().ok());
+        let version = (parts.next()??, parts.next()??, parts.next()??);
+        parts.next().is_none().then_some(version)
+    })
 }
 
 /// One of Lantern's own sessions (pty.rs), shown in a terminal window or left in the background.

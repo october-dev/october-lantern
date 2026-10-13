@@ -161,19 +161,23 @@ pub fn oauth(provider: &str, generation: u64, current: Arc<AtomicU64>) -> Result
                 let request = std::str::from_utf8(&bytes[..count])?;
                 let target = request.lines().next().and_then(|line| line.strip_prefix("GET ")).and_then(|line| line.split(' ').next());
                 let code = target.and_then(|target| callback_code(target).ok());
-                let (status, message) = if code.is_some() {
-                    ("200 OK", "You can return to October Lantern.")
-                } else {
-                    ("400 Bad Request", "Invalid Lantern sign-in callback.")
+                let refused = if code.is_some() { None } else { target.and_then(callback_error) };
+                let (status, page) = match (&code, &refused) {
+                    (Some(_), _) => ("200 OK", callback_page(None)),
+                    (None, Some(message)) => ("400 Bad Request", callback_page(Some(message))),
+                    (None, None) => ("400 Bad Request", callback_page(Some("That wasn't Lantern's sign-in link."))),
                 };
                 write!(
                     stream,
-                    "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{message}",
-                    message.len()
+                    "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+                    page.len()
                 )?;
                 if let Some(code) = code {
                     anyhow::ensure!(current.load(Ordering::SeqCst) == generation, "Sign-in cancelled");
                     return exchange("pkce", json!({"auth_code":code,"code_verifier":verifier}));
+                }
+                if let Some(message) = refused {
+                    bail!("{message}");
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
@@ -190,6 +194,59 @@ fn callback_code(target: &str) -> Result<String> {
     anyhow::ensure!(codes.len() == 1 && !codes[0].1.is_empty() && codes[0].1.len() <= 4096, "invalid callback code");
     Ok(codes[0].1.to_string())
 }
+/// Why the provider sent the browser back without a code (`error_description`, else `error`), for
+/// a callback to `/callback`; `None` for anything else (a stray request such as a favicon).
+fn callback_error(target: &str) -> Option<String> {
+    let url = url::Url::parse(&format!("http://localhost:54547{target}")).ok()?;
+    if url.path() != "/callback" {
+        return None;
+    }
+    let value =
+        |name: &str| url.query_pairs().find(|(key, value)| key == name && !value.trim().is_empty()).map(|(_, value)| value.into_owned());
+    value("error_description").or_else(|| value("error"))
+}
+
+/// The page the browser shows after the sign-in step (Swift `CallbackListener.page`): the lantern,
+/// what happened, and what to do now. `refused`: why it didn't finish.
+pub(crate) fn callback_page(refused: Option<&str>) -> String {
+    let (title, text) = match refused {
+        None => ("You're signed in to October Lantern".to_string(), "Lantern is ready. You can close this tab.".to_string()),
+        Some(message) => ("Sign-in didn't finish".to_string(), format!("{} Go back to Lantern and try again.", message.trim())),
+    };
+    let logo = logo_data_url()
+        .map(|url| {
+            format!("<img src=\"{url}\" width=\"88\" height=\"88\" alt=\"\" style=\"filter:drop-shadow(0 0 24px rgba(240,180,80,.45))\">")
+        })
+        .unwrap_or_default();
+    format!(
+        "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n\
+         <title>October Lantern</title>\n\
+         <body style=\"font:16px -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,Ubuntu,Cantarell,sans-serif;background:#141414;color:#f3efe6;display:grid;place-items:center;min-height:100vh;margin:0\">\n\
+         <main style=\"text-align:center;max-width:420px;padding:24px\">{logo}\n\
+         <h1 style=\"font-size:22px;margin:18px 0 8px\">{}</h1>\n\
+         <p style=\"color:#a8a29a;line-height:1.5;margin:0\">{}</p></main></body>\n",
+        escape(&title),
+        escape(&text)
+    )
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+/// The app's logo, 176 px (88 pt on a 2x screen), as a PNG data URL.
+fn logo_data_url() -> Option<&'static str> {
+    static URL: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    URL.get_or_init(|| {
+        let logo = image::load_from_memory(include_bytes!("../../logo.png")).ok()?;
+        let small = logo.resize_exact(176, 176, image::imageops::FilterType::Lanczos3);
+        let mut png = std::io::Cursor::new(Vec::new());
+        small.write_to(&mut png, image::ImageFormat::Png).ok()?;
+        Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png.into_inner())))
+    })
+    .as_deref()
+}
+
 pub enum VaultCommand {
     Store(String),
     Clear,
@@ -297,6 +354,27 @@ mod tests {
         assert!(flow.publish(&session("temporary")));
         assert!(matches!(vault_rx.recv_timeout(Duration::from_secs(3)).unwrap(), VaultCommand::Clear));
     }
+    #[test]
+    fn callback_page_says_where_you_are_and_escapes_the_message() {
+        let done = callback_page(None);
+        assert!(done.contains("<h1 style=\"font-size:22px;margin:18px 0 8px\">You&#39;re signed in to October Lantern</h1>"));
+        assert!(done.contains("Lantern is ready. You can close this tab."));
+        assert!(done.contains("background:#141414;color:#f3efe6") && done.contains("color:#a8a29a") && done.contains("'Segoe UI'"));
+        assert!(done.contains("<img src=\"data:image/png;base64,") && done.contains("width=\"88\""), "the lantern");
+        assert!(done.contains("drop-shadow(0 0 24px rgba(240,180,80,.45))"));
+        let failed = callback_page(Some("Access <b>denied</b> & \"gone\""));
+        assert!(failed.contains("Sign-in didn&#39;t finish"));
+        assert!(failed.contains("Access &lt;b&gt;denied&lt;/b&gt; &amp; &quot;gone&quot; Go back to Lantern and try again."));
+        assert!(!failed.contains("<b>"));
+        assert_eq!(
+            callback_error("/callback?error=access_denied&error_description=The+user+denied+access").as_deref(),
+            Some("The user denied access")
+        );
+        assert_eq!(callback_error("/callback?error=access_denied").as_deref(), Some("access_denied"));
+        assert_eq!(callback_error("/callback?code=x"), None);
+        assert_eq!(callback_error("/favicon.ico?error=x"), None);
+    }
+
     #[test]
     fn callback_rejects_wrong_paths_and_duplicate_codes() {
         assert!(callback_code("/elsewhere?code=x").is_err());

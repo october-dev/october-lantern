@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 /// Swift: the panel fades in over .12 s; a snap animates over .18 s.
 const FADE: f32 = 0.12;
+const TIP_TITLE: &str = "October Lantern tip";
 const SNAP: f32 = 0.18;
 /// How often the work areas are re-read (monitors and panels change rarely).
 const AREAS_EVERY: Duration = Duration::from_secs(2);
@@ -42,6 +43,8 @@ pub struct Windows {
     panel_height: f32,
     panel_opened: Option<Instant>,
     panel_focused: bool,
+    /// Bring the panel to the front on its next frame (back from signing in in the browser).
+    raise_panel: bool,
     /// A dialog Lantern opened (folder picker, capture permission) is up: losing focus to it
     /// doesn't close the panel.
     pub native_dialog: bool,
@@ -54,6 +57,8 @@ pub struct Windows {
     capturing: bool,
     /// The pill's help text under the pointer, and since when (shown after a moment).
     tip: Option<(String, Rect, Vec2, f64)>,
+    /// The tip window's system frame is off (Windows).
+    tip_unframed: bool,
     /// Point & Ask's overlay and card.
     pub select: super::select::State,
     /// The lantern's right-click menu.
@@ -82,6 +87,14 @@ impl Windows {
     }
     pub fn show_pill(&mut self, visible: bool) {
         self.hidden = !visible;
+    }
+    /// Brings the panel (open, or about to open) to the front.
+    pub fn raise_panel(&mut self) {
+        self.raise_panel = true;
+    }
+    #[cfg(test)]
+    pub fn raising_panel(&self) -> bool {
+        self.raise_panel
     }
     /// The pill's window, in points, once placed.
     pub fn pill_rect(&self) -> Option<Rect> {
@@ -319,7 +332,8 @@ impl Lantern {
         let w = &self.windows;
         let now = ctx.input(|input| input.time);
         let Some((text, rect, text_size, since)) = w.tip.clone().filter(|tip| now - tip.3 >= 0.5 && w.drag.is_none()) else {
-            if w.tip.is_some() {
+            self.windows.tip_unframed = false;
+            if self.windows.tip.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             return;
@@ -335,7 +349,7 @@ impl Lantern {
         #[allow(unused_mut)]
         let mut builder = ViewportBuilder::default()
             .with_icon(crate::ui::assets::window_icon())
-            .with_title("October Lantern tip")
+            .with_title(TIP_TITLE)
             .with_inner_size(size)
             .with_position(at)
             .with_decorations(false)
@@ -348,6 +362,9 @@ impl Lantern {
         #[cfg(target_os = "linux")]
         {
             builder = builder.with_window_type(egui::X11WindowType::Tooltip);
+        }
+        if !self.windows.tip_unframed {
+            self.windows.tip_unframed = platform::borderless(TIP_TITLE);
         }
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-tip"), builder, |ui, _| {
             let rect = ui.max_rect();
@@ -391,8 +408,12 @@ impl Lantern {
         let mut measured = None;
         let mut focused = None;
         let cleared = self.windows.cleared();
+        let raise = std::mem::take(&mut self.windows.raise_panel);
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-panel"), builder, |ui, _class| {
             ctx_commands(ui.ctx(), frame);
+            if raise {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
+            }
             if cleared {
                 return; // a screen capture is waiting for Lantern's windows to clear
             }

@@ -7,7 +7,7 @@ use super::{
     icons::Icon,
     theme::{self as t, Weight},
 };
-use crate::model::{AgentState, AssistantTurn, ChatMessage, Conversation, PanelMode, PendingTask, Role, TaskLink};
+use crate::model::{AgentState, AssistantTurn, ChatMessage, Conversation, PendingTask, Role, TaskLink};
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
@@ -371,28 +371,19 @@ fn pending_card(ui: &mut Ui, cx: &mut Ctx, pending: &PendingTask) {
 fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
     egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }).show(ui, |ui| {
         if cx.model.account.signed_in.is_none() {
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 33.0), Sense::click());
-            ui.painter().rect_filled(rect, 12.0, t::FAINT);
-            c::paint_icon(
-                ui.painter(),
-                Rect::from_center_size(egui::pos2(rect.left() + 17.0, rect.center().y), egui::Vec2::splat(12.0)),
-                Icon::Sparkles,
-                t::AMBER,
-            );
-            let galley =
-                ui.painter().layout_no_wrap("Sign in to October to ask Lantern anything".into(), t::font(12.0, Weight::Medium), t::MUTED);
-            ui.painter().galley(egui::pos2(rect.left() + 31.0, rect.center().y - galley.size().y / 2.0), galley, t::MUTED);
-            c::paint_icon(
-                ui.painter(),
-                Rect::from_center_size(egui::pos2(rect.right() - 17.0, rect.center().y), egui::Vec2::splat(12.0)),
-                Icon::ChevronRight,
-                t::MUTED,
-            );
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Sign in to October to ask Lantern anything"));
-            if response.clicked() {
-                cx.emit(UiAction::SetPanel(Some(PanelMode::October)));
-            }
+            // Sign in right here; afterwards Lantern comes back to this box.
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                c::label(ui, "Sign in to ask Lantern", 13.0, Weight::Semibold, t::INK);
+                c::label(
+                    ui,
+                    "Ask anything about your agents, or tell Lantern what to do. Free accounts get 20 questions a day.",
+                    11.5,
+                    Weight::Regular,
+                    t::MUTED,
+                );
+                super::cards::account::render_with(ui, cx, false);
+            });
             return;
         }
         let model = cx.model;
@@ -497,7 +488,7 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Assets, Env, UiState};
+    use super::super::{Assets, Env, Provider, UiState};
     use super::*;
     use crate::model::{Inputs, Model};
 
@@ -706,21 +697,26 @@ mod tests {
     }
 
     #[test]
-    fn signed_out_prompt_goes_to_october_and_never_submits() {
+    fn signed_out_ask_lantern_signs_in_right_there() {
         let ctx = egui::Context::default();
         t::install(&ctx);
         let assets = Assets::load(&ctx);
         let mut fixture: crate::app::fixture::Fixture =
             serde_json::from_str(include_str!("../../fixtures/panel-assistant-signed-out.json")).unwrap();
-        let actions = click(
-            &ctx,
-            &assets,
-            &fixture.model,
-            &mut fixture.inputs,
-            &mut UiState::default(),
-            "Sign in to October to ask Lantern anything",
-        );
-        assert_eq!(actions, vec![UiAction::SetPanel(Some(PanelMode::October))]);
+        let mut view = UiState::default();
+        let (_, actions, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        let has = |value: &str| texts.iter().any(|(text, _)| text == value);
+        assert!(actions.is_empty());
+        assert!(has("Sign in to ask Lantern"));
+        assert!(has("Ask anything about your agents, or tell Lantern what to do. Free accounts get 20 questions a day."));
+        assert!(!has("Connect to October"), "the card's own header stays in the October panel");
+        assert!(!has("Sign in to October to ask Lantern anything"));
+        for (title, provider) in [("Google", Provider::Google), ("GitHub", Provider::GitHub), ("Apple", Provider::Apple)] {
+            let actions = click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, title);
+            assert_eq!(actions, vec![UiAction::SignInProvider(provider)], "{title}");
+        }
+        assert!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Use email and password").is_empty());
+        assert!(view.account_use_email, "the email form opens in place");
     }
 
     #[test]
