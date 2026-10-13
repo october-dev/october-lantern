@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 /// Swift: the panel fades in over .12 s; a snap animates over .18 s.
 const FADE: f32 = 0.12;
+const TIP_TITLE: &str = "October Lantern tip";
 const SNAP: f32 = 0.18;
 /// How often the work areas are re-read (monitors and panels change rarely).
 const AREAS_EVERY: Duration = Duration::from_secs(2);
@@ -54,6 +55,8 @@ pub struct Windows {
     capturing: bool,
     /// The pill's help text under the pointer, and since when (shown after a moment).
     tip: Option<(String, Rect, Vec2, f64)>,
+    /// The tip window's system frame is off (Windows).
+    tip_unframed: bool,
     /// Point & Ask's overlay and card.
     pub select: super::select::State,
     /// The lantern's right-click menu.
@@ -319,7 +322,8 @@ impl Lantern {
         let w = &self.windows;
         let now = ctx.input(|input| input.time);
         let Some((text, rect, text_size, since)) = w.tip.clone().filter(|tip| now - tip.3 >= 0.5 && w.drag.is_none()) else {
-            if w.tip.is_some() {
+            self.windows.tip_unframed = false;
+            if self.windows.tip.is_some() {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
             return;
@@ -335,7 +339,7 @@ impl Lantern {
         #[allow(unused_mut)]
         let mut builder = ViewportBuilder::default()
             .with_icon(crate::ui::assets::window_icon())
-            .with_title("October Lantern tip")
+            .with_title(TIP_TITLE)
             .with_inner_size(size)
             .with_position(at)
             .with_decorations(false)
@@ -348,6 +352,9 @@ impl Lantern {
         #[cfg(target_os = "linux")]
         {
             builder = builder.with_window_type(egui::X11WindowType::Tooltip);
+        }
+        if !self.windows.tip_unframed {
+            self.windows.tip_unframed = platform::borderless(TIP_TITLE);
         }
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-tip"), builder, |ui, _| {
             let rect = ui.max_rect();

@@ -1,15 +1,22 @@
 //! The pill and panel on Windows (CONTRACT §7). UNVERIFIED on a real machine (§8.2c): topmost and
 //! tool-window styles keep them on top and out of the taskbar and Alt-Tab; the pill also never
 //! activates. Presence on every virtual desktop is not established by these styles alone.
+//! Windows 11 frames every top-level window (a 1px border, rounded corners and a shadow), which
+//! shows as a faint rectangle around Lantern's rounded glass; [`unframe`] turns that off.
 use super::shell::Role;
 use eframe::egui::{Pos2, Rect, pos2};
 use std::os::windows::ffi::OsStrExt;
-use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows_sys::Win32::Graphics::Dwm::{
+    DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    DwmSetWindowAttribute,
+};
 use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
+use windows_sys::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GWL_EXSTYLE, GWL_STYLE, GetCursorPos, GetWindowLongPtrW, GetWindowTextW, GetWindowThreadProcessId, HWND_TOPMOST,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, WS_CAPTION, WS_EX_APPWINDOW,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, WM_NCCALCSIZE, WS_CAPTION,
+    WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
 };
 
 /// Work areas (each monitor without its taskbar), in physical pixels.
@@ -87,9 +94,46 @@ pub fn adopt(title: &str, role: Role) -> bool {
             GWL_STYLE,
             (frame & !(WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_THICKFRAME)) as isize,
         );
+        unframe(window);
         SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     }
     true
+}
+
+/// Takes the frame off one of Lantern's borderless windows that has no other role (the menu, the
+/// pill's tip). Returns false until the window exists.
+pub fn borderless(title: &str) -> bool {
+    let Some(window) = find(title) else { return false };
+    unframe(window);
+    unsafe {
+        SetWindowPos(window, std::ptr::null_mut(), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED)
+    };
+    true
+}
+
+/// No system frame on a borderless, transparent window: no Windows 11 border, rounded corners or
+/// shadow (the glass draws its own), and no 1px strip at the top. winit keeps a sliver of
+/// non-client area there for the shadow it asks for on undecorated windows (egui-winit always
+/// asks on Windows); a subclass gives the whole window to the client area instead. Windows 10
+/// doesn't know the border and corner attributes; their errors are ignored. Callers follow with
+/// `SWP_FRAMECHANGED` so the frame is recalculated.
+fn unframe(window: HWND) {
+    let set = |attribute: i32, value: u32| unsafe {
+        DwmSetWindowAttribute(window, attribute as u32, &value as *const u32 as *const _, std::mem::size_of::<u32>() as u32)
+    };
+    let _ = set(DWMWA_NCRENDERING_POLICY, DWMNCRP_DISABLED as u32);
+    let _ = set(DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE);
+    let _ = set(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND as u32);
+    unsafe { SetWindowSubclass(window, Some(no_frame), NO_FRAME, 0) };
+}
+
+const NO_FRAME: usize = 0x4c61_6e74; // "Lant"
+
+unsafe extern "system" fn no_frame(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM, _: usize, _: usize) -> LRESULT {
+    if message == WM_NCCALCSIZE && wparam != 0 {
+        return 0; // the client area is the whole window
+    }
+    unsafe { DefSubclassProc(window, message, wparam, lparam) }
 }
 
 /// The global pointer, in physical pixels: reliable on Windows, so the pill keeps the Mac's

@@ -38,6 +38,7 @@ raw-window-handle = "0.6"
 rfd = "0.15"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Media",
     "Win32_Media_Audio",

@@ -5,6 +5,7 @@ use crate::model::PanelMode;
 use crate::ui::{DictationOwner, UiAction, theme};
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, ViewportBuilder, ViewportId, pos2, vec2};
 
+const MENU_TITLE: &str = "October Lantern menu";
 const ROW: f32 = 22.0;
 const PAD: f32 = 5.0;
 const SEPARATOR: f32 = 9.0;
@@ -21,12 +22,15 @@ pub struct State {
     /// Open, at this screen point (points).
     at: Option<Pos2>,
     was_focused: bool,
+    /// The window's system frame is off (Windows).
+    unframed: bool,
 }
 
 impl State {
     pub fn open(&mut self, at: Pos2) {
         self.at = Some(at);
         self.was_focused = false;
+        self.unframed = false;
     }
 }
 
@@ -76,7 +80,7 @@ impl Lantern {
         #[allow(unused_mut)]
         let mut builder = ViewportBuilder::default()
             .with_icon(crate::ui::assets::window_icon())
-            .with_title("October Lantern menu")
+            .with_title(MENU_TITLE)
             .with_inner_size(size)
             .with_position(pos2(x, at.y))
             .with_decorations(false)
@@ -91,6 +95,9 @@ impl Lantern {
         let mut chosen = None;
         let mut close = false;
         let mut focused = None;
+        if !self.windows.menu.unframed {
+            self.windows.menu.unframed = crate::os::shell::borderless(MENU_TITLE);
+        }
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-menu"), builder, |ui, _| {
             let area = ui.max_rect();
             let painter = ui.painter();
