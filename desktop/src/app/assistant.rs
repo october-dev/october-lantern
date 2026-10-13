@@ -94,12 +94,18 @@ impl Lantern {
         self.model.assistant.asking = false;
     }
 
-    /// The answer asked for work: start it after a short window to cancel.
+    /// The answer asked for work: start it after a short window to cancel. The agent gets your own
+    /// words (see `task_prompt`).
     fn propose(&mut self, prompt: String, agent: Option<String>, project: Option<String>, turn: u64) {
         let installed = self.model.new_session.installed.clone().unwrap_or_default();
         let named = agent.map(AgentKind).filter(|kind| installed.contains(kind));
         let Some(kind) = named.or_else(|| self.default_agent_kind()) else { return };
         let folder = self.task_folder(project.as_deref());
+        let turns = &self.model.assistant.turns;
+        let prompt = match turns.iter().position(|t| t.id == turn) {
+            Some(i) => task_prompt(&turns[i].question, prompt, i > 0),
+            None => prompt,
+        };
         self.asking.next_id += 1;
         self.model.assistant.pending_task =
             Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, seconds_left: CANCEL_WINDOW });
@@ -252,6 +258,14 @@ pub fn agent_summary(agents: &[crate::model::Agent], platform: Platform) -> Stri
     lines.join("\n").chars().take(6000).collect()
 }
 
+/// What the agent is asked: your own words when you asked for it outright, not October's
+/// rewording ("find the user's thesis"). A follow-up ("yes, do that") only makes sense with the
+/// conversation, so then October's self-contained version is used (Swift `Assistant.taskPrompt`).
+fn task_prompt(question: &str, suggested: String, follow_up: bool) -> String {
+    let mine = question.trim();
+    if follow_up || mine.is_empty() { suggested } else { mine.to_string() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +325,16 @@ mod tests {
         let (generation, turn) = with_turn(&mut lantern);
         lantern.assistant_done(generation, turn, Some("Sign in to October to ask.".into()));
         assert!(lantern.model.assistant.turns.last().unwrap().failed);
+    }
+
+    #[test]
+    fn a_task_goes_to_the_agent_in_your_words_unless_it_follows_up() {
+        assert_eq!(super::task_prompt(" Find me my thesis ", "Find the user's thesis".into(), false), "Find me my thesis");
+        assert_eq!(super::task_prompt("yes, do that", "Fix the Wi-Fi".into(), true), "Fix the Wi-Fi");
+        let mut lantern = lantern(&["claude"]);
+        let (generation, turn) = with_turn(&mut lantern);
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "Find the user's q".into(), agent: None, project: None });
+        assert_eq!(lantern.model.assistant.pending_task.clone().unwrap().prompt, "q");
     }
 
     #[test]

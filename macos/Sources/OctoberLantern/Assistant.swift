@@ -93,6 +93,14 @@ final class Assistant: ObservableObject {
 
     // MARK: Tasks the assistant starts
 
+    /// What the agent is asked: your own words when you asked for it outright, not October's
+    /// rewording ("find the user's thesis"). A follow-up ("yes, do that") only makes sense with
+    /// the conversation, so then October's self-contained version is used.
+    static func taskPrompt(question: String, suggested: String, followUp: Bool) -> String {
+        let mine = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        return followUp || mine.isEmpty ? suggested : mine
+    }
+
     /// The answer asked for work to be done: start it after a short window to cancel.
     private func propose(prompt: String, agent: String?, project: String?, turn: UUID) {
         guard let model else { return }
@@ -100,8 +108,10 @@ final class Assistant: ObservableObject {
         let named = agent.flatMap { AgentKind(rawValue: $0) }.flatMap { installed.contains($0) ? $0 : nil }
         guard let kind = named ?? model.defaultAgentKind else { return }
         let folder = Self.folder(for: project, model: model)
+        let index = turns.firstIndex { $0.id == turn }
+        let own = index.map { Self.taskPrompt(question: turns[$0].question, suggested: prompt, followUp: $0 > 0) } ?? prompt
         cancelTask()
-        pending = PendingTask(prompt: prompt, kind: kind, folder: folder, secondsLeft: 3)
+        pending = PendingTask(prompt: own, kind: kind, folder: folder, secondsLeft: 3)
         countdown = Task { [weak self] in
             for left in stride(from: 2, through: 0, by: -1) {
                 try? await Task.sleep(for: .seconds(1))

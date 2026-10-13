@@ -22,3 +22,16 @@ final class AskRequestTests: XCTestCase {
         XCTAssertTrue(OctoberAI.history(long).allSatisfy { ($0["content"] ?? "").utf16.count <= 8000 })
     }
 }
+
+/// A task from Ask Lantern goes to the agent in your words.
+final class AskTaskPromptTests: XCTestCase {
+    @MainActor func testFirstRequestIsSentAsTyped() {
+        XCTAssertEqual(Assistant.taskPrompt(question: " Find me my thesis document ", suggested: "Find the user's thesis document", followUp: false),
+                       "Find me my thesis document")
+    }
+
+    @MainActor func testFollowUpUsesTheSelfContainedVersion() {
+        XCTAssertEqual(Assistant.taskPrompt(question: "yes, do that", suggested: "Fix the Wi-Fi on this Mac", followUp: true),
+                       "Fix the Wi-Fi on this Mac")
+    }
+}
