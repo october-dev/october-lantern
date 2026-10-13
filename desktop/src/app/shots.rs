@@ -117,11 +117,15 @@ pub fn jpeg(png: &[u8]) -> Option<Vec<u8>> {
 
 /// Crops a full-screen PNG to `rect` (physical pixels, relative to the image) and re-encodes it.
 pub fn crop(png: &[u8], x: u32, y: u32, width: u32, height: u32) -> Result<Vec<u8>> {
-    let image = image::load_from_memory(png)?.to_rgba8();
+    crop_image(&image::load_from_memory(png)?.to_rgba8(), x, y, width, height)
+}
+
+/// Crops a captured display to `rect` (physical pixels, relative to the image) as PNG.
+pub fn crop_image(image: &image::RgbaImage, x: u32, y: u32, width: u32, height: u32) -> Result<Vec<u8>> {
     anyhow::ensure!(width > 0 && height > 0, "nothing selected");
     let (x, y) = (x.min(image.width() - 1), y.min(image.height() - 1));
     let (width, height) = (width.min(image.width() - x), height.min(image.height() - y));
-    let cropped = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    let cropped = image::imageops::crop_imm(image, x, y, width, height).to_image();
     let mut out = std::io::Cursor::new(Vec::new());
     cropped.write_to(&mut out, image::ImageFormat::Png)?;
     Ok(out.into_inner())

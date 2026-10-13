@@ -101,6 +101,34 @@ impl Lantern {
             }
             self.toggle_dictation(DictationOwner::PointAsk);
         }
+        self.freeze_screen();
+    }
+
+    /// Windows: before the overlay shows, capture the display under the pointer (Lantern's windows
+    /// drawing nothing) for the overlay to show frozen, Snipping Tool style. Windows draws a
+    /// transparent window over a whole monitor black, and the selection is cropped from this same
+    /// still. Until it arrives Lantern's windows stay clear; without it, the overlay is transparent.
+    fn freeze_screen(&mut self) {
+        #[cfg(windows)]
+        {
+            self.windows.select.unfreeze();
+            let generation = self.pointing.selection;
+            self.windows.hide_for_capture(move |tx| {
+                crate::os::task(tx, crate::os::freeze_screen, move |result| Event::Frozen { generation, result });
+            });
+        }
+    }
+
+    /// Windows: the display under the pointer came back (or couldn't be captured).
+    #[cfg(windows)]
+    pub(super) fn point_ask_frozen(&mut self, generation: u64, result: Result<crate::os::Frozen, String>) {
+        if generation != self.pointing.selection || self.model.point_ask.phase != PointAskPhase::Selecting {
+            return;
+        }
+        match result {
+            Ok(frozen) => self.windows.select.freeze(frozen),
+            Err(error) => super::trace!("point & ask: no frozen screen ({error}); the overlay is transparent"),
+        }
     }
 
     /// The overlay finished: an area in screen pixels, or `None` (Esc).
@@ -125,6 +153,16 @@ impl Lantern {
         self.model.point_ask.screenshot = Capture::Capturing;
         self.model.point_ask.problem = None;
         let generation = self.pointing.selection;
+        // Windows: the selection from the display as it was frozen under the overlay.
+        #[cfg(windows)]
+        if let Some((image, [x, y, width, height])) = self.windows.select.pick.take() {
+            crate::os::task(
+                self.tx.clone(),
+                move || super::shots::crop_image(&image, x, y, width, height),
+                move |result| Event::PointAskShot { generation, result },
+            );
+            return;
+        }
         self.windows.hide_for_capture(move |tx| {
             crate::os::task(tx, crate::os::capture_screen, move |result| Event::Screenshot { owner: "__point".into(), generation, result });
         });
@@ -140,13 +178,23 @@ impl Lantern {
             let rect = self.pointing.rect.ok_or("nothing selected")?;
             let bytes = std::fs::read(&full).map_err(|e| e.to_string())?;
             let _ = std::fs::remove_file(&full);
-            let png = super::shots::crop(&bytes, rect.min.x as u32, rect.min.y as u32, rect.width() as u32, rect.height() as u32)
-                .map_err(|e| e.to_string())?;
+            super::shots::crop(&bytes, rect.min.x as u32, rect.min.y as u32, rect.width() as u32, rect.height() as u32)
+                .map_err(|e| e.to_string())
+        });
+        self.point_ask_shot(generation, cropped);
+    }
+
+    /// The selection as PNG (or why there's none): kept for Ask and Send.
+    pub(super) fn point_ask_shot(&mut self, generation: u64, cropped: Result<Vec<u8>, String>) {
+        if generation != self.pointing.selection || self.model.point_ask.phase == PointAskPhase::Closed {
+            return;
+        }
+        let saved = cropped.and_then(|png| {
             let path = crate::settings::data_dir().join("screenshots").join(format!("point-{}.png", uuid::Uuid::new_v4().simple()));
             crate::settings::private_write(&path, &png).map_err(|e| e.to_string())?;
             Ok((png, path))
         });
-        match cropped {
+        match saved {
             Ok((png, path)) => {
                 self.pointing.shot = Some(png);
                 self.model.point_ask.screenshot = Capture::Ready { path };
@@ -172,6 +220,7 @@ impl Lantern {
 
     pub(super) fn reselect_point_ask(&mut self) {
         self.model.point_ask.phase = PointAskPhase::Selecting;
+        self.freeze_screen();
     }
 
     pub(super) fn cancel_point_ask(&mut self) {

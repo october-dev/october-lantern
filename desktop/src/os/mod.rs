@@ -72,6 +72,19 @@ pub enum Event {
     Uninstalled(Vec<String>),
     /// Whether the desktop lets Lantern's notifications through (`None`: can't tell).
     NotificationsAllowed(Option<bool>),
+    /// Windows: the display under the pointer, captured before Point & Ask's overlay shows (the
+    /// overlay draws it frozen), for the selection `generation`.
+    #[cfg(windows)]
+    Frozen {
+        generation: u64,
+        result: Result<Frozen, String>,
+    },
+    /// Windows: the selection cropped from the frozen display, as PNG.
+    #[cfg(windows)]
+    PointAskShot {
+        generation: u64,
+        result: Result<Vec<u8>, String>,
+    },
     /// Point & Ask's message for an agent is ready (its screenshot saved), or couldn't be.
     PointAskSent {
         generation: u64,

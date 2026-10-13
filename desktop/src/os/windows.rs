@@ -145,7 +145,25 @@ pub fn capture_screen() -> Result<PathBuf> {
     Ok(dest)
 }
 
+/// The display under the pointer as it is now, with where it is (physical pixels), for Point &
+/// Ask's frozen overlay. Taken before the overlay shows, while Lantern's windows draw nothing.
+pub fn freeze_screen() -> Result<Frozen> {
+    let (image, monitor) = capture_monitor()?;
+    Ok(Frozen { image: Arc::new(image), monitor })
+}
+
+/// A still of one display (Point & Ask's overlay background and the source of its crop).
+pub struct Frozen {
+    pub image: Arc<image::RgbaImage>,
+    /// The display's bounds on the virtual screen, in physical pixels.
+    pub monitor: eframe::egui::Rect,
+}
+
 fn capture_display() -> Result<image::RgbaImage> {
+    capture_monitor().map(|(image, _)| image)
+}
+
+fn capture_monitor() -> Result<(image::RgbaImage, eframe::egui::Rect)> {
     use windows_sys::Win32::Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
         DeleteObject, GetDC, GetDIBits, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC, SRCCOPY,
@@ -188,7 +206,12 @@ fn capture_display() -> Result<image::RgbaImage> {
             pixel.swap(0, 2);
             pixel[3] = 255;
         }
-        image::RgbaImage::from_raw(width as u32, height as u32, pixels).context("screenshot size mismatch")
+        let image = image::RgbaImage::from_raw(width as u32, height as u32, pixels).context("screenshot size mismatch")?;
+        let monitor = eframe::egui::Rect::from_min_max(
+            eframe::egui::pos2(r.left as f32, r.top as f32),
+            eframe::egui::pos2(r.right as f32, r.bottom as f32),
+        );
+        Ok((image, monitor))
     }
 }
 
