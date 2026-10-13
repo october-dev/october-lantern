@@ -1,11 +1,10 @@
 import SwiftUI
 
-/// Lantern's assistant, opened by clicking the lantern. Two modes:
-///
-/// - **Ask**: a chat with October's AI (the same endpoint as Point & Ask, without a screenshot).
-///   It knows what your agents are doing: each question carries a short summary of them.
-/// - **Do**: describe a task and Lantern sets up a New Session for it (the message filled in, the
-///   project guessed from your recent folders), for you to check and start.
+/// Lantern's assistant, opened by clicking the lantern: a chat with October's AI (the same
+/// endpoint as Point & Ask, without a screenshot) that knows what your agents are doing. When the
+/// answer asks for work, an agent starts on it in the background and stays in the conversation:
+/// its replies stream into the thread and what you type next goes to it. Conversations are kept
+/// on this Mac (the most recent 50) and listed on Ask Lantern's home.
 @MainActor
 final class Assistant: ObservableObject {
     static let shared = Assistant()
@@ -20,36 +19,203 @@ final class Assistant: ObservableObject {
         var secondsLeft: Int
     }
 
-    struct Turn: Identifiable {
-        let id = UUID()
+    struct Turn: Identifiable, Codable {
+        var id = UUID()
         let question: String
         var answer = ""
         var failed = false
         var note: String?
         /// "Started Claude Code in october-lantern", once a task from this answer launched.
         var started: String?
+        /// The agent this answer started, shown in the conversation.
+        var task: TaskLink?
+    }
+
+    /// An agent Ask Lantern started: found by its tmux session, then by its id. Its last messages
+    /// are kept, so the conversation still shows what it did after it ends.
+    struct TaskLink: Codable, Equatable {
+        let kind: String
+        let folder: String
+        let prompt: String
+        var session: String?
+        var agentId: String?
+        var error: String?
+        /// Started without a tmux session (a Terminal window): nothing to show here.
+        var inTerminal = false
+        var transcript: [ChatMessage] = []
+    }
+
+    struct Conversation: Identifiable, Codable {
+        var id = UUID()
+        var title: String
+        var updated: Date
+        var turns: [Turn]
     }
 
     @Published var text = ""
     @Published private(set) var pending: PendingTask?
     private var countdown: Task<Void, Never>?
-    @Published private(set) var turns: [Turn] = []
+    @Published private(set) var turns: [Turn] = [] { didSet { if !restoring { saveSoon() } } }
     @Published private(set) var asking = false
+    /// Earlier conversations, newest first (the current one included once it has a question).
+    @Published private(set) var conversations: [Conversation] = []
+    private var currentId = UUID()
+    private var restoring = false
+    /// With an agent at work in the conversation, the box talks to it; this sends the next
+    /// message to Lantern instead.
+    @Published var askLanternInstead = false
     let dictation = Dictation()
     private var task: Task<Void, Never>?
+    private var saving: Task<Void, Never>?
 
     private init() {
         dictation.onText = { [weak self] text, _ in self?.text = text }
+        conversations = Self.load()
     }
 
-    func submit() { ask() }
+    func submit() {
+        if let agent = activeAgent, !askLanternInstead {
+            reply(to: agent)
+        } else {
+            ask()
+            askLanternInstead = false
+        }
+    }
 
-    /// Back to the agent list; the chat is kept until a new question.
+    /// A new chat (the current one is kept in the list).
     func clear() {
         task?.cancel()
         cancelTask()
+        save()
+        restoring = true
         turns = []
+        restoring = false
+        currentId = UUID()
         asking = false
+        askLanternInstead = false
+        model?.watch(nil)
+    }
+
+    /// Reopens a saved conversation; an agent from it that's still running is live again.
+    func open(_ conversation: Conversation) {
+        clear()
+        restoring = true
+        turns = conversation.turns
+        restoring = false
+        currentId = conversation.id
+    }
+
+    func delete(_ conversation: Conversation) {
+        conversations.removeAll { $0.id == conversation.id }
+        if conversation.id == currentId { clear() }
+        Self.store(conversations)
+    }
+
+    // MARK: The agent in the conversation
+
+    /// The running agent from the latest task in this conversation.
+    var activeAgent: Agent? {
+        guard let link = turns.last(where: { $0.task != nil })?.task else { return nil }
+        return agent(for: link).flatMap { $0.isLive ? $0 : nil }
+    }
+
+    /// The agent a task started, once it's up: by id once known, else by its tmux session.
+    func agent(for link: TaskLink) -> Agent? {
+        guard let model else { return nil }
+        if let id = link.agentId { return model.agents.first { $0.id == id } }
+        guard let session = link.session else { return nil }
+        return model.agents.first { $0.tmux?.target.hasPrefix("\(session):") ?? false }
+    }
+
+    /// Remembers which agent a task became and what it has said, as its messages arrive.
+    func track(_ link: TaskLink, agent: Agent?, messages: [ChatMessage]) {
+        guard let i = turns.lastIndex(where: { $0.task == link }) else { return }
+        var updated = link
+        if let agent, updated.agentId == nil { updated.agentId = agent.id }
+        if !messages.isEmpty { updated.transcript = Array(messages.suffix(60)) }
+        if updated != link { turns[i].task = updated }
+    }
+
+    private func reply(to agent: Agent) {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty, let model else { return }
+        dictation.stop()
+        model.sendDirect(message, to: agent)
+        text = ""
+        Analytics.shared.capture("assistant_task_reply", ["kind": agent.kind.rawValue])
+    }
+
+    /// For snapshots: recent chats on the home, or a thread with a finished task in it. Nothing
+    /// is saved.
+    func demo(thread: Bool) {
+        restoring = true
+        defer { restoring = false }
+        let now = Date()
+        var link = TaskLink(kind: "claude", folder: NSHomeDirectory(), prompt: "Find me my thesis document")
+        link.agentId = "demo"
+        link.transcript = [
+            ChatMessage(role: .user, text: "Find me my thesis document", at: nil),
+            ChatMessage(role: .tool, text: "bash · mdfind -name thesis", at: nil),
+            ChatMessage(role: .agent, text: "Found it: **/Users/you/Documents/University/Thesis-final.pdf** (edited 3 days ago). There's also an older draft in Downloads.", at: nil),
+        ]
+        let turn = Turn(question: "Find me my thesis document", answer: "On it: Claude Code will look for it.", started: "Started Claude Code in Home folder", task: link)
+        let convos = [
+            Conversation(title: "Find me my thesis document", updated: now.addingTimeInterval(-120), turns: [turn]),
+            Conversation(title: "Which agent needs me first?", updated: now.addingTimeInterval(-3600), turns: []),
+            Conversation(title: "Fix the Wi-Fi", updated: now.addingTimeInterval(-86400), turns: [turn]),
+        ]
+        conversations = convos
+        turns = thread ? [turn] : []
+    }
+
+    // MARK: Saved conversations
+
+    private static var file: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/October Lantern/ask-lantern.json")
+    }
+
+    private static func load() -> [Conversation] {
+        guard let data = try? Data(contentsOf: file) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([Conversation].self, from: data)) ?? []
+    }
+
+    private static func store(_ conversations: [Conversation]) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(conversations) else { return }
+        let dir = file.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? data.write(to: file, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    /// Writes the conversation list a moment after changes settle (answers stream in pieces).
+    private func saveSoon() {
+        saving?.cancel()
+        saving = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.save()
+        }
+    }
+
+    private func save() {
+        saving?.cancel()
+        let kept = turns.filter { !$0.question.isEmpty }
+        guard !kept.isEmpty else { return }
+        let conversation = Conversation(id: currentId, title: Self.title(kept[0].question), updated: Date(), turns: kept)
+        conversations.removeAll { $0.id == currentId }
+        conversations.insert(conversation, at: 0)
+        conversations = Array(conversations.prefix(50))
+        Self.store(conversations)
+    }
+
+    static func title(_ question: String) -> String {
+        let line = question.split(whereSeparator: \.isNewline).first.map(String.init) ?? question
+        return line.count > 60 ? String(line.prefix(59)) + "…" : line
     }
 
     private func ask() {
@@ -135,13 +301,22 @@ final class Assistant: ObservableObject {
     private func startPending(turn: UUID) {
         guard let p = pending, let model else { return }
         pending = nil
-        // Waits for October Harness to finish installing when that's the agent.
-        // In the background (tmux) when possible: the chat opens in Lantern, and Open shows the
-        // terminal. Without tmux, a Terminal window.
-        _ = model.launchTask(prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable)
-        if let i = turns.firstIndex(where: { $0.id == turn }) {
-            turns[i].started = "Started \(p.kind.displayName) in \(URL(fileURLWithPath: p.folder).lastPathComponent)"
+        guard let i = turns.firstIndex(where: { $0.id == turn }) else { return }
+        // In the background (tmux) when possible, shown right here in the conversation; Open
+        // shows its terminal. Without tmux, a Terminal window. Waits for October Harness to
+        // finish installing when that's the agent.
+        turns[i].task = TaskLink(kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable)
+        let started = model.launchTask(prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable) { [weak self] outcome in
+            guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
+            switch outcome {
+            case .started(let session):
+                if let session { self.turns[i].task?.session = session }
+                self.turns[i].started = "Started \(p.kind.displayName) in \(URL(fileURLWithPath: p.folder).lastPathComponent)"
+            case .failed(let message):
+                self.turns[i].task?.error = message
+            }
         }
+        if !started { turns[i].task?.error = "Another session is still starting. Try again in a moment." }
         Analytics.shared.capture("assistant_task", ["kind": p.kind.rawValue])
     }
 
@@ -207,10 +382,11 @@ struct AssistantThread: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Button { assistant.clear() } label: {
-                    Label("New question", systemImage: "chevron.left")
+                    Label("New chat", systemImage: "chevron.left")
                         .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.muted)
                 }
                 .buttonStyle(.plain)
+                .help("Start a new chat. This one stays in Recent.")
                 Spacer()
                 Button { model.panel = nil } label: {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 22, height: 22)
@@ -222,6 +398,9 @@ struct AssistantThread: View {
                     VStack(alignment: .leading, spacing: 14) {
                         ForEach(assistant.turns) { turn in
                             TurnView(turn: turn).id(turn.id)
+                            if let link = turn.task {
+                                TaskCard(link: link, latest: turn.id == assistant.turns.last(where: { $0.task != nil })?.id, model: model)
+                            }
                         }
                         if let p = assistant.pending { pendingCard(p) }
                     }
@@ -232,9 +411,13 @@ struct AssistantThread: View {
                 .onChange(of: assistant.turns.last?.answer) {
                     if let last = assistant.turns.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
+                .onChange(of: model.watchedMessages.count) { proxy.scrollTo("task-bottom", anchor: .bottom) }
             }
         }
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 6)
+        // Only the latest task's agent is read live; the rest show what they last said.
+        .onChange(of: assistant.activeAgent?.id, initial: true) { _, id in model.watch(id) }
+        .onDisappear { model.watch(nil) }
     }
 
     private func pendingCard(_ p: Assistant.PendingTask) -> some View {
@@ -257,6 +440,93 @@ struct AssistantThread: View {
     }
 }
 
+/// An agent Ask Lantern started, inside the conversation: who and where, its state, and what it
+/// has said (live for the latest task, as last seen for earlier ones).
+private struct TaskCard: View {
+    let link: Assistant.TaskLink
+    let latest: Bool
+    @ObservedObject var model: AppModel
+    @ObservedObject var assistant = Assistant.shared
+
+    private var kind: AgentKind { AgentKind(rawValue: link.kind) }
+    private var agent: Agent? { assistant.agent(for: link) }
+
+    /// The conversation without your first message (it's the question above).
+    private var messages: [ChatMessage] {
+        let live = latest && agent != nil && agent?.id == model.watchedAgentId && !model.watchedMessages.isEmpty
+        let all = live ? model.watchedMessages : link.transcript
+        guard let first = all.first, first.role == .user,
+              Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
+        return Array(all.dropFirst())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            header
+            if let agent, agent.isPermissionPrompt {
+                Text(agent.question ?? "").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                PermissionButtons(agent: agent, model: model)
+            }
+            ForEach(ChatView.keyed(messages), id: \.key) { item in Bubble(message: item.message) }
+            status
+            Color.clear.frame(height: 1).id(latest ? "task-bottom" : "task-\(link.prompt.hashValue)")
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.18)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hairline))
+        .onChange(of: agent?.id, initial: true) { _, _ in assistant.track(link, agent: agent, messages: []) }
+        .onChange(of: model.watchedMessages) { _, now in
+            if latest, let agent, agent.id == model.watchedAgentId { assistant.track(link, agent: agent, messages: now) }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            if let agent { AgentBadge(agent: agent, size: 20) } else if let img = Assets.harness(kind) {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).frame(width: 20, height: 20)
+                    .clipShape(RoundedRectangle(cornerRadius: 4.4, style: .continuous))
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                Text(agent.map { "@\($0.handle)" } ?? kind.displayName).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text(folderName).font(.system(size: 10.5)).foregroundStyle(Theme.muted).lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            if let agent {
+                AgentStateChip(agent: agent)
+                SmallButton(title: "Open", symbol: "arrow.up.forward.app") { model.open(agent) }
+            }
+        }
+    }
+
+    @ViewBuilder private var status: some View {
+        if let error = link.error {
+            Text("Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
+                .fixedSize(horizontal: false, vertical: true)
+        } else if let agent {
+            if agent.state == .working {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Working…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
+            }
+        } else if link.inTerminal {
+            Text("Running in a Terminal window.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+        } else if link.agentId != nil || !link.transcript.isEmpty {
+            Text("Finished. It isn't running anymore.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+        } else if latest {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("Starting \(kind.displayName)…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
+        }
+    }
+
+    private var folderName: String {
+        link.folder == NSHomeDirectory() ? "Home folder" : URL(fileURLWithPath: link.folder).lastPathComponent
+    }
+}
+
 private struct TurnView: View {
     let turn: Assistant.Turn
 
@@ -276,7 +546,7 @@ private struct TurnView: View {
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if let started = turn.started {
+            if let started = turn.started, turn.task == nil {
                 Label(started, systemImage: "play.circle.fill").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.green)
             }
             if let note = turn.note { Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted) }
@@ -298,9 +568,9 @@ struct AskBox: View {
     var body: some View {
         Group {
             if account.signedIn {
+                VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .bottom, spacing: 6) {
-                    TextField(dictation.isRecording ? "Listening…" : assistant.turns.isEmpty ? "Ask Lantern, or tell it what to do" : "Ask a follow-up",
-                              text: $assistant.text, axis: .vertical)
+                    TextField(placeholder, text: $assistant.text, axis: .vertical)
                         .textFieldStyle(.plain).font(.system(size: large ? 15 : 13)).lineLimit(large ? 2...6 : 1...6)
                         .focused($focused)
                         .onSubmit { assistant.submit() }
@@ -321,6 +591,19 @@ struct AskBox: View {
                 .padding(.leading, large ? 14 : 11).padding(.trailing, 8).padding(.vertical, large ? 11 : 7)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.3)))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(focused ? Theme.amber.opacity(0.5) : Theme.stroke))
+                if let agent = assistant.activeAgent {
+                    Button {
+                        assistant.askLanternInstead.toggle()
+                        focused = true
+                    } label: {
+                        Label(assistant.askLanternInstead ? "Reply to @\(agent.handle) instead" : "Ask Lantern instead",
+                              systemImage: assistant.askLanternInstead ? "arrowshape.turn.up.left" : "sparkles")
+                            .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.leading, 4).padding(.top, 6)
+                }
+                }
             } else {
                 Button { model.panel = .october } label: {
                     HStack(spacing: 8) {
@@ -340,8 +623,16 @@ struct AskBox: View {
         .onChange(of: model.composeFocusToken) { focused = true }
     }
 
+    private var replying: Bool { assistant.activeAgent != nil && !assistant.askLanternInstead }
+
+    private var placeholder: String {
+        if dictation.isRecording { return "Listening…" }
+        if replying, let agent = assistant.activeAgent { return "Reply to @\(agent.handle)…" }
+        return assistant.turns.isEmpty ? "Ask Lantern, or tell it what to do" : "Ask a follow-up"
+    }
+
     private var canSubmit: Bool {
-        !assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !assistant.asking
+        !assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (replying || !assistant.asking)
     }
 }
 
@@ -356,6 +647,44 @@ struct AssistantHome: View {
     @ObservedObject var model: AppModel
     @ObservedObject var assistant = Assistant.shared
     @ObservedObject var account = OctoberAccount.shared
+    @State private var showAll = false
+
+    /// Earlier chats: the last three, or all of them (scrolling) after Show all.
+    private var recent: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Recent").font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted)
+                Spacer()
+                if assistant.conversations.count > 3 {
+                    Button(showAll ? "Show less" : "Show all") { showAll.toggle() }.buttonStyle(.plain)
+                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.muted)
+                }
+            }
+            .padding(.top, 10).padding(.bottom, 2)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(showAll ? assistant.conversations : Array(assistant.conversations.prefix(3))) { c in
+                        Button { assistant.open(c) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: c.turns.contains { $0.task != nil } ? "play.circle" : "bubble.left")
+                                    .font(.system(size: 11)).foregroundStyle(Theme.muted).frame(width: 16)
+                                Text(c.title).font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.9)).lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text(c.updated, format: .relative(presentation: .numeric, unitsStyle: .narrow))
+                                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 7)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu { Button("Delete", role: .destructive) { assistant.delete(c) } }
+                    }
+                }
+            }
+            .frame(maxHeight: showAll ? 260 : nil)
+            .fixedSize(horizontal: false, vertical: !showAll)
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -388,6 +717,7 @@ struct AssistantHome: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        if !assistant.conversations.isEmpty { recent }
                     }
                 }
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, 8)

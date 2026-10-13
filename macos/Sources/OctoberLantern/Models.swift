@@ -147,8 +147,8 @@ struct Agent: Codable, Identifiable, Hashable {
     }
 }
 
-struct ChatMessage: Decodable, Hashable {
-    enum Role: String, Decodable { case user, agent, tool }
+struct ChatMessage: Codable, Hashable {
+    enum Role: String, Codable { case user, agent, tool }
     let role: Role
     let text: String
     let at: String?

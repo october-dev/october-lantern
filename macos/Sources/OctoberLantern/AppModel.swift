@@ -74,6 +74,14 @@ final class AppModel: ObservableObject {
     private var previewRetry: (() -> Void)?
     /// The preview was closed: the session still starts, but its conversation doesn't open.
     private var previewClosed = false
+    /// Who started the launch in flight, when it isn't the panel: Ask Lantern keeps the agent in
+    /// its own conversation, so the panel doesn't switch to it.
+    private var launchReport: ((LaunchOutcome) -> Void)?
+    /// An agent Ask Lantern shows inside its conversation: its messages, read every two seconds
+    /// like an open chat's.
+    @Published private(set) var watchedAgentId: String?
+    @Published private(set) var watchedMessages: [ChatMessage] = []
+    private var watchPoll: Task<Void, Never>?
     private var previewTimeout: Task<Void, Never>?
     private var chatPoll: Task<Void, Never>?
     /// The agent whose conversation is open in the panel, if any.
@@ -125,11 +133,16 @@ final class AppModel: ObservableObject {
         }
         engine.onActionResult = { [weak self] id, ok, message in self?.actionFinished(id, ok: ok, message: message) }
         engine.onLaunched = { [weak self] session in
+            if let report = self?.launchReport {
+                self?.launchReport = nil
+                return report(.started(session: session))
+            }
             guard let self, !self.previewClosed else { return }
             self.openWhenSeen = (session, Date().addingTimeInterval(30))
             self.openLaunched()
         }
         engine.onHistory = { [weak self] agentId, supported, messages in
+            if let self, agentId == self.watchedAgentId, messages != self.watchedMessages { self.watchedMessages = messages }
             guard let self, agentId == self.chatAgentId else { return }
             if self.chatLoading { self.chatLoading = false }
             // The real conversation takes over from the preview once it has something to show.
@@ -286,6 +299,12 @@ final class AppModel: ObservableObject {
         guard let retry = previewRetry, !launching else { return }
         endPreview()
         retry()
+    }
+
+    private func reportLaunch(_ outcome: LaunchOutcome) {
+        guard let report = launchReport else { return }
+        launchReport = nil
+        report(outcome)
     }
 
     /// For snapshots: shows a preview without starting anything.
@@ -517,6 +536,7 @@ final class AppModel: ObservableObject {
             launching = false
             launchError = "Couldn't install October Harness: \(status.message ?? "unknown error")"
             launchPreview?.error = launchError
+            reportLaunch(.failed(launchError ?? ""))
         }
     }
 
@@ -525,11 +545,30 @@ final class AppModel: ObservableObject {
     /// needed (`launching` is true meanwhile); other agents start right away. The outcome shows
     /// the usual way (`launching`, `launchError`, the "Session started" toast). False when no
     /// agent can start or another session is still starting.
+    /// `report`: for a launch that stays out of the panel (Ask Lantern's), told how it went.
     @discardableResult
-    func launchTask(prompt: String, agent: AgentKind?, folder: String, background: Bool) -> Bool {
+    func launchTask(
+        prompt: String, agent: AgentKind?, folder: String, background: Bool, report: ((LaunchOutcome) -> Void)? = nil
+    ) -> Bool {
         guard let kind = agent ?? defaultAgentKind, !launching else { return false }
-        launch(kind: kind, folder: folder, prompt: prompt, toolkit: true, background: background)
+        launch(kind: kind, folder: folder, prompt: prompt, toolkit: true, background: background, report: report)
         return true
+    }
+
+    /// Reads `agentId`'s conversation every two seconds into `watchedMessages` (nil stops).
+    func watch(_ agentId: String?) {
+        guard agentId != watchedAgentId else { return }
+        watchPoll?.cancel()
+        watchedAgentId = agentId
+        watchedMessages = []
+        guard let agentId else { return }
+        watchPoll = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.watchedAgentId == agentId else { return }
+                self.engine.history(agentId: agentId)
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
     /// A message (and folder) for New Session to start with, from the assistant's Do.
@@ -557,10 +596,16 @@ final class AppModel: ObservableObject {
 
     func launch(
         kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, model: String? = nil, context: String? = nil,
-        toolkit: Bool = false, taskApp: String? = nil, background: Bool
+        toolkit: Bool = false, taskApp: String? = nil, background: Bool, report: ((LaunchOutcome) -> Void)? = nil
     ) {
-        guard !launching, !pending.values.contains(where: { if case .launch = $0 { return true }; return false }) else { return }
-        if background {
+        guard !launching, !pending.values.contains(where: { if case .launch = $0 { return true }; return false }) else {
+            report?(.failed("Another session is still starting."))
+            return
+        }
+        launchReport = report
+        if report != nil {
+            // Ask Lantern shows it in its own conversation.
+        } else if background {
             // Show the conversation now; the real one replaces it when the agent is up.
             if chatAgentId != nil { closeChat() }
             launchPreview = LaunchPreview(kind: kind, prompt: prompt, folder: folder)
@@ -583,7 +628,7 @@ final class AppModel: ObservableObject {
             launchAfterHarness = { [weak self] in
                 self?.launch(
                     kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, model: model, context: context, toolkit: toolkit,
-                    taskApp: taskApp, background: background
+                    taskApp: taskApp, background: background, report: report
                 )
             }
             if harness?.status != "installing" { engine.prepareHarness() }
@@ -794,7 +839,14 @@ final class AppModel: ObservableObject {
         case .launch:
             launching = false
             Analytics.shared.capture(ok ? "session_started" : "session_start_failed", ["kind": launchingKind, "background": launchingInBackground, "screenshot": launchingWithScreenshot, "model": launchingModel, "task": launchingTask, "bus": prefs.busForSessions])
-            if ok, launchPreview != nil {
+            if launchReport != nil {
+                if ok {
+                    // The tmux session (if any) comes right after, in onLaunched.
+                    DispatchQueue.main.async { [weak self] in self?.reportLaunch(.started(session: nil)) }
+                } else {
+                    reportLaunch(.failed(message ?? "unknown error"))
+                }
+            } else if ok, launchPreview != nil {
                 waitForLaunched()
             } else if ok {
                 if !previewClosed { panel = .agents }
@@ -829,6 +881,7 @@ final class AppModel: ObservableObject {
         launching = false
         launchAfterHarness = nil
         launchPreview?.error = "Lantern's engine stopped before the session started."
+        reportLaunch(.failed("Lantern's engine stopped before the session started."))
         firstSnapshot = true
         agents = []
         closeChat()
@@ -844,4 +897,10 @@ struct LaunchPreview: Equatable {
     let folder: String
     /// Why it couldn't start.
     var error: String?
+}
+
+/// How a launch for Ask Lantern went: started (in a tmux session when it has one), or why not.
+enum LaunchOutcome {
+    case started(session: String?)
+    case failed(String)
 }

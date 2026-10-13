@@ -188,12 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var jobs: [(String, AnyView)] = (0..<3).map { ("welcome-\($0)", AnyView(WelcomeView(model: model, onDone: {}, step: $0))) }
         jobs += (0..<4).map { ("settings-\($0)", AnyView(SettingsView(model: model, onShowWelcome: {}, tab: $0))) }
         let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("october", .october), ("chat", .agents), ("assistant", .assistant),
-                                                ("starting", .inbox), ("starting-failed", .inbox)]
+                                                ("starting", .inbox), ("starting-failed", .inbox),
+                                                ("assistant-recent", .assistant), ("assistant-task", .assistant)]
         jobs += panels.map { name, mode in
             ("panel-\(name)", AnyView(PanelView(model: model, dictation: model.dictation).onAppear {
                 self.model.closeChat()
                 self.model.panel = mode
                 if name == "chat", let first = self.model.inbox.first ?? self.model.agents.first { self.model.openChat(first) }
+                if name.hasPrefix("assistant-") { Assistant.shared.demo(thread: name == "assistant-task") }
                 if name.hasPrefix("starting") {
                     self.model.showPreview(LaunchPreview(
                         kind: .claude, prompt: "Find my passport scan and tell me where it is.\n\n(Started from October Lantern on macOS.)",
