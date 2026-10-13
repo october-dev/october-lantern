@@ -1,7 +1,7 @@
 # README assets
 
 - `banner.png`: generated with the built-in image generation tool, using the existing `logo.png` and the Lantern website's autumn poster as references. Final image: 2048 × 683 pixels.
-- `download-macos.svg`: local, static vector button. The README supplies the download link and accessible alternative text. It makes no third-party image requests.
+- `download-macos.svg`, `download-windows.svg`: local, static vector buttons. The README supplies the download link and accessible alternative text. It makes no third-party image requests.
 
 ## Banner generation prompt
 

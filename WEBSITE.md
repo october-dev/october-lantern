@@ -7,6 +7,7 @@ What the website needs for the beta. Product facts come from [product guide](doc
 1. **Download button.** The site only has an early-access mailto today. Link to:
    `https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern.dmg`
    This link always serves the newest release (0.3.0 is 10.5 MB). Show next to it: "macOS 14 or later · Apple silicon and Intel · Free during the beta".
+   Windows (preview, 0.6+): `https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern-windows-x86_64-setup.exe`, "Windows 10 and 11 · 64-bit · preview". Until the installer is code-signed, say that Windows asks for **More info › Run anyway** the first time.
 2. **Privacy page** (`/privacy`). Use the product guide's Privacy section, which covers:
    - everything stays on the Mac unless you choose to sign in to October; no account is needed
    - without an October account, the only network requests are the daily update check (a public file on GitHub) and anonymous usage counts (feature counts, never content), which are on by default and can be turned off in Settings; the product guide lists every event
@@ -35,4 +36,4 @@ What the website needs for the beta. Product facts come from [product guide](doc
 - Automatic routing ("say it once and it picks the agent") doesn't exist yet. Screenshots go with new sessions and Point & Ask, not with ordinary replies.
 - Don't advertise October Bus, multiplayer, the phone app, October Desktop pairing, the toolkit list or app Tasks in launch copy. Lead with Claude Code and Codex: see who's waiting, read, reply; Point & Ask and Ask Lantern as the extras.
 - October connections: describe them exactly as in the product guide's "What's true today" table. Full October Desktop support needs October 1.0.52+. The phone connection is built but has not been tested against the real phone app: don't advertise it until a live pairing and reply have been confirmed.
-- Windows or Linux.
+- Linux. Windows only as a preview, with the Mac's features except: replies reach agents in their own console (Windows Terminal, VS Code, console windows) and sessions Lantern starts; Open brings the window forward but not the exact tab.

@@ -15,10 +15,13 @@
   <a href="https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern.dmg">
     <img src="docs/assets/download-macos.svg" alt="Download Lantern for Mac — Apple silicon and Intel" width="260" height="64" />
   </a>
+  <a href="https://github.com/harshsaver/october-lantern-releases/releases/latest/download/October-Lantern-windows-x86_64-setup.exe">
+    <img src="docs/assets/download-windows.svg" alt="Download Lantern for Windows — Windows 10 and 11, 64-bit" width="290" height="64" />
+  </a>
 </p>
 
 <p align="center">
-  macOS 14+ · Apple silicon &amp; Intel · Free forever · No account needed
+  macOS 14+ · Windows 10 &amp; 11 (preview) · Free forever · No account needed
 </p>
 
 <p align="center">
@@ -111,7 +114,7 @@ No. Keep opening your agents in your usual terminals. Lantern discovers supporte
 <details>
 <summary><strong>Is Lantern free? Does it work on Windows or Linux?</strong></summary>
 
-The core Mac app is free, and it stays free forever. The source code is licensed under Apache 2.0. If you have a paid October plan, sign in and your plan's extras, like cloud agents, are available in Lantern automatically. Lantern currently runs on macOS 14 or later, on Apple silicon and Intel. Lantern for Linux and Windows builds from source: the same pill and panel as the Mac app, written in Rust (Windows is a preview).
+The core Mac app is free, and it stays free forever. The source code is licensed under Apache 2.0. If you have a paid October plan, sign in and your plan's extras, like cloud agents, are available in Lantern automatically. Lantern runs on macOS 14 or later (Apple silicon and Intel) and, as a preview, on Windows 10 and 11 (64-bit): the same pill and panel as the Mac app, written in Rust. The Windows installer isn't code-signed yet, so Windows shows "Windows protected your PC" the first time: click **More info**, then **Run anyway**. Linux builds from source.
 
 </details>
 
