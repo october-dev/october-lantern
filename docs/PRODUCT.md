@@ -151,7 +151,7 @@ Headless runs (for example `claude -p` or `codex exec` in a script) are ignored 
 
 ## What's true today
 
-Lantern is in **beta (v0.5.1)**.
+Lantern is in **beta (v0.6.0)**.
 
 | Capability | Status |
 |---|---|
