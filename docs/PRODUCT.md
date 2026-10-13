@@ -95,11 +95,10 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **App sessions:** Claude Desktop (its Code tab), Cowork and the Codex app's sessions are listed too, labeled with their app. Running ones show live; ones from the last three days show as **Recent**, and **Open** opens the app. They can't be typed into from Lantern.
 - **October:** three cards. **Connect to October** signs in (Google, GitHub, Apple or email) and then shows the account and plan. **Connect to October Desktop** shows whether October is running, and once you click **Connect** and allow Lantern in October (matching a 6-digit code), it's fully connected. **October phone app** pairs a phone by QR after you sign in, then lists paired phones with Revoke.
 
-**Welcome.** The first launch shows a short, four-page welcome:
-1. What the lantern's states mean.
-2. The agents Lantern found.
-3. Optional setup: open at login, notifications, exact status (hooks) and the shortcut.
-4. Where to find everything.
+**Welcome.** The first launch shows a short, three-page welcome (Back on every page after the first):
+1. What the lantern's states mean, and the agents Lantern found.
+2. Setup. On the Mac, **Screen Recording is required here** (Point & Ask needs it): Continue stays off until it's allowed, with **Allow…** (macOS's prompt, else System Settings), then **Reopen Lantern** (macOS applies it after a reopen; the welcome picks up on this page) and a small **Skip for now**. The rest is optional: open at login, notifications, exact status (hooks) and the shortcut. Windows and Linux need no permission for Point & Ask.
+3. Where to find everything.
 
 **Settings** (from the menu bar lantern) has four tabs:
 - **General:** open at login, which screen edge, the two shortcuts and automatic updates; new sessions and tasks (screenshot, October Bus, the toolkit list); exact status (the hooks); notifications (on or off, and whether finished turns notify too).
@@ -218,7 +217,7 @@ Lantern is in **beta (v0.6.0)**.
 | Notifications | Telling you when an agent finishes or needs you | In the welcome, or when you turn them on |
 | Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button |
 
-| Screen Recording | Including a screenshot when starting a session | When you turn that option on |
+| Screen Recording | Point & Ask, and including a screenshot when starting a session | In the welcome (required there unless you skip), or the first time you use Point & Ask |
 | Accessibility | Telling a Task's agent which window and document you have open | When you click Allow on the Task panel |
 
 Lantern doesn't need Full Disk Access.

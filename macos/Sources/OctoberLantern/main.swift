@@ -87,7 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !UserDefaults.standard.bool(forKey: "welcomed") {
             // Give the engine a moment to find agents so the welcome can show them.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome() }
+            // Reopened mid-welcome (macOS asks to after allowing Screen Recording): pick up there.
+            let step = UserDefaults.standard.integer(forKey: "welcomeStep")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome(step: step) }
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Support.offerCrashReportIfNeeded(agents: self.model.agents) }
         }

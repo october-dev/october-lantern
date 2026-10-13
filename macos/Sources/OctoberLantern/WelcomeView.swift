@@ -1,3 +1,4 @@
+import CoreGraphics
 import ServiceManagement
 import SwiftUI
 
@@ -12,6 +13,10 @@ struct WelcomeView: View {
     @State var step = 0
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var notificationsAllowed = false
+    /// Screen Recording, which Point & Ask needs: the one setup step that isn't optional.
+    @State private var screenAllowed = CGPreflightScreenCaptureAccess()
+    @State private var screenAsked = false
+    private let poll = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,7 +38,11 @@ struct WelcomeView: View {
                     }
                 }
                 Spacer()
-                if step > 0 && step < 2 {
+                if step == 1 && !screenAllowed {
+                    Button("Skip for now") { step += 1 }.buttonStyle(.plain).foregroundStyle(Theme.muted)
+                        .help("Point & Ask can't capture your screen until you allow it. It asks again the first time you use it.")
+                }
+                if step > 0 {
                     Button("Back") { step -= 1 }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
                 Button(step == 2 ? "Start using Lantern" : "Continue") {
@@ -41,6 +50,7 @@ struct WelcomeView: View {
                 }
                 .buttonStyle(AmberButtonStyle())
                 .keyboardShortcut(.defaultAction)
+                .disabled(step == 1 && !screenAllowed)
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 20)
@@ -49,6 +59,10 @@ struct WelcomeView: View {
         .background(Color(white: 0.09))
         .environment(\.colorScheme, .dark)
         .task { hooks.refresh() }
+        .onReceive(poll) { _ in
+            if step == 1, !screenAllowed { screenAllowed = CGPreflightScreenCaptureAccess() }
+        }
+        .onChange(of: step) { _, now in UserDefaults.standard.set(now, forKey: "welcomeStep") }
     }
 
     private var intro: some View {
@@ -81,7 +95,28 @@ struct WelcomeView: View {
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("A few choices").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
-            Text("All optional. You can change them later in Settings.").font(.system(size: 13.5)).foregroundStyle(Theme.muted)
+            Text("Point & Ask needs Screen Recording. The rest is optional.")
+                .font(.system(size: 13.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+
+            SetupRow(symbol: "rectangle.dashed.badge.record", title: "Screen Recording (needed)",
+                     detail: "To capture what you select with Point & Ask. Only when you use it.") {
+                if screenAllowed {
+                    Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
+                } else if screenAsked {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Button("Reopen Lantern") { Self.relaunch() }.buttonStyle(SecondaryButtonStyle())
+                        Text("Allowed it? macOS applies it after Lantern reopens.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                            .frame(maxWidth: 180, alignment: .trailing).multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Button("Allow…") {
+                        ScreenCapture.shared.requestPermission()
+                        screenAsked = true
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+            }
 
             SetupRow(symbol: "power", title: "Open at login", detail: "Keep the lantern there whenever you're using your Mac.") {
                 Toggle("", isOn: $openAtLogin).toggleStyle(.switch).labelsHidden()
@@ -103,7 +138,7 @@ struct WelcomeView: View {
                 }
             }
             SetupRow(symbol: "bolt", title: "Exact status (recommended)",
-                     detail: "Lets Claude Code and Codex tell Lantern the moment they finish or need permission, so you can Allow or Deny from Lantern. Adds Lantern to ~/.claude/settings.json and ~/.codex/config.toml, after backing both up. Restart running agents afterwards.") {
+                     detail: "Claude Code and Codex tell Lantern the moment they finish or need permission, so you can Allow or Deny here. Adds a hook to their settings (backed up first); restart running agents.") {
                 if hooks.installed {
                     Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
                 } else if hooks.busy {
@@ -141,6 +176,15 @@ struct WelcomeView: View {
         }
     }
 
+    /// Opens a new copy of Lantern and quits this one (macOS applies Screen Recording on reopen).
+    static func relaunch() {
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+    }
+
     private var done: some View {
         VStack(spacing: 16) {
             if let logo = Assets.logo {
@@ -149,8 +193,8 @@ struct WelcomeView: View {
             Text("You're set").font(.system(size: 24, weight: .bold)).foregroundStyle(Theme.ink)
             VStack(alignment: .leading, spacing: 10) {
                 Tip(symbol: "arrow.right.to.line", text: "The lantern sits on the \(prefs.edge) edge of your screen. Drag it to move it.")
-                Tip(symbol: "cursorarrow", text: "Click it to see who's waiting. Click any agent to read its conversation and reply.")
-                Tip(symbol: "sparkles", text: "Ask Lantern at the bottom of that panel: \"which agent needs me first?\", or tell it what to do and it starts an agent.")
+                Tip(symbol: "square.stack.3d.up", text: "Hover it and click the stack to see who's waiting. Click any agent to read its conversation and reply.")
+                Tip(symbol: "sparkles", text: "Click the lantern to Ask Lantern: \"which agent needs me first?\", or tell it what to do and it starts an agent.")
                 Tip(symbol: "cursorarrow.and.square.on.square.dashed", text: "Point & Ask: press \(Preferences.shared.pointAsk == .none ? "the dotted-box button" : Preferences.shared.pointAsk.label), drag a box around anything on screen and ask about it.")
                 Tip(symbol: "plus", text: "Start a new session with any agent from the + button.")
                 Tip(symbol: "menubar.rectangle", text: "Right-click the lantern, or use the lantern in your menu bar, for Settings and more.")
