@@ -1171,3 +1171,24 @@ fn codex_help_is_read_for_the_no_daemon_option() {
     assert!(!help_lists_no_daemon("Error: rerun the same command with --no-daemon\n"));
     assert!(!help_lists_no_daemon(""));
 }
+
+/// When Codex's `--help` can't be read in time, its version decides: 0.160.0 is the first with the
+/// daemon (and `--no-daemon`).
+#[test]
+fn codex_version_decides_the_no_daemon_option_when_help_cannot_be_read() {
+    use crate::launch::{codex_version, version_has_no_daemon};
+    assert_eq!(codex_version("codex-cli 0.160.0\n"), Some((0, 160, 0)));
+    assert_eq!(codex_version("codex-cli 0.161.2\r\n"), Some((0, 161, 2)));
+    assert_eq!(codex_version("codex v1.2.3-alpha.4"), Some((1, 2, 3)));
+    assert_eq!(codex_version("codex-cli 0.160.0+build7"), Some((0, 160, 0)));
+    assert_eq!(codex_version("codex-cli 0.160"), None);
+    assert_eq!(codex_version("codex-cli 1.2.3.4"), None);
+    assert_eq!(codex_version(""), None);
+    assert!(version_has_no_daemon("codex-cli 0.160.0"));
+    assert!(version_has_no_daemon("codex-cli 0.172.1"));
+    assert!(version_has_no_daemon("codex-cli 1.0.0"));
+    assert!(version_has_no_daemon("codex-cli 0.160.0-alpha.2"));
+    assert!(!version_has_no_daemon("codex-cli 0.159.9"));
+    assert!(!version_has_no_daemon("codex-cli 0.98.0"));
+    assert!(!version_has_no_daemon("not a version"));
+}
