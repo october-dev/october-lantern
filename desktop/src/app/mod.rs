@@ -91,6 +91,8 @@ pub struct Lantern {
     session: Option<crate::account::Session>,
     /// Sign-in attempts: a newer one (or signing out) makes older results stale.
     auth: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The sign-in you started (not a restored one), until it finishes.
+    signing_in: Option<u64>,
     /// The system keyring's sign-in store.
     vault: Option<Sender<crate::account::VaultCommand>>,
     /// What the launch asked for (`--new-session`, `--settings`…), once the engine has said which
@@ -138,6 +140,7 @@ impl Lantern {
             dictating: dictation::Dictating::default(),
             session: None,
             auth: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            signing_in: None,
             vault: None,
             on_ready: None,
             tx,
@@ -208,12 +211,17 @@ impl Lantern {
                         Err(error) => format!("not signed in ({error})"),
                     }
                 );
+                // Only the first result of a sign-in you started; refreshes and restores are quiet.
+                let welcome = self.signing_in.take_if(|started| *started == generation).is_some();
                 match result {
                     Ok(session) => {
                         let plan = session.plan["plan"].as_str().or(session.plan["tier"].as_str()).map(str::to_string);
                         self.model.account.signed_in = Some(crate::model::Account { email: session.email.clone(), plan });
                         self.model.account.error = None;
                         self.session = Some(session);
+                        if welcome {
+                            self.signed_in();
+                        }
                     }
                     Err(error) => {
                         self.session = None;
@@ -224,6 +232,19 @@ impl Lantern {
             }
             _ => {}
         }
+    }
+
+    /// Back from signing in (Swift `signInWatch`): Lantern comes forward where you were (Ask
+    /// Lantern if nothing was open), with your question still in its box, and says who you are.
+    fn signed_in(&mut self) {
+        self.windows.show_pill(true);
+        if self.model.panel.is_none() {
+            self.set_panel(Some(crate::model::PanelMode::Assistant));
+        }
+        self.windows.raise_panel();
+        self.model.compose_focus += 1;
+        let who = self.model.account.signed_in.as_ref().map(|account| account.email.trim()).filter(|email| email.contains('@'));
+        self.show(who.map_or_else(|| "Signed in to October".to_string(), |email| format!("Signed in as {email}")));
     }
 
     /// Restores the October sign-in kept in the system keyring, and keeps it fresh.
@@ -254,11 +275,13 @@ impl Lantern {
         let current = self.auth.clone();
         self.model.account.pending = true;
         self.model.account.error = None;
+        self.signing_in = Some(generation);
         self.account_flow(generation).start(move || work(generation, current));
     }
 
     fn cancel_sign_in(&mut self) {
         self.auth.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.signing_in = None;
         self.model.account.pending = false;
     }
 
@@ -486,5 +509,72 @@ mod carry_over_tests {
         let edited = crate::model::Prefs { message_hotkey: "alt+space".into(), point_ask_hotkey: "none".into(), ..Default::default() };
         let offered = super::offered_shortcuts(edited);
         assert_eq!((offered.message_hotkey.as_str(), offered.point_ask_hotkey.as_str()), ("ctrl+alt+space", "none"));
+    }
+}
+
+#[cfg(test)]
+mod sign_in_tests {
+    use super::{Event, Lantern};
+    use crate::model::PanelMode;
+    use std::sync::atomic::Ordering;
+
+    fn session(email: &str) -> crate::account::Session {
+        crate::account::Session {
+            access: "access".into(),
+            refresh: "refresh".into(),
+            email: email.into(),
+            expires: std::time::Instant::now() + std::time::Duration::from_secs(3600),
+            plan: serde_json::Value::Null,
+        }
+    }
+
+    fn lantern() -> Lantern {
+        let (engine, _) = crate::sidecar::test_sender();
+        Lantern::new(engine, None)
+    }
+
+    #[test]
+    fn signing_in_brings_lantern_back_to_ask_lantern_with_your_question() {
+        let mut lantern = lantern();
+        lantern.inputs.assistant = "Which agent needs me?".into();
+        let generation = lantern.auth.load(Ordering::SeqCst);
+        lantern.signing_in = Some(generation);
+        let focus = lantern.model.compose_focus;
+        lantern.integration(Event::Account { generation, result: Ok(session("me@example.test")) });
+        assert_eq!(lantern.model.panel, Some(PanelMode::Assistant));
+        assert_eq!(lantern.model.toast.as_ref().map(|toast| toast.text.as_str()), Some("Signed in as me@example.test"));
+        assert_eq!(lantern.model.compose_focus, focus + 1, "the Ask box takes focus");
+        assert!(lantern.windows.raising_panel());
+        assert_eq!(lantern.inputs.assistant, "Which agent needs me?");
+        assert!(!lantern.model.account.pending && lantern.model.account.signed_in.is_some());
+        // A refresh of the same sign-in is quiet.
+        lantern.model.toast = None;
+        lantern.integration(Event::Account { generation, result: Ok(session("me@example.test")) });
+        assert!(lantern.model.toast.is_none());
+    }
+
+    #[test]
+    fn signing_in_keeps_the_open_panel_and_names_october_without_an_email() {
+        let mut lantern = lantern();
+        lantern.model.panel = Some(PanelMode::October);
+        let generation = lantern.auth.load(Ordering::SeqCst);
+        lantern.signing_in = Some(generation);
+        lantern.integration(Event::Account { generation, result: Ok(session("October account")) });
+        assert_eq!(lantern.model.panel, Some(PanelMode::October));
+        assert_eq!(lantern.model.toast.as_ref().map(|toast| toast.text.as_str()), Some("Signed in to October"));
+    }
+
+    #[test]
+    fn a_restored_sign_in_or_a_failed_one_stays_quiet() {
+        let mut lantern = lantern();
+        let generation = lantern.auth.load(Ordering::SeqCst);
+        lantern.integration(Event::Account { generation, result: Ok(session("me@example.test")) });
+        assert!(lantern.model.panel.is_none() && lantern.model.toast.is_none() && !lantern.windows.raising_panel());
+        let mut lantern = self::lantern();
+        let generation = lantern.auth.load(Ordering::SeqCst);
+        lantern.signing_in = Some(generation);
+        lantern.integration(Event::Account { generation, result: Err("Access denied Go back to Lantern and try again.".into()) });
+        assert!(lantern.model.panel.is_none() && lantern.model.toast.is_none());
+        assert!(lantern.signing_in.is_none());
     }
 }

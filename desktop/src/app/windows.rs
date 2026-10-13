@@ -43,6 +43,8 @@ pub struct Windows {
     panel_height: f32,
     panel_opened: Option<Instant>,
     panel_focused: bool,
+    /// Bring the panel to the front on its next frame (back from signing in in the browser).
+    raise_panel: bool,
     /// A dialog Lantern opened (folder picker, capture permission) is up: losing focus to it
     /// doesn't close the panel.
     pub native_dialog: bool,
@@ -85,6 +87,14 @@ impl Windows {
     }
     pub fn show_pill(&mut self, visible: bool) {
         self.hidden = !visible;
+    }
+    /// Brings the panel (open, or about to open) to the front.
+    pub fn raise_panel(&mut self) {
+        self.raise_panel = true;
+    }
+    #[cfg(test)]
+    pub fn raising_panel(&self) -> bool {
+        self.raise_panel
     }
     /// The pill's window, in points, once placed.
     pub fn pill_rect(&self) -> Option<Rect> {
@@ -398,8 +408,12 @@ impl Lantern {
         let mut measured = None;
         let mut focused = None;
         let cleared = self.windows.cleared();
+        let raise = std::mem::take(&mut self.windows.raise_panel);
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-panel"), builder, |ui, _class| {
             ctx_commands(ui.ctx(), frame);
+            if raise {
+                ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
+            }
             if cleared {
                 return; // a screen capture is waiting for Lantern's windows to clear
             }

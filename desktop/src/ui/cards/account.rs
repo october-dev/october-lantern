@@ -7,6 +7,12 @@ use super::super::{
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx) {
+    render_with(ui, cx, true);
+}
+
+/// `show_header` off where the context already says why (Ask Lantern's sign-in): just the
+/// buttons. Signed in, the header (with Sign Out) always shows.
+pub fn render_with(ui: &mut Ui, cx: &mut Ctx, show_header: bool) {
     let signed_in = cx.model.account.signed_in.is_some();
     if signed_in {
         cx.view.account_password.clear();
@@ -20,32 +26,9 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 10.0;
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 20.0), Sense::hover());
-                let glyph = Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0));
-                c::paint_icon(ui.painter(), glyph, Icon::AccountCircle, if signed_in { t::GREEN } else { t::MUTED });
-                if signed_in {
-                    let badge = Rect::from_center_size(glyph.right_bottom() - egui::vec2(1.0, 1.0), egui::Vec2::splat(8.0));
-                    ui.painter().circle_filled(badge.center(), 4.5, t::GREEN);
-                    c::paint_icon(ui.painter(), badge.shrink(1.5), Icon::Check, t::black(0.85));
-                }
-                let action_width = if signed_in {
-                    ui.painter().layout_no_wrap("Sign Out".into(), t::font(12.0, Weight::Semibold), t::INK).size().x + 24.0 + 12.0
-                } else {
-                    0.0
-                };
-                let width = ui.available_width() - action_width;
-                ui.allocate_ui_with_layout(egui::vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-                    ui.set_width(width);
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    c::label(ui, if signed_in { "Connected to October" } else { "Connect to October" }, 13.0, Weight::Semibold, t::INK);
-                    c::label(ui, detail(cx), 11.5, Weight::Regular, t::MUTED);
-                });
-                if signed_in && c::secondary_button(ui, "Sign Out").clicked() {
-                    cx.emit(UiAction::SignOut);
-                }
-            });
+            if show_header || signed_in {
+                header(ui, cx, signed_in);
+            }
             if !signed_in {
                 if cx.model.account.pending && !cx.view.account_use_email {
                     ui.horizontal(|ui| {
@@ -106,6 +89,36 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                 }
             }
         });
+}
+
+/// The icon, "Connect to October" (or who's signed in) and Sign Out.
+fn header(ui: &mut Ui, cx: &mut Ctx, signed_in: bool) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 20.0), Sense::hover());
+        let glyph = Rect::from_center_size(rect.center(), egui::Vec2::splat(16.0));
+        c::paint_icon(ui.painter(), glyph, Icon::AccountCircle, if signed_in { t::GREEN } else { t::MUTED });
+        if signed_in {
+            let badge = Rect::from_center_size(glyph.right_bottom() - egui::vec2(1.0, 1.0), egui::Vec2::splat(8.0));
+            ui.painter().circle_filled(badge.center(), 4.5, t::GREEN);
+            c::paint_icon(ui.painter(), badge.shrink(1.5), Icon::Check, t::black(0.85));
+        }
+        let action_width = if signed_in {
+            ui.painter().layout_no_wrap("Sign Out".into(), t::font(12.0, Weight::Semibold), t::INK).size().x + 24.0 + 12.0
+        } else {
+            0.0
+        };
+        let width = ui.available_width() - action_width;
+        ui.allocate_ui_with_layout(egui::vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(width);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            c::label(ui, if signed_in { "Connected to October" } else { "Connect to October" }, 13.0, Weight::Semibold, t::INK);
+            c::label(ui, detail(cx), 11.5, Weight::Regular, t::MUTED);
+        });
+        if signed_in && c::secondary_button(ui, "Sign Out").clicked() {
+            cx.emit(UiAction::SignOut);
+        }
+    });
 }
 
 fn detail(cx: &Ctx) -> String {
