@@ -1,6 +1,7 @@
 {
   "surface": "pointAsk", "nowMs": 1790000000000,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "account": {"signed_in": {"email": "me@example.com"}},
     "agents": [{"id": "claude:1:1", "kind": "claude", "handle": "claude-26", "state": "waiting"}],
     "point_ask": {"phase": "card", "recipient": "claude:1:1", "sending": true, "screenshot": {"state": "ready", "path": "macos/Resources/october/hero-palace.jpg"}, "context": {"name": "October"}}

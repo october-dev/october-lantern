@@ -1,6 +1,7 @@
 {
   "surface": "panel", "maxHeight": 1032, "nowMs": 1790000000000, "home": "/home/me", "reduceMotion": true,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "panel": "assistant", "engine": {"state": "ready"}, "account": {"signed_in": {"email": "you@example.com", "plan": "pro"}},
     "assistant": {"turns": [
       {"id": 1, "question": "Find my passport scan.", "answer": "I'll ask an agent to find it in your documents and downloads.", "started": "Started October Harness in me"},

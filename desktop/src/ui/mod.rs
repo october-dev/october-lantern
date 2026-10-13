@@ -255,7 +255,7 @@ pub fn render_panel(ui: &mut egui::Ui, cx: &mut Ctx, max_height: f32) -> f32 {
             UiAction::SetPanel(None)
         });
     }
-    let tint = components::material_tint(0.5, cx.model.caps.backdrop_blur);
+    let tint = components::material_tint(0.5, cx.model.caps.dense_glass);
     surface(ui, theme::PANEL_WIDTH, max_height, theme::PANEL_RADIUS as f32, tint, |ui| {
         feed::engine_banner(ui, cx);
         match cx.model.panel {

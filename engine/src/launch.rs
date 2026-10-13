@@ -355,6 +355,7 @@ pub(crate) fn agent_argv(
         None => crate::platform::find_on_path(name).with_context(|| format!("{name} isn't on PATH"))?,
     };
     let ext = found.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let executable = found.clone();
     let (program, mut args) = match ext.as_str() {
         "exe" | "com" => (found, Vec::new()),
         "cmd" | "bat" => {
@@ -376,8 +377,13 @@ pub(crate) fn agent_argv(
         }
         _ => bail!("Lantern can't start {}", found.display()),
     };
+    // Asked before the Bus's arguments are added: whether Codex takes it depends only on Codex.
+    let no_daemon = kind == Kind::Codex && codex_has_no_daemon(&executable, &program, &args);
     if let Some(b) = bus {
         args.extend(b.args.iter().cloned());
+    }
+    if no_daemon {
+        args.push("--no-daemon".into());
     }
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         args.extend([flag.to_string(), m.to_string()]);
@@ -410,6 +416,31 @@ pub(crate) fn agent_argv(
         }
         _ => Ok((program, args)),
     }
+}
+
+/// Codex runs its TUI through a shared background app-server ("daemon") by default since 0.16x.
+/// On Windows that daemon's own install can be missing ("daemon executable not found at
+/// ~\.codex\packages\app-server-daemon\current\bin\codex.exe"), and then every session exits at
+/// once. So Lantern's Codex sessions there run on their own (`--no-daemon`) when that Codex has
+/// the flag; its `--help` is read once per Codex executable.
+#[cfg(windows)]
+fn codex_has_no_daemon(found: &Path, program: &Path, args: &[String]) -> bool {
+    static KNOWN: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, bool>>> = std::sync::Mutex::new(None);
+    if let Some(known) = KNOWN.lock().unwrap().as_ref().and_then(|known| known.get(found).copied()) {
+        return known;
+    }
+    let help = crate::run::output(std::process::Command::new(program).args(args).arg("--help"), std::time::Duration::from_secs(5))
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let has = help_lists_no_daemon(&help);
+    KNOWN.lock().unwrap().get_or_insert_with(Default::default).insert(found.to_path_buf(), has);
+    has
+}
+
+/// Whether `codex --help` offers `--no-daemon` (as an option, not just in prose).
+#[cfg(any(windows, test))]
+pub(crate) fn help_lists_no_daemon(help: &str) -> bool {
+    help.lines().any(|line| line.trim_start().split([' ', ',', '\t']).next() == Some("--no-daemon"))
 }
 
 /// One of Lantern's own sessions (pty.rs), shown in a terminal window or left in the background.

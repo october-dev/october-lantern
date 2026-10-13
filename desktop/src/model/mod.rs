@@ -26,9 +26,9 @@ impl AgentKind {
     pub const CLAUDE: &str = "claude";
     pub const CODEX: &str = "codex";
     /// Every agent Lantern supports, in the order New Session lists them.
-    pub const SUPPORTED: [&str; 17] = [
+    pub const SUPPORTED: [&str; 18] = [
         "claude", "codex", "gemini", "opencode", "pi", "october", "grok", "cursor", "copilot", "qwen", "goose", "aider", "amp", "kimi",
-        "droid", "crush", "auggie",
+        "droid", "crush", "auggie", "muse",
     ];
     pub fn new(kind: &str) -> Self {
         Self(kind.to_string())
@@ -54,12 +54,13 @@ impl AgentKind {
             "droid" => "Droid",
             "crush" => "Crush",
             "auggie" => "Auggie",
+            "muse" => "Muse",
             "october" => "October",
             other => return capitalized(other),
         }
         .to_string()
     }
-    /// Where to get an agent that isn't installed.
+    /// Where to get an agent that isn't installed (none for Muse, which is Meta-internal).
     pub fn website(&self) -> Option<&'static str> {
         Some(match self.0.as_str() {
             "claude" => "https://code.claude.com/docs",
@@ -695,6 +696,9 @@ pub struct Caps {
     /// The edge pill (Linux: needs an X server).
     pub edge_pill: bool,
     pub backdrop_blur: bool,
+    /// Glass is filled denser than the Mac's so a sharp wallpaper doesn't show through: GNOME,
+    /// which has no blur. Windows uses the Mac's tint.
+    pub dense_glass: bool,
     /// The Mac's 6pt hover halo around the pill.
     pub hover_halo: bool,
     /// Point & Ask can pick a window under the pointer.

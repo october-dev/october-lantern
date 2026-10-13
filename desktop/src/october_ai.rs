@@ -110,22 +110,47 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(90))).http_status_as_error(false).build().into()
 }
 
+/// Lantern's endpoint refuses a request with any key it doesn't know (`parseAskRequest` on
+/// October): `client` is exactly `{app, version}`, and `history` is at most 10 messages, each a
+/// non-empty text of at most 8000 characters. The Mac sends 20 messages, which the server
+/// refuses after five questions; here the oldest whole turns are left out instead. Its lengths
+/// are JavaScript's (UTF-16 code units), so an emoji counts twice.
+const HISTORY_MESSAGES: usize = 10;
+const HISTORY_UNITS: usize = 8000;
+const QUESTION_UNITS: usize = 4000;
+const CONTEXT_UNITS: usize = 6000;
+
+/// The longest start of `text` that is at most `units` UTF-16 code units, never splitting a
+/// character.
+fn utf16_prefix(text: &str, units: usize) -> &str {
+    let mut used = 0;
+    for (at, c) in text.char_indices() {
+        used += c.len_utf16();
+        if used > units {
+            return &text[..at];
+        }
+    }
+    text
+}
+
 /// The JSON for Lantern's endpoint.
 pub fn ask_body(request: &Request) -> Value {
-    let history: Vec<Value> = request
-        .turns
+    let turns: Vec<_> =
+        request.turns.iter().filter(|(question, answer)| !question.trim().is_empty() && !answer.trim().is_empty()).collect();
+    let content = |text: &str| utf16_prefix(text, HISTORY_UNITS).to_string();
+    let history: Vec<Value> = turns[turns.len().saturating_sub(HISTORY_MESSAGES / 2)..]
         .iter()
-        .flat_map(|(question, answer)| [json!({"role": "user", "content": question}), json!({"role": "assistant", "content": answer})])
+        .flat_map(|(question, answer)| {
+            [json!({"role": "user", "content": content(question)}), json!({"role": "assistant", "content": content(answer)})]
+        })
         .collect();
-    let history = history[history.len().saturating_sub(20)..].to_vec();
     let mut body = json!({
-        "question": request.question.chars().take(4000).collect::<String>(),
+        "question": utf16_prefix(&request.question, QUESTION_UNITS),
         "history": history,
-        "client": {"app": "lantern", "version": env!("CARGO_PKG_VERSION"), "platform": match request.platform {
-            Platform::Windows => "windows", Platform::Linux => "linux" }},
+        "client": {"app": "lantern", "version": env!("CARGO_PKG_VERSION")},
     });
     if !request.context.is_empty() {
-        body["context"] = request.context.chars().take(6000).collect::<String>().into();
+        body["context"] = utf16_prefix(&request.context, CONTEXT_UNITS).into();
     }
     if let Some(mode) = &request.mode {
         body["mode"] = mode.clone().into();
@@ -414,23 +439,59 @@ mod tests {
     }
 
     #[test]
-    fn ask_body_keeps_the_last_twenty_history_messages_and_caps_text() {
+    fn ask_body_fits_what_october_accepts() {
+        // October's parseAskRequest: only these keys, client exactly {app, version}, at most 10
+        // history messages of 1..=8000 characters. Anything else is "a question this server can't read".
+        let mut turns: Vec<_> = (0..15).map(|n| (format!("q{n}"), format!("a{n}"))).collect();
+        turns[13].1 = String::new(); // cancelled before any answer
+        turns[14].1 = "y".repeat(9000);
         let request = Request {
-            turns: (0..15).map(|n| (format!("q{n}"), format!("a{n}"))).collect(),
+            turns,
             question: "x".repeat(5000),
             context: "c".repeat(7000),
             mode: Some("chat".into()),
-            platform: Platform::Linux,
-            ..Default::default()
+            platform: Platform::Windows,
+            image: Some(vec![0xFF, 0xD8, 0xFF]),
         };
         let body = ask_body(&request);
-        assert_eq!(body["history"].as_array().unwrap().len(), 20);
-        assert_eq!(body["history"][0]["content"], "q5");
+        let keys = |value: &Value| {
+            let mut keys = value.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            keys
+        };
+        assert_eq!(keys(&body), ["client", "context", "history", "image", "mode", "question"]);
+        assert_eq!(keys(&body["client"]), ["app", "version"]);
+        let history = body["history"].as_array().unwrap();
+        let contents: Vec<_> = history.iter().map(|m| m["content"].as_str().unwrap()).collect();
+        assert_eq!(history.len(), 10);
+        assert_eq!(contents[..8], ["q9", "a9", "q10", "a10", "q11", "a11", "q12", "a12"]);
+        assert_eq!((contents[8], contents[9].chars().count()), ("q14", 8000));
+        assert!(history.iter().all(|m| keys(m) == ["content", "role"]));
         assert_eq!(body["question"].as_str().unwrap().len(), 4000);
         assert_eq!(body["context"].as_str().unwrap().len(), 6000);
         assert_eq!(body["mode"], "chat");
-        assert_eq!(body["client"]["platform"], "linux");
-        assert!(body.get("image").is_none());
+        let point = ask_body(&Request { question: "what's this?".into(), ..Default::default() });
+        assert_eq!(keys(&point), ["client", "history", "question"]);
+    }
+
+    #[test]
+    fn text_limits_count_like_javascript() {
+        let units = |text: &str| text.encode_utf16().count();
+        // "😀" is two UTF-16 units: one that would straddle the limit is left out whole.
+        assert_eq!(utf16_prefix("ab😀", 3), "ab");
+        assert_eq!(utf16_prefix("ab😀", 4), "ab😀");
+        assert_eq!(utf16_prefix("é", 1), "é");
+        let emoji = "😀".repeat(5000);
+        let request = Request {
+            turns: vec![("q".into(), emoji.clone())],
+            question: emoji.clone(),
+            context: format!("x{emoji}"),
+            ..Default::default()
+        };
+        let body = ask_body(&request);
+        assert_eq!(units(body["question"].as_str().unwrap()), 4000);
+        assert_eq!(units(body["context"].as_str().unwrap()), 5999);
+        assert_eq!(units(body["history"][1]["content"].as_str().unwrap()), 8000);
     }
 
     #[test]

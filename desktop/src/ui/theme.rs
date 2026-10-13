@@ -1,6 +1,7 @@
 //! Tokens transcribed from `Components.swift`, not the old desktop theme.
-//! Typography uses bundled OFL fonts (see fonts/README.md). They deliberately do not depend on
-//! the host font collection. SF's proprietary outlines/metrics are not claimed to be reproduced.
+//! Typography uses bundled OFL fonts (see fonts/README.md), with locally installed Segoe UI
+//! Variable preferred by the Windows app. Fixtures always use the bundled set. SF's proprietary
+//! outlines/metrics are not claimed to be reproduced.
 //! Inter 4.1: rsms/inter v4.1 release, SIL OFL 1.1 (`fonts/LICENSE.txt`).
 //! Nunito Bold: google/fonts commit 8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5,
 //! weight 700 instantiation, SIL OFL 1.1 (`fonts/Nunito-OFL.txt`).
@@ -75,7 +76,22 @@ pub fn state_label(state: AgentState) -> &'static str {
 }
 
 /// Call once when creating an egui context, before measuring any surface.
+/// Deterministic bundled fonts for fixtures and tests.
 pub fn install(ctx: &egui::Context) {
+    install_with(ctx, None);
+}
+
+/// Prefer the Windows UI face when available; no system font is copied or redistributed.
+pub fn install_native(ctx: &egui::Context) {
+    #[cfg(windows)]
+    let system_font =
+        std::env::var_os("WINDIR").and_then(|root| std::fs::read(std::path::PathBuf::from(root).join("Fonts").join("SegUIVar.ttf")).ok());
+    #[cfg(not(windows))]
+    let system_font = None;
+    install_with(ctx, system_font);
+}
+
+fn install_with(ctx: &egui::Context, system_font: Option<Vec<u8>>) {
     let mut fonts = FontDefinitions::empty();
     for (name, bytes) in [
         ("Inter Regular", include_bytes!("fonts/Inter-Regular.ttf").as_slice()),
@@ -91,6 +107,23 @@ pub fn install(ctx: &egui::Context) {
     }
     fonts.families.insert(FontFamily::Proportional, vec!["Inter Regular".into()]);
     fonts.families.insert(FontFamily::Monospace, vec!["JetBrains Mono".into(), "Inter Regular".into()]);
+    if let Some(bytes) = system_font {
+        let face = FontData::from_owned(bytes);
+        // Reject invalid/static files rather than silently using Regular for every weight.
+        let axes = face.variation_axes();
+        if axes.iter().any(|axis| axis.tag.to_be_bytes() == *b"wght" && axis.range.min <= 400.0 && axis.range.max >= 700.0) {
+            for (alias, weight) in [("Inter Regular", 400.0), ("Inter Medium", 500.0), ("Inter Semibold", 600.0), ("Inter Bold", 700.0)] {
+                let name = format!("Segoe UI Variable {weight}");
+                let mut data = face.clone();
+                data.tweak.coords = egui::epaint::text::VariationCoords::new([(b"wght", weight), (b"opsz", 12.0)]);
+                fonts.font_data.insert(name.clone(), data.into());
+                fonts.families.get_mut(&FontFamily::Name(alias.into())).unwrap().insert(0, name.clone());
+                if weight == 400.0 {
+                    fonts.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, name);
+                }
+            }
+        }
+    }
     ctx.set_fonts(fonts);
     let mut style = egui::Style { visuals: egui::Visuals::dark(), ..Default::default() };
     style.visuals.override_text_color = Some(INK);
@@ -127,6 +160,26 @@ pub fn install(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_system_fonts_keep_every_bundled_family() {
+        let definitions = |bytes| {
+            let ctx = egui::Context::default();
+            install_with(&ctx, bytes);
+            let mut fonts = None;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                fonts = Some(ui.fonts(|view| view.definitions().clone()));
+            });
+            output.textures_delta.clear();
+            fonts.unwrap()
+        };
+        let bundled = definitions(None);
+        for bytes in [b"invalid font".to_vec(), include_bytes!("fonts/Inter-Regular.ttf").to_vec()] {
+            let fallback = definitions(Some(bytes));
+            assert_eq!(fallback.families, bundled.families);
+            assert_eq!(fallback.font_data, bundled.font_data);
+        }
+    }
 
     #[test]
     fn swift_colors_round_at_the_srgba_boundary() {

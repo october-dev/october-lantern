@@ -1,6 +1,7 @@
 {
   "surface": "pointAsk", "nowMs": 1790000000000,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "account": {"signed_in": {"email": "me@example.com", "plan": "Pro"}},
     "agents": [{"id": "claude:1:1", "kind": "claude", "handle": "claude-26", "state": "waiting", "canReply": true}],
     "point_ask": {

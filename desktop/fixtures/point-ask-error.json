@@ -1,6 +1,7 @@
 {
   "surface": "pointAsk", "nowMs": 1790000000000,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "account": {"signed_in": {"email": "me@example.com"}},
     "point_ask": {"phase": "card", "screenshot": {"state": "failed", "message": "The selected display is no longer available."}, "problem": "Couldn't take the screenshot: the selected display is no longer available.", "turns": [{"question": "What is this?", "answer": "Couldn't reach October. Check your connection and try again.", "failed": true}]}
   }

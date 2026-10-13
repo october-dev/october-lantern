@@ -31,7 +31,7 @@ impl Assets {
         }
         harness!(
             "claude", "codex", "gemini", "opencode", "pi", "october", "grok", "cursor", "copilot", "qwen", "goose", "aider", "amp", "kimi",
-            "droid", "crush", "auggie"
+            "droid", "crush", "auggie", "muse"
         );
         let logo_image = decode("logo", include_bytes!("../../../logo.png"));
         let logo = upload(ctx, "logo", &logo_image);

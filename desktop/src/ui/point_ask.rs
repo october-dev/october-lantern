@@ -41,7 +41,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) -> f32 {
     // NOT glassSurface's .35 black overlay. Flatten those tint layers for our renderer:
     // alpha = .88 + outer_tint * .12; premultiplied gray = .08 * .88 = .0704.
     // This deterministic tint is not a substitute for native live backdrop blur.
-    let tint = c::material_tint(0.62, cx.model.caps.backdrop_blur);
+    let tint = c::material_tint(0.62, cx.model.caps.dense_glass);
     let fill = Color32::from_rgba_premultiplied(18, 18, 18, ((0.88 + tint * 0.12) * 255.0).round() as u8);
     ui.painter().set(background, c::rimmed_shape(rect, t::POINT_RADIUS as f32, fill));
     height

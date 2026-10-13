@@ -1,6 +1,7 @@
 {
   "surface": "panel", "maxHeight": 1032, "nowMs": 1790000000000, "home": "/home/me", "reduceMotion": true,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "panel": "newSession", "engine": {"state": "ready"},
     "new_session": {
       "installed": ["october", "claude", "codex"], "in_lantern_available": true,

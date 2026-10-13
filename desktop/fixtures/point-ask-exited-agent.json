@@ -1,6 +1,7 @@
 {
   "surface": "pointAsk", "nowMs": 1790000000000,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "agents": [{"id": "claude:1:1", "kind": "claude", "handle": "claude-26", "state": "waiting", "canReply": true}],
     "point_ask": {"phase": "card", "recipient": "gone", "screenshot": {"state": "ready", "path": "macos/Resources/october/hero-palace.jpg"}, "context": {"name": "October"}, "turns": [{"question": "What should I change?", "answer": "Keep the current layout and improve the contrast."}]}
   },

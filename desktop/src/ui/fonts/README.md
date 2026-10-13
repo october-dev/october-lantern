@@ -1,7 +1,6 @@
 # Bundled typography
 
-SF Pro / SF Rounded / SF Mono are not redistributed. Their substitutes are fixed for every OS and
-fixture: Inter 4.1 (400/500/600/700) for UI, Nunito Bold (700) for explicitly rounded badges, and
+SF Pro / SF Rounded / SF Mono are not redistributed. The bundled substitutes used by Linux and all fixtures are Inter 4.1 (400/500/600/700) for UI, Nunito Bold (700) for explicitly rounded badges, and
 JetBrains Mono 2.304 Regular for code and Bold for pairing codes. Font sizes remain the Swift logical point sizes. Outlines and
 metrics differ from SF; this is a documented typography constraint, not exact SF parity.
 
@@ -15,4 +14,9 @@ metrics differ from SF; this is a documented typography constraint, not exact SF
   with `JetBrainsMono-OFL.txt` (SIL OFL 1.1).
 
 Use `theme::font(size, Weight)`; `.strong()` alone does not select the bundled semibold outline.
-No system-font discovery is used. Fonts are installed once per egui context before the first layout.
+The Windows app prefers `%WINDIR%/Fonts/SegUIVar.ttf` when installed, with explicit variable
+weights 400/500/600/700 and optical size 12. Missing, invalid or unsupported fonts fall back to
+the bundled faces. Segoe is loaded locally and is never redistributed. Rounded and monospaced
+faces stay bundled. Fixtures and tests call `theme::install` to keep the bundled typography
+deterministic; production calls `theme::install_native`. Fonts are installed once per egui
+context before the first layout.

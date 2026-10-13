@@ -1,6 +1,7 @@
 {
   "surface": "panel", "maxHeight": 1032, "nowMs": 1790000000000, "home": "/home/me", "reduceMotion": true,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "engine": {"state": "ready"}, "panel": "inbox",
     "agents": [{"id": "claude:1:1", "kind": "claude", "handle": "claude-1", "state": "needs_input", "stateSince": 1789999990000, "project": "lantern", "canReply": true, "question": "Allow this command?", "questionKind": "permission", "questionDetail": "cargo test --workspace\ncargo clippy --all-targets -- -D warnings", "promptId": "fixture-prompt-1", "route": {"via": "tmux"}, "lastMessage": "I need permission to run the checks."}],
     "inbox": {"new": ["claude:1:1"]}

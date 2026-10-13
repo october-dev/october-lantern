@@ -1158,3 +1158,16 @@ fn muse_sessions_give_state_question_and_history() {
     assert!(!muse::is_main_lock(root, &root.join("2026/10/12/s1/subagent/x/.session.lock")));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Codex 0.16x lists `--no-daemon` among its options; older ones (and prose that mentions it)
+/// don't count, so Windows only adds the flag to a Codex that takes it.
+#[test]
+fn codex_help_is_read_for_the_no_daemon_option() {
+    use crate::launch::help_lists_no_daemon;
+    let new = "Options:\n      --no-alt-screen\n          Disable alternate screen mode\n\n      --no-daemon\n          Run without the shared background server, even if it is already running\n\n  -h, --help\n";
+    assert!(help_lists_no_daemon(new));
+    assert!(help_lists_no_daemon(&new.replace('\n', "\r\n")), "Windows line endings");
+    assert!(!help_lists_no_daemon("Options:\n      --no-alt-screen\n  -h, --help\n"));
+    assert!(!help_lists_no_daemon("Error: rerun the same command with --no-daemon\n"));
+    assert!(!help_lists_no_daemon(""));
+}

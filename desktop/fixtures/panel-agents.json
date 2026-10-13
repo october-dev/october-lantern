@@ -1,6 +1,7 @@
 {
   "surface": "panel", "maxHeight": 1032, "nowMs": 1790000000000, "home": "/home/me", "reduceMotion": true,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "engine": {"state": "ready"}, "panel": "agents",
     "agents": [
       {"id": "claude:1:1", "kind": "claude", "handle": "claude-1", "state": "needs_input", "cwd": "/home/me/projects/lantern", "title": "Review the launch flow", "route": {"via": "tmux"}, "tmux": {"target": "claude-lantern:0.0"}},

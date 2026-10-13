@@ -1,5 +1,6 @@
 {
   "surface":"panel", "maxHeight":1032, "nowMs":1790000000000, "home":"/home/me", "reduceMotion":true,
   "view":{"account_use_email":true,"account_email":"me@example.com"},
-  "model":{"panel":"october", "engine":{"state":"ready"}, "account":{"error":"Couldn't sign in. Check your email and password, then try again."}, "october":{"status":"notRunning"}}
+  "model":{
+    "caps": {"platform": "linux", "dense_glass": true},"panel":"october", "engine":{"state":"ready"}, "account":{"error":"Couldn't sign in. Check your email and password, then try again."}, "october":{"status":"notRunning"}}
 }

@@ -326,6 +326,7 @@ fn capabilities() -> crate::model::Caps {
         Caps {
             platform: Platform::Linux,
             edge_pill: crate::os::shell::x11_available(),
+            dense_glass: true,
             dictation: true,
             global_hotkeys: true,
             ..Default::default()
@@ -381,7 +382,8 @@ pub fn run(terminal: &str, start: Option<&str>) -> Result<()> {
         crate::os::shell::PILL_TITLE,
         options,
         Box::new(move |cc| {
-            crate::ui::theme::install(&cc.egui_ctx);
+            // Windows: Segoe UI Variable when the system has it (fixtures keep the bundled fonts).
+            crate::ui::theme::install_native(&cc.egui_ctx);
             let mut lantern = Lantern::new(engine, Some(cc.egui_ctx.clone()));
             lantern.on_ready = start;
             lantern.restore_account();

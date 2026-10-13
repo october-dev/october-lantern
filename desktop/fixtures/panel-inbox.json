@@ -1,6 +1,7 @@
 {
   "surface": "panel", "maxHeight": 1032, "nowMs": 1790000000000, "home": "/home/me", "reduceMotion": true,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "engine": {"state": "ready"}, "panel": "inbox",
     "agents": [
       {"id": "claude:24:1", "kind": "claude", "handle": "claude-24", "state": "waiting", "stateSince": 1789997720000, "project": "october-leader", "source": "cmux", "canReply": true, "title": "October-leader universal agent bar", "lastMessage": "When you start a session in Lantern, its chat now opens immediately. The new build is running, so you can try it now.\n\n**What you'll see:**\n- The conversation opens beside the pill.\n- Your prompt is shown while the agent starts.\n- Reply once the conversation is ready, or use Open to see its terminal."},

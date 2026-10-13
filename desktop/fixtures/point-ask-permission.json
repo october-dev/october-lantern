@@ -1,6 +1,7 @@
 {
   "surface": "pointAsk", "nowMs": 1790000000000,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "account": {"signed_in": {"email": "me@example.com"}},
     "point_ask": {"phase": "card", "screenshot": {"state": "permissionNeeded"}, "context": {"name": "Code", "window": "lantern — main.rs"}}
   },

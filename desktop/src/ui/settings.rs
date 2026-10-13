@@ -425,7 +425,7 @@ fn agents(ui: &mut Ui, cx: &mut Ctx) {
     group(ui, Some("Count in Waiting and notify"), |ui| {
         for kind in [
             "claude", "codex", "opencode", "pi", "october", "gemini", "grok", "cursor", "qwen", "goose", "aider", "amp", "copilot", "kimi",
-            "droid", "crush", "auggie",
+            "droid", "crush", "auggie", "muse",
         ] {
             let kind = AgentKind::new(kind);
             if let Some(counts) = setting_switch(ui, &kind.display_name(), cx.model.prefs.counts(&kind), Some((cx.assets, &kind))) {

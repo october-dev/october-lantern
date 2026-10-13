@@ -1,6 +1,7 @@
 {
   "surface": "panel", "maxHeight": 1032, "nowMs": 1790000000000, "home": "/home/me", "reduceMotion": true,
   "model": {
+    "caps": {"platform": "linux", "dense_glass": true},
     "panel": "assistant", "engine": {"state": "ready"}, "account": {"signed_in": {"email": "you@example.com", "plan": "pro"}},
     "assistant": {"asking": true, "turns": [{"id": 1, "question": "Which agents are waiting for me?"}]}
   }

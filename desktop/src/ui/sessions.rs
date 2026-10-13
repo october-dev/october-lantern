@@ -173,8 +173,11 @@ fn agents(ui: &mut Ui, cx: &mut Ctx, selected: Option<&AgentKind>) {
                 cx.emit(UiAction::ChooseSessionAgent { kind: kind.clone() });
             }
         }
-        let others: Vec<_> =
-            AgentKind::SUPPORTED.iter().map(|kind| AgentKind::new(kind)).filter(|kind| !installed.contains(kind)).collect();
+        let others: Vec<_> = AgentKind::SUPPORTED
+            .iter()
+            .map(|kind| AgentKind::new(kind))
+            .filter(|kind| !installed.contains(kind) && kind.website().is_some())
+            .collect();
         if installed.len() > 5 || !others.is_empty() {
             let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 28.0), Sense::click());
             ui.painter().rect_filled(rect, 14.0, t::FAINT);
@@ -597,6 +600,12 @@ fn footer(ui: &mut Ui, cx: &mut Ctx) {
             response
         })
         .inner;
+    let response = if task(cx) && cx.inputs.new_session.prompt.trim().is_empty() && !cx.model.new_session.launching {
+        let app = cx.model.new_session.task_app.as_ref().map_or("this app", |app| app.name.trim());
+        response.on_disabled_hover_text(format!("Type what it should do in {app} first."))
+    } else {
+        response
+    };
     let enter = c::consume_plain_key(ui, egui::Key::Enter);
     if enabled && (response.clicked() || enter) {
         cx.view.session_error = None;
@@ -851,6 +860,51 @@ mod tests {
         assert_eq!(model_matches(&list, "model").len(), 8);
         assert_eq!(model_matches(&list, "friendly 12")[0].id, "provider/MODEL-12");
         assert!(model_matches(&list, "missing").is_empty());
+    }
+
+    #[test]
+    fn empty_task_explains_disabled_start_and_enter_does_not_launch() {
+        use super::super::tests::frame;
+
+        for prompt in ["", " \n "] {
+            let ctx = egui::Context::default();
+            t::install(&ctx);
+            ctx.global_style_mut(|style| {
+                style.interaction.tooltip_delay = 0.0;
+                style.interaction.show_tooltips_only_when_still = false;
+            });
+            let assets = Assets::load(&ctx);
+            let mut model = model();
+            let mut inputs = Inputs::default();
+            let mut view = UiState::default();
+            inputs.new_session.task = true;
+            inputs.new_session.prompt = prompt.into();
+            frame(&ctx, &assets, &model, &mut inputs, &mut view, Vec::new());
+            let (height, _, _) = frame(&ctx, &assets, &model, &mut inputs, &mut view, Vec::new());
+            // Footer button: 34pt high, with 16pt padding beneath it.
+            let hover = egui::Event::PointerMoved(egui::pos2(190.0, height - 16.0 - 17.0));
+            frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![hover.clone()]);
+            let (.., actions, texts) = frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![hover.clone()]);
+            let help = "Type what it should do in DaVinci/Resolve:Editor first.";
+            assert!(texts.iter().any(|text| text == help), "disabled task button should explain the missing prompt: {texts:?}");
+            assert!(actions.is_empty());
+            let enter = egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let (_, actions, _) = frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![enter]);
+            assert!(!actions.iter().any(|action| matches!(action, UiAction::Launch(_))));
+            assert_eq!(inputs.new_session.prompt, prompt);
+
+            model.new_session.launching = true;
+            frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![hover.clone()]);
+            let (_, actions, texts) = frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![hover]);
+            assert!(!texts.iter().any(|text| text == help), "starting a task should not ask for a new prompt");
+            assert!(actions.is_empty());
+        }
     }
 
     #[test]

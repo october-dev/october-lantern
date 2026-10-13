@@ -38,7 +38,7 @@ pub fn help_font() -> egui::FontId {
 pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, out: &mut Vec<UiAction>) -> PillInput {
     let rect = ui.max_rect();
     let painter = ui.painter().clone();
-    paint_glass(&painter, rect, rect.width() / 2.0, material_tint(TINT, model.caps.backdrop_blur));
+    paint_glass(&painter, rect, rect.width() / 2.0, material_tint(TINT, model.caps.dense_glass));
 
     let lantern = Rect::from_min_size(rect.min + vec2(PAD, PAD), vec2(LANTERN, LANTERN));
     let response = ui.interact(lantern, ui.id().with("lantern"), Sense::click_and_drag());
@@ -177,13 +177,13 @@ fn lantern_button(painter: &egui::Painter, rect: Rect, model: &Model, assets: &A
 mod tests {
     use super::*;
 
-    /// The pill's glass fill alpha, with and without the platform's backdrop blur.
-    fn glass_alpha(backdrop_blur: bool) -> u8 {
+    /// The pill's glass fill alpha, with the Mac's tint or the denser no-blur one.
+    fn glass_alpha(dense_glass: bool) -> u8 {
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let assets = Assets::load(&ctx);
         let mut model = Model::default();
-        model.caps.backdrop_blur = backdrop_blur;
+        model.caps.dense_glass = dense_glass;
         let mut output = ctx.run_ui(
             egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(50.0, 50.0))), ..Default::default() },
             |ui| {
@@ -247,10 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn without_backdrop_blur_the_pill_glass_is_denser() {
-        // Swift's 0.45 GlassContainer tint plus glassSurface's 0.35 black: 0.6425 with real blur;
-        // at least 0.85 without it, so a sharp wallpaper doesn't show through.
-        assert_eq!(glass_alpha(true), (0.6425_f32 * 255.0).round() as u8);
-        assert!(glass_alpha(false) >= 216, "{}", glass_alpha(false));
+    fn only_dense_glass_is_denser_than_the_macs() {
+        // Swift's 0.45 GlassContainer tint plus glassSurface's 0.35 black: 0.6425, as on the Mac
+        // (Windows too); at least 0.85 on GNOME, so a sharp wallpaper doesn't show through.
+        assert_eq!(glass_alpha(false), (0.6425_f32 * 255.0).round() as u8);
+        assert!(glass_alpha(true) >= 216, "{}", glass_alpha(true));
     }
 }

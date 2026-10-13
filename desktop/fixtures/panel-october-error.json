@@ -1,4 +1,5 @@
 {
   "surface":"panel", "maxHeight":1032, "nowMs":1790000000000, "home":"/home/me", "reduceMotion":true,
-  "model":{"panel":"october", "engine":{"state":"ready"}, "account":{"error":"Browser sign-in timed out. Try again."}, "october":{"status":"error","message":"The connection was interrupted. Try connecting again."}}
+  "model":{
+    "caps": {"platform": "linux", "dense_glass": true},"panel":"october", "engine":{"state":"ready"}, "account":{"error":"Browser sign-in timed out. Try again."}, "october":{"status":"error","message":"The connection was interrupted. Try connecting again."}}
 }

@@ -131,11 +131,11 @@ pub fn paint_glass(painter: &Painter, rect: Rect, radius: f32, tint: f32) {
     painter.add(glass_shape(rect, radius, tint));
 }
 
-/// Preserve the source tint when native backdrop blur is available. Without it, use a
-/// denser translucent fallback so sharp wallpaper does not overwhelm the content.
+/// Use the source tint except where the platform requests a denser no-blur fallback
+/// (Linux without compositor blur), so sharp wallpaper does not overwhelm the content.
 /// This is an opacity fallback, not an implementation of live backdrop blur.
-pub fn material_tint(tint: f32, backdrop_blur: bool) -> f32 {
-    if backdrop_blur { tint } else { tint.max((0.85 - 0.35) / 0.65) }
+pub fn material_tint(tint: f32, dense_glass: bool) -> f32 {
+    if dense_glass { tint.max((0.85 - 0.35) / 0.65) } else { tint }
 }
 
 /// Reserved-slot version, for surfaces whose measured height is only known after layout.
@@ -526,8 +526,8 @@ mod tests {
     #[test]
     fn material_fallback_reaches_eighty_five_percent_without_lightening_denser_glass() {
         for tint in [0.45, 0.5, 0.62, 0.9, 1.0] {
-            assert_eq!(material_tint(tint, true), tint);
-            let fallback = material_tint(tint, false);
+            assert_eq!(material_tint(tint, false), tint);
+            let fallback = material_tint(tint, true);
             assert!(fallback >= tint);
             assert!(0.35 + 0.65 * fallback >= 0.85 - f32::EPSILON);
             let Shape::Vec(shapes) = glass_shape(Rect::from_min_size(Pos2::ZERO, egui::vec2(50.0, 100.0)), 22.0, fallback) else {
@@ -538,7 +538,7 @@ mod tests {
             };
             assert!(fill.fill.a() >= 216);
         }
-        assert_eq!(material_tint(0.9, false), 0.9);
+        assert_eq!(material_tint(0.9, true), 0.9);
     }
 
     #[test]

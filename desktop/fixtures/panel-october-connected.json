@@ -1,4 +1,5 @@
 {
   "surface":"panel", "maxHeight":1032, "nowMs":1790000000000, "home":"/home/me", "reduceMotion":true,
-  "model":{"panel":"october", "engine":{"state":"ready"}, "account":{"signed_in":{"email":"a.long.email.address@example.com","plan":"pro"}}, "october":{"status":"connected","paired":true,"agentCount":2}}
+  "model":{
+    "caps": {"platform": "linux", "dense_glass": true},"panel":"october", "engine":{"state":"ready"}, "account":{"signed_in":{"email":"a.long.email.address@example.com","plan":"pro"}}, "october":{"status":"connected","paired":true,"agentCount":2}}
 }
