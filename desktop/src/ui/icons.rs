@@ -55,8 +55,6 @@ pub enum Icon {
     Keyboard,
     /// SF `arrow.right.to.line`.
     ArrowToEdge,
-    /// SF `cursorarrow`.
-    Cursor,
     /// SF `menubar.rectangle`.
     MenuBar,
 }
@@ -345,7 +343,6 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.line(&[(11.0, 6.0), (17.0, 12.0), (11.0, 18.0)]);
             p.line(&[(21.0, 4.0), (21.0, 20.0)]);
         }
-        Cursor => p.closed(&[(6.0, 3.0), (6.0, 19.0), (10.0, 15.0), (13.0, 21.5), (15.5, 20.5), (12.5, 14.0), (18.0, 14.0)], false),
         MenuBar => {
             p.rect((2.0, 4.0), (22.0, 20.0), 2.0, false);
             p.rect((2.0, 4.0), (22.0, 8.5), 2.0, true);
@@ -368,7 +365,6 @@ mod tests {
                 Icon::Bolt,
                 Icon::Keyboard,
                 Icon::ArrowToEdge,
-                Icon::Cursor,
                 Icon::MenuBar,
                 Icon::CheckCircle,
                 Icon::Refresh,
