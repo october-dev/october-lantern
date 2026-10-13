@@ -100,17 +100,44 @@ enum OctoberAI {
 
     // MARK: Lantern's endpoint
 
+    /// The server takes at most 10 history messages, each non-empty and at most 8,000 characters:
+    /// the last five whole turns, leaving out any without an answer (one cancelled before it began).
+    static func history(_ turns: [(question: String, answer: String)]) -> [[String: String]] {
+        let whole = turns.filter {
+            !$0.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !$0.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return whole.suffix(5).flatMap {
+            [["role": "user", "content": capped($0.question, 8000)], ["role": "assistant", "content": capped($0.answer, 8000)]]
+        }
+    }
+
+    /// At most `limit` UTF-16 units (how the server counts, as JavaScript's `length`), without
+    /// splitting a character.
+    static func capped(_ text: String, _ limit: Int) -> String {
+        guard text.utf16.count > limit else { return text }
+        var out = ""
+        var used = 0
+        for c in text {
+            let n = String(c).utf16.count
+            if used + n > limit { break }
+            out.append(c)
+            used += n
+        }
+        return out
+    }
+
     static let askURL = URL(string: "https://www.october.dev/api/lantern/ask")!
 
     /// `POST /api/lantern/ask`: October picks the model (by plan) and bills the answer; the answer
     /// streams back as `start`, `delta`… and `done` events.
     private static func ask(_ r: Request, token: String, into continuation: AsyncThrowingStream<Piece, Error>.Continuation) async throws {
         var json: [String: Any] = [
-            "question": String(r.question.prefix(4000)),
-            "history": Array(r.turns.flatMap { [["role": "user", "content": $0.question], ["role": "assistant", "content": $0.answer]] }.suffix(20)),
+            "question": capped(r.question, 4000),
+            "history": history(r.turns),
             "client": ["app": "lantern", "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"],
         ]
-        if !r.context.isEmpty { json["context"] = String(r.context.prefix(6000)) }
+        if !r.context.isEmpty { json["context"] = capped(r.context, 6000) }
         if let mode = r.mode { json["mode"] = mode }
         if let image = r.image { json["image"] = image.base64EncodedString() }
         var req = URLRequest(url: askURL)
