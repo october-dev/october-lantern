@@ -433,7 +433,6 @@ mod tests {
                         Close,
                         Back,
                         ChevronDown,
-                        ChevronRight,
                         ChevronUpDown,
                         Reply,
                         Open,
