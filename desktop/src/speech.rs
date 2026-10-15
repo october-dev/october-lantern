@@ -29,10 +29,11 @@ const RUNTIME_FILES: [&str; 2] = ["whisper-cli.exe", "WHISPER-LICENSE"];
 #[derive(Debug, PartialEq)]
 pub enum Readiness {
     Ready,
-    /// Download what's missing (the model, and on Windows the runtime when `whisper` is
-    /// `None`), then listen.
+    /// Download what's missing (the model when `model` is false, and on Windows the runtime
+    /// when `whisper` is `None`), once the person agrees, then listen.
     SetUp {
         whisper: Option<PathBuf>,
+        model: bool,
     },
     /// No `whisper-cli` to run, and none to download.
     NoRuntime,
@@ -57,7 +58,7 @@ fn readiness_of(whisper: Option<PathBuf>, model: bool, downloadable: bool) -> Re
     match (whisper, model) {
         (Some(_), true) => Readiness::Ready,
         (None, _) if !downloadable => Readiness::NoRuntime,
-        (whisper, _) => Readiness::SetUp { whisper },
+        (whisper, model) => Readiness::SetUp { whisper, model },
     }
 }
 
@@ -66,9 +67,22 @@ pub fn missing_runtime() -> &'static str {
     "Dictation needs whisper.cpp's whisper-cli. Install it with your package manager, or run scripts/setup-dictation.sh from Lantern's source."
 }
 
-/// How much a setup downloads, in MB: the model, and the runtime (about 1 MB) when it's missing.
-pub fn setup_megabytes(runtime: bool) -> u32 {
-    if runtime { 149 } else { 148 }
+/// How much a setup downloads, in MB: the model (148 MB) and the runtime (about 1 MB), when
+/// they're missing.
+pub fn setup_megabytes(model: bool, runtime: bool) -> u32 {
+    u32::from(model) * 148 + u32::from(runtime)
+}
+
+/// The question before a setup downloads anything (`model`, `runtime`: what it would download).
+pub const OFFER_TITLE: &str = "Turn on dictation?";
+
+pub fn offer(model: bool, runtime: bool) -> String {
+    let what = match (model, runtime) {
+        (true, true) => "a speech model once (148 MB, from Hugging Face) and its speech program (1 MB, from Lantern's releases)",
+        (false, true) => "its speech program once (1 MB, from Lantern's releases)",
+        _ => "a speech model once (148 MB, from Hugging Face)",
+    };
+    format!("Lantern turns your voice into text on this computer; your audio never leaves it. It needs to download {what}.")
 }
 
 /// The toast while the setup downloads.
@@ -399,11 +413,14 @@ mod tests {
     fn what_pressing_the_mic_does() {
         let cli = PathBuf::from("whisper-cli");
         assert_eq!(readiness_of(Some(cli.clone()), true, true), Readiness::Ready);
-        assert_eq!(readiness_of(Some(cli.clone()), false, false), Readiness::SetUp { whisper: Some(cli) });
+        assert_eq!(readiness_of(Some(cli.clone()), false, false), Readiness::SetUp { whisper: Some(cli), model: false });
         // Windows downloads a missing runtime; Linux says how to install one.
-        assert_eq!(readiness_of(None, false, true), Readiness::SetUp { whisper: None });
-        assert_eq!(readiness_of(None, true, true), Readiness::SetUp { whisper: None });
+        assert_eq!(readiness_of(None, false, true), Readiness::SetUp { whisper: None, model: false });
+        assert_eq!(readiness_of(None, true, true), Readiness::SetUp { whisper: None, model: true });
         assert_eq!(readiness_of(None, true, false), Readiness::NoRuntime);
+        assert_eq!(setup_megabytes(true, false), 148);
+        assert_eq!(setup_megabytes(true, true), 149);
+        assert_eq!(setup_megabytes(false, true), 1);
         assert!(runtime_asset().starts_with("October-Lantern-whisper-windows-") && runtime_asset().ends_with(".zip"));
     }
 

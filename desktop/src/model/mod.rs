@@ -626,6 +626,15 @@ pub struct Toast {
     pub text: String,
 }
 
+/// Dictation's first use asks before downloading anything: Download or Not now. Shown in the
+/// Point & Ask card when that's where the mic was pressed, otherwise in the panel.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DictationOffer {
+    pub text: String,
+    pub point_ask: bool,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Edge {
@@ -840,6 +849,7 @@ pub struct Model {
     pub harness: Option<HarnessStatus>,
     pub engine: EngineHealth,
     pub toast: Option<Toast>,
+    pub dictation_offer: Option<DictationOffer>,
     /// Bumped to move keyboard focus into the composer or the Ask box.
     pub compose_focus: u64,
     pub dictating: bool,

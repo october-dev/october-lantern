@@ -42,6 +42,10 @@ fn render(
 }
 
 fn text_rect(output: &egui::FullOutput, value: &str) -> Rect {
+    find_text(output, value).unwrap_or_else(|| panic!("missing text: {value}"))
+}
+
+fn find_text(output: &egui::FullOutput, value: &str) -> Option<Rect> {
     fn find(shape: &Shape, value: &str) -> Option<Rect> {
         match shape {
             Shape::Text(text) if text.galley.job.text == value => Some(Rect::from_min_size(text.pos, text.galley.size())),
@@ -49,7 +53,7 @@ fn text_rect(output: &egui::FullOutput, value: &str) -> Rect {
             _ => None,
         }
     }
-    output.shapes.iter().find_map(|shape| find(&shape.shape, value)).unwrap_or_else(|| panic!("missing text: {value}"))
+    output.shapes.iter().find_map(|shape| find(&shape.shape, value))
 }
 
 fn pointer(pos: Pos2, pressed: bool) -> Vec<Event> {
@@ -195,4 +199,25 @@ fn permission_buttons_explain_what_they_press() {
         assert!(actions.is_empty());
         text_rect(&output, help);
     }
+}
+
+#[test]
+fn the_dictation_question_answers_by_button_or_escape_in_the_panel() {
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let assets = Assets::load(&ctx);
+    let mut f = fixture("chat");
+    f.model.dictation_offer = Some(crate::model::DictationOffer { text: crate::speech::offer(true, true), point_ask: false });
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    text_rect(&output, "Turn on dictation?");
+    let download = text_rect(&output, "Download").center();
+    let not_now = text_rect(&output, "Not now").center();
+    assert_eq!(click(&ctx, &assets, &mut f, download), vec![UiAction::AnswerDictationOffer { download: true }]);
+    assert_eq!(click(&ctx, &assets, &mut f, not_now), vec![UiAction::AnswerDictationOffer { download: false }]);
+    let (_, actions) = render(&ctx, &assets, &mut f, vec![key(egui::Key::Escape, true)]);
+    assert_eq!(actions, vec![UiAction::AnswerDictationOffer { download: false }], "Esc is Not now, not Back");
+    // Point & Ask's question isn't shown in the panel.
+    f.model.dictation_offer.as_mut().unwrap().point_ask = true;
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    assert!(find_text(&output, "Turn on dictation?").is_none());
 }
