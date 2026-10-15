@@ -199,6 +199,7 @@ impl Lantern {
             Event::Uninstalled(failures) => self.uninstalled(failures),
             Event::NotificationsAllowed(allowed) => self.model.system.notifications_allowed = allowed,
             Event::Transcript { owner, generation, result } => self.transcript(&owner, generation, result),
+            Event::SpeechSetup(step) => self.speech_setup(step),
             Event::Update(result) => self.update_result(result),
             Event::Assistant { generation, turn, piece } => self.assistant_piece(generation, turn, piece),
             Event::AssistantDone { generation, turn, error } => self.assistant_done(generation, turn, error),

@@ -34,6 +34,8 @@ pub enum Event {
         generation: u64,
         result: Result<String, String>,
     },
+    /// Dictation's first-use setup (the speech model's download): how far it's got, then done.
+    SpeechSetup(crate::speech::Setup),
     Activate(String),
     Quit,
     Tray(bool),
@@ -182,6 +184,45 @@ impl Hotkey {
     }
 }
 
+/// Why the microphone couldn't be opened (Windows), and what to say about it.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MicrophoneProblem {
+    /// No recording device at all.
+    Missing,
+    /// A device is there but Windows wouldn't open it: almost always the privacy setting that
+    /// lets desktop apps use the microphone.
+    Blocked,
+}
+
+impl MicrophoneProblem {
+    /// After opening the microphone failed, with this many recording devices.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn after_failed_open(devices: u32) -> Self {
+        if devices == 0 { Self::Missing } else { Self::Blocked }
+    }
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Missing => "No microphone found. Connect one and try again.",
+            Self::Blocked => {
+                "Lantern can't use the microphone. In Settings › Privacy & security › Microphone, turn on \"Let desktop apps access your microphone\"."
+            }
+        }
+    }
+    /// The settings page that fixes it, opened once each time it happens.
+    pub fn settings_page(self) -> Option<&'static str> {
+        (self == Self::Blocked).then_some("ms-settings:privacy-microphone")
+    }
+}
+
+impl std::fmt::Display for MicrophoneProblem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for MicrophoneProblem {}
+
 pub fn task<T: Send + 'static>(
     tx: Sender<Event>,
     work: impl FnOnce() -> Result<T> + Send + 'static,
@@ -285,6 +326,19 @@ mod tests {
         make(&packaged, true);
         assert!(!installed_bundle(&packaged), "a package built inside the repo");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_microphone_that_wont_open_is_missing_or_blocked() {
+        let missing = MicrophoneProblem::after_failed_open(0);
+        assert_eq!(missing.message(), "No microphone found. Connect one and try again.");
+        assert_eq!(missing.settings_page(), None);
+        let blocked = MicrophoneProblem::after_failed_open(2);
+        assert!(blocked.message().contains("Let desktop apps access your microphone"));
+        assert_eq!(blocked.settings_page(), Some("ms-settings:privacy-microphone"));
+        // It travels as an error and is recognised as one.
+        let error: anyhow::Error = blocked.into();
+        assert_eq!(error.downcast_ref::<MicrophoneProblem>(), Some(&MicrophoneProblem::Blocked));
     }
 
     #[test]

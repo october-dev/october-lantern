@@ -1,16 +1,28 @@
 //! Dictation (Swift `Dictation`): speak into the draft you started it in. The Mac uses Apple's
 //! on-device speech; here the audio is recorded and transcribed on this computer by whisper.cpp
-//! (set up with scripts/setup-dictation.*). Each dictation belongs to one draft: moving to another
-//! conversation ends it, and a late transcript only ever lands in the draft it was started for.
+//! (`crate::speech`: installed with Lantern on Windows, or downloaded with its model on first use). Each
+//! dictation belongs to one draft: moving to another conversation ends it, and a late transcript
+//! only ever lands in the draft it was started for.
 use super::Lantern;
 use crate::os::Event;
+use crate::speech::{Readiness, Setup};
 use crate::ui::DictationOwner;
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub(super) struct Dictating {
     recording: Option<(crate::os::Recording, DictationOwner)>,
     /// The dictation whose transcript counts; cancelling makes older ones stale.
     generation: u64,
+    /// The first-use setup under way (one at a time), and the draft to listen for when it's done.
+    setup: Option<SettingUp>,
+}
+
+struct SettingUp {
+    owner: Option<DictationOwner>,
+    percent: u8,
+    /// What it downloads, for the toast.
+    megabytes: u32,
 }
 
 fn encode(owner: &DictationOwner) -> String {
@@ -33,7 +45,7 @@ impl Lantern {
     pub(super) fn toggle_dictation(&mut self, owner: DictationOwner) {
         if let Some((recording, owner)) = self.dictating.recording.take() {
             // Stop: transcribe what was said, on this computer.
-            let settings = crate::settings::Settings::load().unwrap_or_default();
+            let settings = crate::speech::resolved(crate::settings::Settings::load().unwrap_or_default());
             let generation = self.dictating.generation;
             let owner = encode(&owner);
             crate::os::task(
@@ -43,11 +55,21 @@ impl Lantern {
             );
             return;
         }
-        let settings = crate::settings::Settings::load().unwrap_or_default();
-        if settings.whisper_model.is_empty() || !std::path::Path::new(&settings.whisper_model).is_file() {
-            let setup = if cfg!(windows) { "scripts/setup-dictation.ps1" } else { "scripts/setup-dictation.sh" };
-            return self.show(format!("Dictation runs on this computer: set it up once with {setup}."));
+        if let Some(setup) = &mut self.dictating.setup {
+            // Already setting up: say how far it's got, and listen for this draft once it's done.
+            setup.owner = Some(owner);
+            let percent = setup.percent;
+            return self.show_progress(percent);
         }
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        match crate::speech::readiness(&settings) {
+            Readiness::Ready => self.listen(owner),
+            Readiness::SetUp { whisper } => self.set_up_dictation(owner, whisper),
+            Readiness::NoRuntime => self.show(crate::speech::missing_runtime()),
+        }
+    }
+
+    fn listen(&mut self, owner: DictationOwner) {
         match crate::os::Recording::start() {
             Ok(recording) => {
                 self.dictating.generation += 1;
@@ -55,12 +77,73 @@ impl Lantern {
                 self.model.point_ask.listening = owner == DictationOwner::PointAsk;
                 self.dictating.recording = Some((recording, owner));
             }
-            Err(error) => self.show(format!("Couldn't start dictation: {error:#}")),
+            Err(error) => match error.downcast_ref::<crate::os::MicrophoneProblem>() {
+                Some(problem) => {
+                    self.show(problem.message());
+                    if let Some(page) = problem.settings_page() {
+                        let _ = crate::os::open(page);
+                    }
+                }
+                None => self.show(format!("Couldn't start dictation: {error:#}")),
+            },
+        }
+    }
+
+    /// First use: download the speech model (and on Windows a missing runtime) in the background,
+    /// then listen.
+    fn set_up_dictation(&mut self, owner: DictationOwner, whisper: Option<std::path::PathBuf>) {
+        let megabytes = crate::speech::setup_megabytes(whisper.is_none());
+        self.dictating.setup = Some(SettingUp { owner: Some(owner), percent: 0, megabytes });
+        self.show_progress(0);
+        if cfg!(test) {
+            return;
+        }
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let progress = tx.clone();
+            let result = crate::speech::set_up(whisper, |percent| {
+                let _ = progress.send(Event::SpeechSetup(Setup::Progress(percent)));
+            });
+            let _ = tx.send(Event::SpeechSetup(Setup::Done(result.map_err(|error| format!("{error:#}")))));
+        });
+    }
+
+    /// The setup's progress stays up between updates (a slow connection takes a while per percent).
+    fn show_progress(&mut self, percent: u8) {
+        let megabytes = self.dictating.setup.as_ref().map_or(148, |setup| setup.megabytes);
+        self.show(crate::speech::progress(megabytes, percent));
+        self.toast_until = Some(Instant::now() + Duration::from_secs(30));
+    }
+
+    pub(super) fn speech_setup(&mut self, step: Setup) {
+        match step {
+            Setup::Progress(percent) => {
+                if let Some(setup) = &mut self.dictating.setup
+                    && setup.percent != percent
+                {
+                    setup.percent = percent;
+                    self.show_progress(percent);
+                }
+            }
+            Setup::Done(result) => {
+                let Some(setup) = self.dictating.setup.take() else { return };
+                match (result, setup.owner) {
+                    (Err(error), _) => self.show(crate::speech::failed(&error)),
+                    (Ok(()), Some(owner)) => {
+                        self.show("Dictation is set up. Listening…");
+                        self.listen(owner);
+                    }
+                    (Ok(()), None) => self.show("Dictation is set up. Press the microphone to dictate."),
+                }
+            }
         }
     }
 
     /// Ends dictation without using it (its draft went away).
     pub(super) fn cancel_dictation(&mut self) {
+        if let Some(setup) = &mut self.dictating.setup {
+            setup.owner = None;
+        }
         self.dictating.recording = None;
         self.dictating.generation += 1;
         self.model.dictating = false;
@@ -69,6 +152,12 @@ impl Lantern {
 
     /// Moving to another conversation ends a dictation that belongs to a different draft.
     pub(super) fn stop_dictation_if_away(&mut self, recipient: Option<&str>) {
+        if let Some(setup) = &mut self.dictating.setup
+            && let Some(DictationOwner::Reply(owner)) = &setup.owner
+            && Some(owner.as_str()) != recipient
+        {
+            setup.owner = None;
+        }
         if let Some((_, DictationOwner::Reply(owner))) = &self.dictating.recording
             && Some(owner.as_str()) != recipient
         {
@@ -129,6 +218,35 @@ mod tests {
         lantern.inputs.assistant = "find".into();
         lantern.transcript("assistant", 4, Ok(" my passport ".into()));
         assert_eq!(lantern.inputs.assistant, "find my passport");
+    }
+
+    #[test]
+    fn setting_up_shows_progress_and_says_what_went_wrong() {
+        let mut lantern = lantern();
+        let toast = |lantern: &Lantern| lantern.model.toast.as_ref().map(|toast| toast.text.clone()).unwrap_or_default();
+        lantern.set_up_dictation(DictationOwner::Assistant, Some("whisper-cli".into()));
+        assert_eq!(toast(&lantern), "Setting up dictation (148 MB, once)… 0%");
+        lantern.speech_setup(Setup::Progress(35));
+        assert_eq!(toast(&lantern), "Setting up dictation (148 MB, once)… 35%");
+        // Pressing the mic again doesn't start a second download.
+        lantern.toggle_dictation(DictationOwner::PointAsk);
+        assert_eq!(toast(&lantern), "Setting up dictation (148 MB, once)… 35%");
+        assert_eq!(lantern.dictating.setup.as_ref().and_then(|setup| setup.owner.clone()), Some(DictationOwner::PointAsk));
+        lantern.speech_setup(Setup::Done(Err("the download stopped (reset)".into())));
+        assert_eq!(toast(&lantern), "Couldn't set up dictation: the download stopped (reset). Try again.");
+        assert!(lantern.dictating.setup.is_none() && !lantern.model.dictating);
+        // A late progress report after it ended changes nothing.
+        lantern.speech_setup(Setup::Progress(80));
+        assert!(lantern.dictating.setup.is_none());
+
+        // The draft went away while it downloaded: it's ready, and nothing starts listening.
+        // Without a runtime (a copy updated through the zip), it's downloaded too.
+        lantern.set_up_dictation(DictationOwner::Reply("a".into()), None);
+        assert_eq!(toast(&lantern), "Setting up dictation (149 MB, once)… 0%");
+        lantern.stop_dictation_if_away(Some("b"));
+        lantern.speech_setup(Setup::Done(Ok(())));
+        assert_eq!(toast(&lantern), "Dictation is set up. Press the microphone to dictate.");
+        assert!(!lantern.model.dictating);
     }
 
     #[test]

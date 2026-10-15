@@ -32,6 +32,8 @@ jobs:
       - run: pwsh -File scripts/check.ps1
       - run: pwsh -File scripts/build-windows.ps1
       - run: pwsh -File scripts/build-bus-windows.ps1
+      # Built fresh from the pinned source (no cache), then proven by transcribing a sample.
+      - run: pwsh -File scripts/build-whisper-windows.ps1 -Verify
       - run: python scripts/smoke-windows.py --bus
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
@@ -52,6 +54,8 @@ jobs:
           path: |
             build/October-Lantern-windows-x86_64.zip
             build/October-Lantern-windows-x86_64.zip.sha256
+            build/October-Lantern-whisper-windows-x86_64.zip
+            build/October-Lantern-whisper-windows-x86_64.zip.sha256
             build/October-Lantern-windows-x86_64-setup.exe
             build/October-Lantern-windows-x86_64-setup.exe.sha256
             build/release-info.json
