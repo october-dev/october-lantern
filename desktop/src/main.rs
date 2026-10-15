@@ -10,6 +10,7 @@ mod os;
 mod settings;
 mod shell;
 mod sidecar;
+mod speech;
 mod state;
 mod ui;
 mod updates;

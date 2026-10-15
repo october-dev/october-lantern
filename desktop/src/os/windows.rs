@@ -698,7 +698,7 @@ impl Recording {
         };
         match ready.recv() {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => bail!("{error}"),
+            Ok(Err(problem)) => return Err(problem.into()),
             Err(_) => bail!("The microphone recorder stopped"),
         }
         let path = crate::settings::data_dir().join("dictation").join(format!("{}.wav", uuid::Uuid::new_v4().simple()));
@@ -714,7 +714,7 @@ impl Recording {
             .arg(&self.path)
             .args(["-l", &settings.speech_language, "-nt", "-np"])
             .output()
-            .context("Run scripts/setup-dictation.ps1 or configure a whisper.cpp executable and model in Settings")?;
+            .with_context(|| format!("Couldn't run the speech runtime ({})", settings.whisper))?;
         anyhow::ensure!(output.status.success(), "Transcription failed: {}", String::from_utf8_lossy(&output.stderr));
         let text = String::from_utf8(output.stdout)?.trim().to_owned();
         anyhow::ensure!(!text.is_empty(), "No speech detected");
@@ -733,10 +733,10 @@ impl Drop for Recording {
 }
 
 /// Records until `stop`, saying through `opened` whether the microphone could be opened.
-fn record(stop: &std::sync::atomic::AtomicBool, opened: Sender<Result<(), String>>) -> Result<Vec<i16>> {
+fn record(stop: &std::sync::atomic::AtomicBool, opened: Sender<Result<(), super::MicrophoneProblem>>) -> Result<Vec<i16>> {
     use windows_sys::Win32::Media::Audio::{
-        CALLBACK_EVENT, HWAVEIN, WAVE_FORMAT_PCM, WAVE_MAPPER, WAVEFORMATEX, WAVEHDR, WHDR_DONE, waveInAddBuffer, waveInClose, waveInOpen,
-        waveInPrepareHeader, waveInReset, waveInStart, waveInUnprepareHeader,
+        CALLBACK_EVENT, HWAVEIN, WAVE_FORMAT_PCM, WAVE_MAPPER, WAVEFORMATEX, WAVEHDR, WHDR_DONE, waveInAddBuffer, waveInClose,
+        waveInGetNumDevs, waveInOpen, waveInPrepareHeader, waveInReset, waveInStart, waveInUnprepareHeader,
     };
     use windows_sys::Win32::Media::MMSYSERR_NOERROR;
     use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
@@ -758,8 +758,10 @@ fn record(stop: &std::sync::atomic::AtomicBool, opened: Sender<Result<(), String
         let status = waveInOpen(&mut device, WAVE_MAPPER, &format, event as usize, 0, CALLBACK_EVENT);
         if status != MMSYSERR_NOERROR {
             CloseHandle(event);
-            let _ = opened.send(Err("No microphone is available (check Settings › Privacy › Microphone)".into()));
-            bail!("no microphone");
+            // No device at all, or one Windows' privacy settings keep from desktop apps.
+            let problem = super::MicrophoneProblem::after_failed_open(waveInGetNumDevs());
+            let _ = opened.send(Err(problem));
+            return Err(problem.into());
         }
         // Buffers stay at fixed addresses while Windows fills them.
         let mut data: Vec<Vec<u8>> = (0..BUFFERS).map(|_| vec![0u8; BYTES]).collect();

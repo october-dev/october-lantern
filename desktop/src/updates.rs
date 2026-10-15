@@ -32,9 +32,15 @@ const FILES: &[&str] = &[
     "LICENSE",
     "OCTOBER-BUS-LICENSE",
     "OCTOBER-BUS-COMMIT",
+    // Dictation's speech runtime (scripts/build-whisper-windows.ps1) and its license.
+    "whisper-cli.exe",
+    "WHISPER-LICENSE",
 ];
 /// The programs in a bundle, checked to be native executables before anything runs.
-const PROGRAMS: [&str; 3] = ["october-lantern", "lantern-engine", "october-bus"];
+#[cfg(not(windows))]
+const PROGRAMS: &[&str] = &["october-lantern", "lantern-engine", "october-bus"];
+#[cfg(windows)]
+const PROGRAMS: &[&str] = &["october-lantern", "lantern-engine", "october-bus", "whisper-cli"];
 #[derive(Clone)]
 pub struct Release {
     pub version: String,
@@ -140,7 +146,7 @@ pub fn install(release: Release) -> Result<PathBuf> {
         }
         let output = unpack.arg("-C").arg(&work).output()?;
         anyhow::ensure!(output.status.success(), "could not unpack release");
-        for name in PROGRAMS {
+        for name in PROGRAMS.iter().copied() {
             validate_binary(&std::fs::read(work.join(exe(name)))?)?;
             set_mode(&work.join(exe(name)), 0o755)?;
         }

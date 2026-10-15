@@ -464,7 +464,7 @@ impl Recording {
             .arg(&self.path)
             .args(["-l", &settings.speech_language, "-nt", "-np"])
             .output()
-            .context("Run scripts/setup-dictation.sh or configure a whisper.cpp executable and model in Settings")?;
+            .with_context(|| format!("Couldn't run the speech runtime ({})", settings.whisper))?;
         anyhow::ensure!(output.status.success(), "Transcription failed: {}", String::from_utf8_lossy(&output.stderr));
         let text = String::from_utf8(output.stdout)?.trim().to_owned();
         anyhow::ensure!(!text.is_empty(), "No speech detected");
