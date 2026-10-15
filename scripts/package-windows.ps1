@@ -1,27 +1,34 @@
 # Creates what a Windows release publishes: the zip the in-app updater installs (it finds it by
-# name and requires exactly these files) and, when Inno Setup is installed, the installer.
+# name, and 0.6.2's updater requires exactly the core files, so it carries nothing else), the
+# speech runtime zip (whisper-cli.exe and its license, which a copy updated through the zip
+# downloads on first dictation) and, when Inno Setup is installed, the installer (core files
+# and speech runtime).
 # Does not publish anything.
 #   pwsh scripts/package-windows.ps1
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Dest = Join-Path $Root 'build\windows'
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-# Dictation's speech runtime (whisper-cli.exe) ships next to Lantern, which runs it from there;
-# its model is downloaded on first use. Keep desktop/src/updates.rs (FILES) and
-# windows/installer.iss in step with this list.
-$Files = 'october-lantern.exe', 'lantern-engine.exe', 'october-bus.exe', 'october-lantern.png', 'LICENSE', 'OCTOBER-BUS-LICENSE', 'OCTOBER-BUS-COMMIT', 'whisper-cli.exe', 'WHISPER-LICENSE'
-foreach ($file in $Files) {
+# Keep desktop/src/updates.rs (FILES, OPTIONAL), desktop/src/speech.rs (RUNTIME_FILES) and
+# windows/installer.iss in step with these lists.
+$Files = 'october-lantern.exe', 'lantern-engine.exe', 'october-bus.exe', 'october-lantern.png', 'LICENSE', 'OCTOBER-BUS-LICENSE', 'OCTOBER-BUS-COMMIT'
+$SpeechFiles = 'whisper-cli.exe', 'WHISPER-LICENSE'
+foreach ($file in $Files + $SpeechFiles) {
     if (-not (Test-Path (Join-Path $Dest $file))) { throw "Missing $file; run scripts/build-windows.ps1, scripts/build-bus-windows.ps1 and scripts/build-whisper-windows.ps1 first." }
 }
 # Signed before packing when a certificate is configured (see sign-windows.ps1).
-& (Join-Path $PSScriptRoot 'sign-windows.ps1') @($Files | Where-Object { $_ -like '*.exe' } | ForEach-Object { Join-Path $Dest $_ })
-$Name = "October-Lantern-windows-$Arch.zip"
-$Out = Join-Path $Root "build\$Name"
-Remove-Item $Out -ErrorAction SilentlyContinue
-Compress-Archive -Path ($Files | ForEach-Object { Join-Path $Dest $_ }) -DestinationPath $Out
-$Hash = (Get-FileHash -Algorithm SHA256 $Out).Hash.ToLower()
-Set-Content -Path "$Out.sha256" -Value "$Hash  $Name" -NoNewline -Encoding ascii
-Write-Host $Out
+& (Join-Path $PSScriptRoot 'sign-windows.ps1') @($Files + $SpeechFiles | Where-Object { $_ -like '*.exe' } | ForEach-Object { Join-Path $Dest $_ })
+function New-Zip([string] $Name, [string[]] $Entries) {
+    $Out = Join-Path $Root "build\$Name"
+    Remove-Item $Out -ErrorAction SilentlyContinue
+    Compress-Archive -Path ($Entries | ForEach-Object { Join-Path $Dest $_ }) -DestinationPath $Out
+    $Hash = (Get-FileHash -Algorithm SHA256 $Out).Hash.ToLower()
+    Set-Content -Path "$Out.sha256" -Value "$Hash  $Name" -NoNewline -Encoding ascii
+    Write-Host $Out
+}
+New-Zip "October-Lantern-windows-$Arch.zip" $Files
+$SpeechZip = "October-Lantern-whisper-windows-$Arch.zip"
+New-Zip $SpeechZip $SpeechFiles
 
 $Iscc = @((Get-Command iscc -ErrorAction SilentlyContinue).Source, "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
     Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
@@ -41,7 +48,7 @@ else {
 
 # What scripts/publish-windows.sh checks before publishing: the version, the commit, where the
 # updater looks, and whether every program is signed.
-$Programs = @($Files | Where-Object { $_ -like '*.exe' } | ForEach-Object { Join-Path $Dest $_ })
+$Programs = @($Files + $SpeechFiles | Where-Object { $_ -like '*.exe' } | ForEach-Object { Join-Path $Dest $_ })
 if ($Setup) { $Programs += $Setup }
 $Signed = @($Programs | Where-Object { (Get-AuthenticodeSignature $_).Status -eq 'Valid' }).Count -eq $Programs.Count
 $VersionNow = (Select-String -Path (Join-Path $Root 'engine\Cargo.toml') -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
@@ -50,4 +57,5 @@ $VersionNow = (Select-String -Path (Join-Path $Root 'engine\Cargo.toml') -Patter
     commit   = (git -C $Root rev-parse HEAD)
     releases = $env:LANTERN_RELEASES_REPO
     signed   = $Signed
+    speech   = $SpeechZip
 } | ConvertTo-Json | Set-Content -Path (Join-Path $Root 'build\release-info.json') -Encoding utf8

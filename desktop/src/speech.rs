@@ -1,8 +1,10 @@
 //! Local dictation's speech runtime: whisper.cpp's `whisper-cli` and its multilingual base model.
-//! Windows releases ship `whisper-cli.exe` next to Lantern; on Linux it's installed separately
-//! (scripts/setup-dictation.sh, or a package). The model is downloaded on first use into
-//! Lantern's data folder (`speech`), checked against its pinned SHA-256 before it's used, and
-//! the settings point at it, as the setup scripts do.
+//! The Windows installer puts `whisper-cli.exe` next to Lantern; a copy updated through the
+//! in-app updater (whose zip 0.6.2 must still accept, so it carries no runtime) downloads it on
+//! first use from its own version's release, checked like an update. On Linux it's installed
+//! separately (scripts/setup-dictation.sh, or a package). The model is downloaded on first use
+//! into Lantern's data folder (`speech`), checked against its pinned SHA-256 before it's used,
+//! and the settings point at it, as the setup scripts do.
 use crate::settings::{Settings, data_dir};
 use anyhow::{Context, Result};
 use sha2::Digest;
@@ -19,16 +21,20 @@ const MODEL_BYTES: u64 = 147_951_465;
 /// Anything much larger isn't the model.
 const MODEL_LIMIT: u64 = 256 * 1024 * 1024;
 const PROGRAM: &str = "whisper-cli";
+/// The speech runtime release asset's contents.
+#[cfg_attr(not(windows), allow(dead_code))]
+const RUNTIME_FILES: [&str; 2] = ["whisper-cli.exe", "WHISPER-LICENSE"];
 
 /// What pressing the mic finds.
 #[derive(Debug, PartialEq)]
 pub enum Readiness {
     Ready,
-    /// The runtime is here but the model isn't yet: download it, then listen.
-    NeedsModel {
-        whisper: PathBuf,
+    /// Download what's missing (the model, and on Windows the runtime when `whisper` is
+    /// `None`), then listen.
+    SetUp {
+        whisper: Option<PathBuf>,
     },
-    /// No `whisper-cli` to run.
+    /// No `whisper-cli` to run, and none to download.
     NoRuntime,
 }
 
@@ -43,25 +49,31 @@ pub fn speech_dir() -> PathBuf {
 }
 
 pub fn readiness(settings: &Settings) -> Readiness {
-    match (whisper(settings), model(settings)) {
-        (None, _) => Readiness::NoRuntime,
-        (Some(whisper), None) => Readiness::NeedsModel { whisper },
-        (Some(_), Some(_)) => Readiness::Ready,
+    readiness_of(whisper(settings), model(settings).is_some(), cfg!(windows))
+}
+
+/// Windows can download its runtime (`downloadable`); elsewhere it's installed separately.
+fn readiness_of(whisper: Option<PathBuf>, model: bool, downloadable: bool) -> Readiness {
+    match (whisper, model) {
+        (Some(_), true) => Readiness::Ready,
+        (None, _) if !downloadable => Readiness::NoRuntime,
+        (whisper, _) => Readiness::SetUp { whisper },
     }
 }
 
-/// What to say when there's no `whisper-cli` at all.
-pub fn missing_runtime(windows: bool) -> &'static str {
-    if windows {
-        "Dictation's speech runtime (whisper-cli.exe) is missing from Lantern's folder. Reinstall Lantern and try again."
-    } else {
-        "Dictation needs whisper.cpp's whisper-cli. Install it with your package manager, or run scripts/setup-dictation.sh from Lantern's source."
-    }
+/// What to say when there's no `whisper-cli` at all (Linux).
+pub fn missing_runtime() -> &'static str {
+    "Dictation needs whisper.cpp's whisper-cli. Install it with your package manager, or run scripts/setup-dictation.sh from Lantern's source."
 }
 
-/// The toast while the model downloads.
-pub fn progress(percent: u8) -> String {
-    format!("Setting up dictation (148 MB, once)… {percent}%")
+/// How much a setup downloads, in MB: the model, and the runtime (about 1 MB) when it's missing.
+pub fn setup_megabytes(runtime: bool) -> u32 {
+    if runtime { 149 } else { 148 }
+}
+
+/// The toast while the setup downloads.
+pub fn progress(megabytes: u32, percent: u8) -> String {
+    format!("Setting up dictation ({megabytes} MB, once)… {percent}%")
 }
 
 /// The toast when setting up failed.
@@ -81,14 +93,20 @@ pub fn resolved(mut settings: Settings) -> Settings {
 }
 
 /// The `whisper-cli` to run: the one in the settings when it's a path that exists, otherwise
-/// the one next to Lantern's own program (a Windows release ships it there), otherwise PATH's.
+/// the one next to Lantern's own program (the installer puts it there), then the one a first-use
+/// setup downloaded, then PATH's.
 pub fn whisper(settings: &Settings) -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok();
     let path = std::env::var_os("PATH");
-    find_whisper(&settings.whisper, exe.as_deref().and_then(Path::parent), path.as_deref())
+    find_whisper(&settings.whisper, &ours(), path.as_deref())
 }
 
-fn find_whisper(configured: &str, beside: Option<&Path>, path: Option<&OsStr>) -> Option<PathBuf> {
+/// Where Lantern's own runtime lives: next to its program, then its speech folder.
+fn ours() -> Vec<PathBuf> {
+    let exe = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
+    exe.into_iter().chain([speech_dir()]).collect()
+}
+
+fn find_whisper(configured: &str, ours: &[PathBuf], path: Option<&OsStr>) -> Option<PathBuf> {
     let configured = configured.trim();
     let given = Path::new(configured);
     let name = if configured.is_empty() || given.is_absolute() || given.components().count() > 1 {
@@ -101,19 +119,17 @@ fn find_whisper(configured: &str, beside: Option<&Path>, path: Option<&OsStr>) -
         configured
     };
     let names = [format!("{name}{}", std::env::consts::EXE_SUFFIX), name.to_string()];
-    beside
-        .map(Path::to_path_buf)
-        .into_iter()
+    ours.iter()
+        .cloned()
         .chain(path.map(|path| std::env::split_paths(path).collect::<Vec<_>>()).unwrap_or_default())
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|candidate| candidate.is_file())
 }
 
-/// Whether this `whisper-cli` is the one shipped next to Lantern (its settings then keep the bare
-/// name, so they follow Lantern to an updated version's folder).
+/// Whether this `whisper-cli` is Lantern's own (its settings then keep the bare name, so they
+/// follow Lantern to an updated version's folder).
 fn bundled(whisper: &Path) -> bool {
-    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
-    beside.is_some_and(|dir| whisper.parent() == Some(dir.as_path()))
+    ours().iter().any(|dir| whisper.parent() == Some(dir.as_path()))
 }
 
 /// The model in the settings, or the one a first-use setup downloaded.
@@ -126,8 +142,9 @@ pub fn model(settings: &Settings) -> Option<PathBuf> {
     ours.is_file().then_some(ours)
 }
 
-/// Downloads the model, then points the settings at it and at `whisper`. Runs off the UI thread.
-pub fn set_up(whisper: &Path, mut progress: impl FnMut(u8)) -> Result<()> {
+/// Downloads what's missing (the runtime when `whisper` is `None`, then the model), then points
+/// the settings at them. Runs off the UI thread.
+pub fn set_up(whisper: Option<PathBuf>, mut progress: impl FnMut(u8)) -> Result<()> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(Duration::from_secs(30)))
         .timeout_recv_response(Some(Duration::from_secs(60)))
@@ -135,15 +152,89 @@ pub fn set_up(whisper: &Path, mut progress: impl FnMut(u8)) -> Result<()> {
         .timeout_recv_body(Some(Duration::from_secs(3 * 3600)))
         .build()
         .into();
-    let mut response = agent.get(MODEL_URL).header("User-Agent", "October-Lantern").call().map_err(|error| match error {
-        ureq::Error::StatusCode(code) => anyhow::anyhow!("the speech model's server answered {code}"),
-        other => anyhow::anyhow!("couldn't reach the speech model's server ({other})"),
-    })?;
-    let body = response.body_mut();
-    let total = body.content_length();
-    let model = install_model(body.with_config().limit(MODEL_LIMIT).reader(), total, &speech_dir(), MODEL_SHA256, &mut progress)?;
-    let whisper = if bundled(whisper) { Path::new(PROGRAM) } else { whisper };
+    // The runtime is under 1% of the download: progress counts the model.
+    let whisper = match whisper {
+        Some(whisper) => whisper,
+        #[cfg(windows)]
+        None => fetch_runtime(&agent)?,
+        #[cfg(not(windows))]
+        None => anyhow::bail!("{}", missing_runtime()),
+    };
+    let model = match model(&Settings::load().unwrap_or_default()) {
+        Some(model) => model,
+        None => {
+            let mut response = agent.get(MODEL_URL).header("User-Agent", "October-Lantern").call().map_err(|error| match error {
+                ureq::Error::StatusCode(code) => anyhow::anyhow!("the speech model's server answered {code}"),
+                other => anyhow::anyhow!("couldn't reach the speech model's server ({other})"),
+            })?;
+            let body = response.body_mut();
+            let total = body.content_length();
+            install_model(body.with_config().limit(MODEL_LIMIT).reader(), total, &speech_dir(), MODEL_SHA256, &mut progress)?
+        }
+    };
+    let whisper = if bundled(&whisper) { Path::new(PROGRAM) } else { whisper.as_path() };
     save_settings(&crate::settings::config_dir().join("settings.json"), whisper, &model)
+}
+
+/// The speech runtime release asset for this system.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn runtime_asset() -> String {
+    format!("October-Lantern-whisper-windows-{}.zip", std::env::consts::ARCH)
+}
+
+/// A copy updated through the in-app updater has no `whisper-cli.exe` beside it: download it
+/// from this version's own release, checked as an update is (Lantern's release repository only,
+/// the published SHA-256, exactly the expected files, a native program), into the speech folder.
+#[cfg(windows)]
+fn fetch_runtime(agent: &ureq::Agent) -> Result<PathBuf> {
+    let url = format!("https://github.com/{}/releases/download/v{}/{}", crate::updates::REPO, env!("CARGO_PKG_VERSION"), runtime_asset());
+    let fetch = |url: &str, limit: u64| -> Result<Vec<u8>> {
+        anyhow::ensure!(crate::updates::trusted_url(url), "the speech runtime download is outside Lantern's release repository");
+        let mut response = agent.get(url).header("User-Agent", "October-Lantern").call().map_err(|error| match error {
+            ureq::Error::StatusCode(404) => anyhow::anyhow!("this version's speech runtime isn't published"),
+            ureq::Error::StatusCode(code) => anyhow::anyhow!("GitHub answered {code}"),
+            other => anyhow::anyhow!("couldn't reach GitHub ({other})"),
+        })?;
+        Ok(response.body_mut().with_config().limit(limit).read_to_vec()?)
+    };
+    let checksum = String::from_utf8(fetch(&format!("{url}.sha256"), 4096)?).context("invalid checksum")?;
+    let bytes = fetch(&url, 64 * 1024 * 1024)?;
+    install_runtime(&bytes, &checksum, &speech_dir())
+}
+
+/// Checks the runtime archive against its checksum and contents, then moves its files into `dir`.
+#[cfg(windows)]
+pub fn install_runtime(bytes: &[u8], checksum: &str, dir: &Path) -> Result<PathBuf> {
+    crate::updates::verify(bytes, checksum).context("the speech runtime didn't match its checksum")?;
+    std::fs::create_dir_all(dir).context("couldn't create the speech folder")?;
+    let work = dir.join(format!(".runtime-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&work)?;
+    let result = (|| -> Result<PathBuf> {
+        let archive = work.join("runtime.zip");
+        std::fs::write(&archive, bytes)?;
+        let listing = crate::updates::tar().arg("-tf").arg(&archive).output()?;
+        anyhow::ensure!(listing.status.success(), "the speech runtime download isn't a valid archive");
+        let names = String::from_utf8(listing.stdout)?;
+        let names: Vec<&str> = names.lines().collect();
+        anyhow::ensure!(
+            crate::updates::archive_matches(&names, &RUNTIME_FILES, &[]),
+            "the speech runtime download has unexpected contents"
+        );
+        let types = crate::updates::tar().arg("-tvf").arg(&archive).output()?;
+        anyhow::ensure!(
+            types.status.success() && String::from_utf8(types.stdout)?.lines().all(|line| line.starts_with('-')),
+            "the speech runtime download contains links or folders"
+        );
+        let unpack = crate::updates::tar().arg("-xf").arg(&archive).arg("-C").arg(&work).output()?;
+        anyhow::ensure!(unpack.status.success(), "couldn't unpack the speech runtime");
+        crate::updates::validate_binary(&std::fs::read(work.join(RUNTIME_FILES[0]))?)?;
+        for name in RUNTIME_FILES {
+            std::fs::rename(work.join(name), dir.join(name)).context("couldn't put the speech runtime in place")?;
+        }
+        Ok(dir.join(RUNTIME_FILES[0]))
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    result
 }
 
 /// Streams the model into a temporary file in `dir`, checks it against `sha256`, and only then
@@ -305,6 +396,55 @@ mod tests {
     }
 
     #[test]
+    fn what_pressing_the_mic_does() {
+        let cli = PathBuf::from("whisper-cli");
+        assert_eq!(readiness_of(Some(cli.clone()), true, true), Readiness::Ready);
+        assert_eq!(readiness_of(Some(cli.clone()), false, false), Readiness::SetUp { whisper: Some(cli) });
+        // Windows downloads a missing runtime; Linux says how to install one.
+        assert_eq!(readiness_of(None, false, true), Readiness::SetUp { whisper: None });
+        assert_eq!(readiness_of(None, true, true), Readiness::SetUp { whisper: None });
+        assert_eq!(readiness_of(None, true, false), Readiness::NoRuntime);
+        assert!(runtime_asset().starts_with("October-Lantern-whisper-windows-") && runtime_asset().ends_with(".zip"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_runtime_download_is_checked_before_it_is_used() {
+        let dir = folder();
+        let files = dir.join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        // A program for this processor (only its header is checked).
+        let mut program = vec![0u8; 0x48];
+        program[..2].copy_from_slice(b"MZ");
+        program[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        program[0x40..0x44].copy_from_slice(b"PE\0\0");
+        let machine: u16 = if cfg!(target_arch = "aarch64") { 0xaa64 } else { 0x8664 };
+        program[0x44..0x46].copy_from_slice(&machine.to_le_bytes());
+        std::fs::write(files.join("whisper-cli.exe"), &program).unwrap();
+        std::fs::write(files.join("WHISPER-LICENSE"), b"MIT").unwrap();
+        std::fs::write(files.join("extra.dll"), b"").unwrap();
+        let zip = |name: &str, entries: &[&str]| {
+            let path = dir.join(name);
+            let status = crate::updates::tar().arg("-a").arg("-cf").arg(&path).arg("-C").arg(&files).args(entries).status().unwrap();
+            assert!(status.success());
+            std::fs::read(path).unwrap()
+        };
+        let speech = dir.join("speech");
+        let good = zip("good.zip", &["whisper-cli.exe", "WHISPER-LICENSE"]);
+        assert!(install_runtime(&good, &sum(b"other"), &speech).is_err(), "a checksum that doesn't match");
+        assert!(!speech.join("whisper-cli.exe").exists());
+        let extra = zip("extra.zip", &["whisper-cli.exe", "WHISPER-LICENSE", "extra.dll"]);
+        assert!(install_runtime(&extra, &sum(&extra), &speech).is_err(), "an unexpected file");
+        assert!(!speech.join("whisper-cli.exe").exists() && !speech.join("extra.dll").exists());
+        let installed = install_runtime(&good, &format!("{}  runtime.zip", sum(&good)), &speech).unwrap();
+        assert_eq!(installed, speech.join("whisper-cli.exe"));
+        assert_eq!(std::fs::read(&installed).unwrap(), program);
+        assert_eq!(std::fs::read(speech.join("WHISPER-LICENSE")).unwrap(), b"MIT");
+        assert_eq!(std::fs::read_dir(&speech).unwrap().count(), 2, "no work folder left behind");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn whisper_is_found_beside_lantern_first() {
         let dir = folder();
         let (beside, on_path) = (dir.join("app"), dir.join("bin"));
@@ -314,24 +454,28 @@ mod tests {
             std::fs::write(folder.join(&program), b"").unwrap();
         }
         let path = std::env::join_paths([&on_path]).unwrap();
-        assert_eq!(find_whisper("whisper-cli", Some(&beside), Some(&path)), Some(beside.join(&program)));
-        assert_eq!(find_whisper("whisper-cli", None, Some(&path)), Some(on_path.join(&program)));
+        let speech = dir.join("speech");
+        assert_eq!(find_whisper("whisper-cli", &[beside.clone(), speech.clone()], Some(&path)), Some(beside.join(&program)));
+        assert_eq!(find_whisper("whisper-cli", &[], Some(&path)), Some(on_path.join(&program)));
+        // A copy updated through the zip: the runtime its first use downloaded.
+        std::fs::create_dir_all(&speech).unwrap();
+        std::fs::write(speech.join(&program), b"").unwrap();
+        assert_eq!(find_whisper("whisper-cli", &[dir.join("updated"), speech.clone()], Some(&path)), Some(speech.join(&program)));
         // A path from the setup script that has gone falls back to the bundled runtime.
-        let gone = dir.join("speech").join(&program);
-        assert_eq!(find_whisper(&gone.to_string_lossy(), Some(&beside), None), Some(beside.join(&program)));
+        let gone = dir.join("gone").join(&program);
+        assert_eq!(find_whisper(&gone.to_string_lossy(), std::slice::from_ref(&beside), None), Some(beside.join(&program)));
         let installed = on_path.join(&program);
-        assert_eq!(find_whisper(&installed.to_string_lossy(), Some(&beside), None), Some(installed));
-        assert_eq!(find_whisper("whisper-cli", Some(&dir), None), None);
+        assert_eq!(find_whisper(&installed.to_string_lossy(), std::slice::from_ref(&beside), None), Some(installed));
+        assert_eq!(find_whisper("whisper-cli", std::slice::from_ref(&dir), None), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn messages_say_what_to_do() {
-        assert_eq!(progress(35), "Setting up dictation (148 MB, once)… 35%");
+        assert_eq!(progress(setup_megabytes(false), 35), "Setting up dictation (148 MB, once)… 35%");
+        assert_eq!(progress(setup_megabytes(true), 0), "Setting up dictation (149 MB, once)… 0%");
         assert_eq!(failed("the download stopped (reset)."), "Couldn't set up dictation: the download stopped (reset). Try again.");
-        assert!(missing_runtime(true).contains("Reinstall Lantern"));
-        let linux = missing_runtime(false);
+        let linux = missing_runtime();
         assert!(linux.contains("whisper-cli") && linux.contains("scripts/setup-dictation.sh"));
-        assert!(!missing_runtime(true).contains("scripts/"), "no developer instructions on Windows");
     }
 }

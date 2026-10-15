@@ -7,7 +7,7 @@ use serde_json::Value;
 use sha2::Digest;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-const REPO: &str = match option_env!("LANTERN_RELEASES_REPO") {
+pub(crate) const REPO: &str = match option_env!("LANTERN_RELEASES_REPO") {
     Some(repo) => repo,
     // Releases are published next to the Mac's, in the public releases repository.
     None => "harshsaver/october-lantern-releases",
@@ -32,15 +32,17 @@ const FILES: &[&str] = &[
     "LICENSE",
     "OCTOBER-BUS-LICENSE",
     "OCTOBER-BUS-COMMIT",
-    // Dictation's speech runtime (scripts/build-whisper-windows.ps1) and its license.
-    "whisper-cli.exe",
-    "WHISPER-LICENSE",
 ];
-/// The programs in a bundle, checked to be native executables before anything runs.
+/// Files a bundle may also carry (and that 0.6.2's updater would refuse, so releases don't ship
+/// them in the zip yet): dictation's speech runtime and its license. Anything else is refused.
 #[cfg(not(windows))]
-const PROGRAMS: &[&str] = &["october-lantern", "lantern-engine", "october-bus"];
+const OPTIONAL: &[&str] = &[];
 #[cfg(windows)]
-const PROGRAMS: &[&str] = &["october-lantern", "lantern-engine", "october-bus", "whisper-cli"];
+const OPTIONAL: &[&str] = &["whisper-cli.exe", "WHISPER-LICENSE"];
+/// The programs in a bundle, checked to be native executables before anything runs.
+const PROGRAMS: [&str; 3] = ["october-lantern", "lantern-engine", "october-bus"];
+/// Programs a bundle may carry, checked the same way when it does.
+const OPTIONAL_PROGRAMS: [&str; 1] = ["whisper-cli"];
 #[derive(Clone)]
 pub struct Release {
     pub version: String,
@@ -93,7 +95,7 @@ fn safe_version(version: &str) -> bool {
         && version != "."
         && version != ".."
 }
-fn trusted_url(url: &str) -> bool {
+pub(crate) fn trusted_url(url: &str) -> bool {
     url.starts_with(&format!("https://github.com/{REPO}/releases/download/"))
 }
 fn exe(name: &str) -> String {
@@ -101,7 +103,7 @@ fn exe(name: &str) -> String {
 }
 /// The system's `tar`: Windows 10 and later ship bsdtar, which also reads zip files. Its own
 /// copy, not whichever `tar` is first on PATH (Git's can't).
-fn tar() -> Command {
+pub(crate) fn tar() -> Command {
     if cfg!(windows) {
         let system = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
         crate::os::command(system.join("System32").join("tar.exe"))
@@ -130,10 +132,7 @@ pub fn install(release: Release) -> Result<PathBuf> {
         anyhow::ensure!(listing.status.success(), "invalid release archive");
         let names = String::from_utf8(listing.stdout)?;
         let names: Vec<&str> = names.lines().collect();
-        anyhow::ensure!(
-            names.len() == FILES.len() && FILES.iter().all(|name| names.iter().filter(|entry| *entry == name).count() == 1),
-            "unexpected archive contents"
-        );
+        anyhow::ensure!(archive_matches(&names, FILES, OPTIONAL), "unexpected archive contents");
         let types = tar().arg("-tvf").arg(&archive).output()?;
         anyhow::ensure!(
             types.status.success() && String::from_utf8(types.stdout)?.lines().all(|line| line.starts_with('-')),
@@ -146,7 +145,7 @@ pub fn install(release: Release) -> Result<PathBuf> {
         }
         let output = unpack.arg("-C").arg(&work).output()?;
         anyhow::ensure!(output.status.success(), "could not unpack release");
-        for name in PROGRAMS.iter().copied() {
+        for name in PROGRAMS.into_iter().chain(OPTIONAL_PROGRAMS.into_iter().filter(|name| work.join(exe(name)).exists())) {
             validate_binary(&std::fs::read(work.join(exe(name)))?)?;
             set_mode(&work.join(exe(name)), 0o755)?;
         }
@@ -167,6 +166,12 @@ pub fn install(release: Release) -> Result<PathBuf> {
     let _ = std::fs::remove_dir_all(&work);
     result
 }
+/// An archive's listing holds every `required` file once, and otherwise only `optional` ones,
+/// each at most once: nothing else, and no folders.
+pub(crate) fn archive_matches(names: &[&str], required: &[&str], optional: &[&str]) -> bool {
+    let once = |name: &&str| names.iter().filter(|entry| *entry == name).count() == 1;
+    required.iter().all(once) && names.iter().all(|name| (required.contains(name) || optional.contains(name)) && once(name))
+}
 fn set_mode(path: &Path, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {
@@ -178,7 +183,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 /// A program built for this system and processor: ELF on Linux, PE on Windows.
-fn validate_binary(bytes: &[u8]) -> Result<()> {
+pub(crate) fn validate_binary(bytes: &[u8]) -> Result<()> {
     if cfg!(windows) { validate_pe(bytes) } else { validate_elf(bytes) }
 }
 fn validate_elf(bytes: &[u8]) -> Result<()> {
@@ -203,7 +208,7 @@ fn validate_pe(bytes: &[u8]) -> Result<()> {
     anyhow::ensure!(native, "release program is not native to this Windows architecture");
     Ok(())
 }
-fn verify(bytes: &[u8], checksum: &str) -> Result<()> {
+pub(crate) fn verify(bytes: &[u8], checksum: &str) -> Result<()> {
     let expected = checksum.split_whitespace().next().context("missing checksum")?;
     anyhow::ensure!(expected.len() == 64 && expected.bytes().all(|byte| byte.is_ascii_hexdigit()), "invalid checksum");
     let actual: String = sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect();
@@ -276,6 +281,24 @@ mod tests {
         assert!(validate_elf(b"MZ foreign binary").is_err());
         assert!(validate_pe(b"\x7fELF foreign binary").is_err());
     }
+    #[test]
+    fn a_bundle_has_its_core_files_and_only_known_extras() {
+        let core = ["a.exe", "LICENSE"];
+        let extras = ["whisper-cli.exe", "WHISPER-LICENSE"];
+        assert!(archive_matches(&["LICENSE", "a.exe"], &core, &extras), "the core files alone (as 0.6.2 expects)");
+        assert!(archive_matches(&["a.exe", "LICENSE", "whisper-cli.exe", "WHISPER-LICENSE"], &core, &extras), "with the extras");
+        assert!(archive_matches(&["a.exe", "LICENSE", "whisper-cli.exe"], &core, &extras), "with some of them");
+        assert!(!archive_matches(&["a.exe"], &core, &extras), "a core file missing");
+        assert!(!archive_matches(&["a.exe", "LICENSE", "evil.dll"], &core, &extras), "an unknown file");
+        assert!(!archive_matches(&["a.exe", "LICENSE", "sub/"], &core, &extras), "a folder");
+        assert!(!archive_matches(&["a.exe", "LICENSE", "a.exe"], &core, &extras), "a duplicate");
+        assert!(!archive_matches(&["a.exe", "LICENSE", "whisper-cli.exe", "whisper-cli.exe"], &core, &extras), "a duplicate extra");
+        // This version's own lists: the zip 0.6.2 accepts is still accepted, extras or not.
+        assert!(archive_matches(FILES, FILES, OPTIONAL));
+        let with: Vec<&str> = FILES.iter().chain(OPTIONAL).copied().collect();
+        assert!(archive_matches(&with, FILES, OPTIONAL));
+    }
+
     #[test]
     fn windows_programs_must_match_the_processor() {
         let pe = |machine: u16| {

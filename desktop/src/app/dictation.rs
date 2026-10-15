@@ -1,6 +1,6 @@
 //! Dictation (Swift `Dictation`): speak into the draft you started it in. The Mac uses Apple's
 //! on-device speech; here the audio is recorded and transcribed on this computer by whisper.cpp
-//! (`crate::speech`: shipped with Windows releases, its model downloaded on first use). Each
+//! (`crate::speech`: installed with Lantern on Windows, or downloaded with its model on first use). Each
 //! dictation belongs to one draft: moving to another conversation ends it, and a late transcript
 //! only ever lands in the draft it was started for.
 use super::Lantern;
@@ -21,6 +21,8 @@ pub(super) struct Dictating {
 struct SettingUp {
     owner: Option<DictationOwner>,
     percent: u8,
+    /// What it downloads, for the toast.
+    megabytes: u32,
 }
 
 fn encode(owner: &DictationOwner) -> String {
@@ -62,8 +64,8 @@ impl Lantern {
         let settings = crate::settings::Settings::load().unwrap_or_default();
         match crate::speech::readiness(&settings) {
             Readiness::Ready => self.listen(owner),
-            Readiness::NeedsModel { whisper } => self.set_up_dictation(owner, whisper),
-            Readiness::NoRuntime => self.show(crate::speech::missing_runtime(cfg!(windows))),
+            Readiness::SetUp { whisper } => self.set_up_dictation(owner, whisper),
+            Readiness::NoRuntime => self.show(crate::speech::missing_runtime()),
         }
     }
 
@@ -87,9 +89,11 @@ impl Lantern {
         }
     }
 
-    /// First use: download the speech model in the background, then listen.
-    fn set_up_dictation(&mut self, owner: DictationOwner, whisper: std::path::PathBuf) {
-        self.dictating.setup = Some(SettingUp { owner: Some(owner), percent: 0 });
+    /// First use: download the speech model (and on Windows a missing runtime) in the background,
+    /// then listen.
+    fn set_up_dictation(&mut self, owner: DictationOwner, whisper: Option<std::path::PathBuf>) {
+        let megabytes = crate::speech::setup_megabytes(whisper.is_none());
+        self.dictating.setup = Some(SettingUp { owner: Some(owner), percent: 0, megabytes });
         self.show_progress(0);
         if cfg!(test) {
             return;
@@ -97,7 +101,7 @@ impl Lantern {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let progress = tx.clone();
-            let result = crate::speech::set_up(&whisper, |percent| {
+            let result = crate::speech::set_up(whisper, |percent| {
                 let _ = progress.send(Event::SpeechSetup(Setup::Progress(percent)));
             });
             let _ = tx.send(Event::SpeechSetup(Setup::Done(result.map_err(|error| format!("{error:#}")))));
@@ -106,7 +110,8 @@ impl Lantern {
 
     /// The setup's progress stays up between updates (a slow connection takes a while per percent).
     fn show_progress(&mut self, percent: u8) {
-        self.show(crate::speech::progress(percent));
+        let megabytes = self.dictating.setup.as_ref().map_or(148, |setup| setup.megabytes);
+        self.show(crate::speech::progress(megabytes, percent));
         self.toast_until = Some(Instant::now() + Duration::from_secs(30));
     }
 
@@ -219,7 +224,7 @@ mod tests {
     fn setting_up_shows_progress_and_says_what_went_wrong() {
         let mut lantern = lantern();
         let toast = |lantern: &Lantern| lantern.model.toast.as_ref().map(|toast| toast.text.clone()).unwrap_or_default();
-        lantern.set_up_dictation(DictationOwner::Assistant, "whisper-cli".into());
+        lantern.set_up_dictation(DictationOwner::Assistant, Some("whisper-cli".into()));
         assert_eq!(toast(&lantern), "Setting up dictation (148 MB, once)… 0%");
         lantern.speech_setup(Setup::Progress(35));
         assert_eq!(toast(&lantern), "Setting up dictation (148 MB, once)… 35%");
@@ -235,7 +240,9 @@ mod tests {
         assert!(lantern.dictating.setup.is_none());
 
         // The draft went away while it downloaded: it's ready, and nothing starts listening.
-        lantern.set_up_dictation(DictationOwner::Reply("a".into()), "whisper-cli".into());
+        // Without a runtime (a copy updated through the zip), it's downloaded too.
+        lantern.set_up_dictation(DictationOwner::Reply("a".into()), None);
+        assert_eq!(toast(&lantern), "Setting up dictation (149 MB, once)… 0%");
         lantern.stop_dictation_if_away(Some("b"));
         lantern.speech_setup(Setup::Done(Ok(())));
         assert_eq!(toast(&lantern), "Dictation is set up. Press the microphone to dictate.");

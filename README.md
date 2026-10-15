@@ -256,7 +256,8 @@ replies against a harmless agent.
 
 To bundle October Bus (Go 1.27+) and dictation's speech runtime (whisper.cpp's
 `whisper-cli.exe`, built from pinned source with git, CMake and the Visual Studio C++ tools),
-and build the release zip and installer ([Inno Setup](https://jrsoftware.org/isinfo.php)):
+and build the release zips (the app, and the speech runtime) and installer
+([Inno Setup](https://jrsoftware.org/isinfo.php)):
 
 ```powershell
 pwsh scripts/build-bus-windows.ps1
@@ -291,9 +292,12 @@ typed into: Windows has no safe way to type into another app's terminal.
 Sessions can join October Bus like on Linux. Screenshots (Point & Ask and New Session)
 capture the display under the pointer with Lantern's own windows left out. Dictation
 records your default microphone and transcribes on this computer with whisper.cpp, whose
-`whisper-cli.exe` ships next to Lantern. The first time you press the mic, Lantern downloads
-the speech model (148 MB, once, checked against its SHA-256) into
-`%LOCALAPPDATA%\October Lantern\speech`, showing its progress, then starts listening. If
+`whisper-cli.exe` the installer puts next to Lantern. The first time you press the mic, Lantern
+downloads the speech model (148 MB, once, checked against its SHA-256) into
+`%LOCALAPPDATA%\October Lantern\speech`, showing its progress, then starts listening. A copy
+updated in the app (whose update zip carries no speech runtime, so older versions can still
+install it) also downloads `whisper-cli.exe` there first, from its own version's release
+(`October-Lantern-whisper-windows-x86_64.zip`, checked like an update). If
 Windows keeps desktop apps from the microphone, Lantern says so and opens the privacy
 setting. (`scripts/setup-dictation.ps1` still sets dictation up for a build from source.) The app installs updates itself on request: it downloads
 the release zip, checks its SHA-256 and that every program is a native Windows build,

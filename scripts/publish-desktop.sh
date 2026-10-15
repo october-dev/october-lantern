@@ -22,7 +22,9 @@ SYSTEM="${1:-}"
 RUN="${2:-}"
 NOTES="${3:-}"
 case "$SYSTEM" in
-  windows) FILES=(October-Lantern-windows-x86_64-setup.exe October-Lantern-windows-x86_64.zip) ;;
+  # The speech runtime zip: what a copy updated through the in-app updater downloads on first
+  # dictation, from this same release.
+  windows) FILES=(October-Lantern-windows-x86_64-setup.exe October-Lantern-windows-x86_64.zip October-Lantern-whisper-windows-x86_64.zip) ;;
   linux) FILES=(October-Lantern-linux-x86_64.tar.gz) ;;
   *) echo "usage: scripts/publish-desktop.sh windows|linux <run id> [notes]" >&2; exit 2 ;;
 esac
@@ -41,11 +43,21 @@ gh run download "$RUN" --repo "$SOURCE" --name "October-Lantern-$SYSTEM-x86_64" 
 echo "==> verifying"
 INFO="$WORK/build/release-info.json"
 [[ -f "$INFO" ]] || fail "the build has no release-info.json; rebuild it with the current release workflow"
-field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1], encoding="utf-8-sig"))[sys.argv[2]]; print(str(v).lower() if isinstance(v, bool) else v)' "$INFO" "$1"; }
+field() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1], encoding="utf-8-sig")).get(sys.argv[2]); print(str(v).lower() if isinstance(v, bool) else v)' "$INFO" "$1"; }
 [[ "$(field version)" == "$VERSION" ]] || fail "the build is version $(field version), not $VERSION"
 [[ "$(field releases)" == "$REPO" ]] || fail "the build updates from $(field releases), not $REPO"
 COMMIT="$(field commit)"
 [[ "$COMMIT" == "$(git -C "$ROOT" rev-parse HEAD)" ]] || echo "    note: built from $COMMIT, not this checkout's HEAD"
+if [[ "$SYSTEM" == windows ]]; then
+  [[ "$(field speech)" == October-Lantern-whisper-windows-x86_64.zip && -f "$WORK/build/October-Lantern-whisper-windows-x86_64.zip" ]] ||
+    fail "the build has no speech runtime zip; rebuild it with the current release workflow"
+  # The updater zip must stay installable by 0.6.2's updater: exactly the core files.
+  listed="$(python3 -c 'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$WORK/build/October-Lantern-windows-x86_64.zip" | sort)"
+  core="$(printf '%s\n' LICENSE OCTOBER-BUS-COMMIT OCTOBER-BUS-LICENSE lantern-engine.exe october-bus.exe october-lantern.exe october-lantern.png | sort)"
+  [[ "$listed" == "$core" ]] || fail "the updater zip doesn't hold exactly the core files older versions expect"
+  speech="$(python3 -c 'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$WORK/build/October-Lantern-whisper-windows-x86_64.zip" | sort)"
+  [[ "$speech" == "$(printf '%s\n' WHISPER-LICENSE whisper-cli.exe | sort)" ]] || fail "the speech runtime zip doesn't hold exactly whisper-cli.exe and WHISPER-LICENSE"
+fi
 if [[ "$SYSTEM" == windows && "$(field signed)" != true ]]; then
   [[ "${ALLOW_UNSIGNED:-}" == 1 ]] || fail "the Windows build isn't signed; set up signing (docs/RELEASING.md) or set ALLOW_UNSIGNED=1"
   echo "    warning: publishing an unsigned Windows build"

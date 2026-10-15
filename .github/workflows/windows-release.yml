@@ -54,6 +54,8 @@ jobs:
           path: |
             build/October-Lantern-windows-x86_64.zip
             build/October-Lantern-windows-x86_64.zip.sha256
+            build/October-Lantern-whisper-windows-x86_64.zip
+            build/October-Lantern-whisper-windows-x86_64.zip.sha256
             build/October-Lantern-windows-x86_64-setup.exe
             build/October-Lantern-windows-x86_64-setup.exe.sha256
             build/release-info.json
