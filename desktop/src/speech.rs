@@ -489,8 +489,8 @@ mod tests {
 
     #[test]
     fn messages_say_what_to_do() {
-        assert_eq!(progress(setup_megabytes(false), 35), "Setting up dictation (148 MB, once)… 35%");
-        assert_eq!(progress(setup_megabytes(true), 0), "Setting up dictation (149 MB, once)… 0%");
+        assert_eq!(progress(setup_megabytes(true, false), 35), "Setting up dictation (148 MB, once)… 35%");
+        assert_eq!(progress(setup_megabytes(true, true), 0), "Setting up dictation (149 MB, once)… 0%");
         assert_eq!(failed("the download stopped (reset)."), "Couldn't set up dictation: the download stopped (reset). Try again.");
         let linux = missing_runtime();
         assert!(linux.contains("whisper-cli") && linux.contains("scripts/setup-dictation.sh"));
