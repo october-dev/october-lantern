@@ -12,7 +12,12 @@ use std::hash::{Hash, Hasher};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) -> f32 {
     if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-        cx.emit(UiAction::CancelPointAsk);
+        // Esc answers "Turn on dictation?" with Not now before it closes the card.
+        cx.emit(if cx.model.dictation_offer.as_ref().is_some_and(|offer| offer.point_ask) {
+            UiAction::AnswerDictationOffer { download: false }
+        } else {
+            UiAction::CancelPointAsk
+        });
     }
     let start = ui.cursor().min;
     let background = ui.painter().add(egui::Shape::Noop);
@@ -30,6 +35,9 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) -> f32 {
             }
             if recipient_missing(cx) && cx.model.agents.iter().any(|agent| agent.is_live()) {
                 c::label(ui, "That agent has exited. Choose another.", 11.5, Weight::Regular, t::MUTED);
+            }
+            if cx.model.dictation_offer.as_ref().is_some_and(|offer| offer.point_ask) {
+                super::dictation_offer(ui, cx);
             }
             input(ui, cx);
             footer(ui, cx);
@@ -585,6 +593,33 @@ mod tests {
 
     fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    #[test]
+    fn the_dictation_question_shows_in_the_card_and_escape_says_not_now() {
+        let (ctx, assets, mut model, mut inputs, mut view) = setup();
+        model.dictation_offer = Some(crate::model::DictationOffer { text: crate::speech::offer(true, false), point_ask: true });
+        let (_, _, texts) = frame(&ctx, &assets, &model, &mut inputs, &mut view, Vec::new());
+        let at = |title: &str| texts.iter().find(|(text, _)| text == title).unwrap_or_else(|| panic!("missing {title}")).1.center();
+        assert!(texts.iter().any(|(text, _)| text == "Turn on dictation?"));
+        let click = |pos: egui::Pos2, pressed: bool| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        for (title, download) in [("Download", true), ("Not now", false)] {
+            let pos = at(title);
+            frame(&ctx, &assets, &model, &mut inputs, &mut view, click(pos, true));
+            let (_, actions, _) = frame(&ctx, &assets, &model, &mut inputs, &mut view, click(pos, false));
+            assert_eq!(actions, vec![UiAction::AnswerDictationOffer { download }]);
+        }
+        let (_, actions, _) = frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![key(egui::Key::Escape, egui::Modifiers::NONE)]);
+        assert_eq!(actions, vec![UiAction::AnswerDictationOffer { download: false }], "Esc doesn't close the card");
+        // The panel's question isn't shown here.
+        model.dictation_offer.as_mut().unwrap().point_ask = false;
+        let (_, _, texts) = frame(&ctx, &assets, &model, &mut inputs, &mut view, Vec::new());
+        assert!(!texts.iter().any(|(text, _)| text == "Turn on dictation?"));
     }
 
     #[test]

@@ -78,6 +78,7 @@ impl Lantern {
             UiAction::CancelSignIn => self.cancel_sign_in(),
             UiAction::SignOut => self.sign_out(),
             UiAction::ToggleDictation { owner } => self.toggle_dictation(owner),
+            UiAction::AnswerDictationOffer { download } => self.answer_dictation_offer(download),
             UiAction::ShowSettings => {
                 self.refresh_notifications();
                 self.refresh_hooks();
@@ -154,6 +155,9 @@ impl Lantern {
         super::trace!("panel {old:?} -> {panel:?}");
         self.model.panel = panel;
         self.close_chat();
+        if panel.is_none() {
+            self.withdraw_dictation_offer(false);
+        }
         if old == Some(PanelMode::Inbox) && self.turns.mark_seen(&self.model.agents, &self.model.prefs) {
             self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
             self.save_prefs();

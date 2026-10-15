@@ -229,6 +229,7 @@ impl Lantern {
         self.pointing.start_at = None;
         self.pointing.rect = None;
         self.model.point_ask.phase = PointAskPhase::Closed;
+        self.withdraw_dictation_offer(true);
     }
 
     /// Nothing is in flight; the screenshot is optional (it may have failed or been denied).

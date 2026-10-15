@@ -176,6 +176,10 @@ pub enum UiAction {
     ToggleDictation {
         owner: DictationOwner,
     },
+    /// The answer to "Turn on dictation?": Download, or Not now.
+    AnswerDictationOffer {
+        download: bool,
+    },
     // New Session
     /// Captures the foreground app before the panel takes focus.
     StartNewSession,
@@ -262,7 +266,9 @@ pub enum UiAction {
 /// The main panel, 380 wide. Returns the measured outer height.
 pub fn render_panel(ui: &mut egui::Ui, cx: &mut Ctx, max_height: f32) -> f32 {
     if ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-        cx.emit(if cx.model.launch_preview.is_some() && cx.model.panel.is_none_or(PanelMode::is_list) {
+        cx.emit(if cx.model.dictation_offer.as_ref().is_some_and(|offer| !offer.point_ask) {
+            UiAction::AnswerDictationOffer { download: false }
+        } else if cx.model.launch_preview.is_some() && cx.model.panel.is_none_or(PanelMode::is_list) {
             UiAction::CloseLaunchPreview
         } else if cx.model.chat.is_some() && cx.model.panel.is_none_or(PanelMode::is_list) {
             UiAction::CloseChat
@@ -293,6 +299,9 @@ pub fn render_panel(ui: &mut egui::Ui, cx: &mut Ctx, max_height: f32) -> f32 {
                 }
             }
         }
+        if cx.model.dictation_offer.as_ref().is_some_and(|offer| !offer.point_ask) {
+            egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 12, top: 0, bottom: 6 }).show(ui, |ui| dictation_offer(ui, cx));
+        }
         if let Some(toast) = &cx.model.toast {
             egui::Frame::new().inner_margin(egui::Margin { left: 12, right: 12, top: 0, bottom: 6 }).show(ui, |ui| {
                 egui::Frame::new().fill(theme::FAINT).corner_radius(10).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
@@ -308,6 +317,28 @@ pub fn render_panel(ui: &mut egui::Ui, cx: &mut Ctx, max_height: f32) -> f32 {
             composer::render(ui, cx, agent);
         }
     })
+}
+
+/// "Turn on dictation?": dictation's first use asks before it downloads anything. In the panel
+/// (above the composer) or the Point & Ask card (above its box), wherever the mic was pressed.
+fn dictation_offer(ui: &mut egui::Ui, cx: &mut Ctx) {
+    let Some(offer) = &cx.model.dictation_offer else { return };
+    let text = offer.text.clone();
+    egui::Frame::new().fill(theme::FAINT).corner_radius(10).inner_margin(12).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 6.0);
+        components::label(ui, crate::speech::OFFER_TITLE, 13.0, theme::Weight::Semibold, theme::INK);
+        components::label(ui, text, 12.0, theme::Weight::Regular, theme::MUTED);
+        ui.add_space(2.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if components::amber_button(ui, "Download").clicked() {
+                cx.emit(UiAction::AnswerDictationOffer { download: true });
+            }
+            if components::secondary_button(ui, "Not now").clicked() {
+                cx.emit(UiAction::AnswerDictationOffer { download: false });
+            }
+        });
+    });
 }
 
 fn surface(ui: &mut egui::Ui, width: f32, max_height: f32, radius: f32, tint: f32, draw: impl FnOnce(&mut egui::Ui)) -> f32 {
