@@ -67,6 +67,16 @@ jobs:
         run: pwsh -File scripts/build-windows.ps1
       - name: Bundle October Bus
         run: pwsh -File scripts/build-bus-windows.ps1
+      # Dictation's speech runtime, built from pinned whisper.cpp; the build and the test model
+      # are cached by the script's contents (which pin the source and the model's checksum).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            build/whisper-out
+            build/speech-test
+          key: whisper-windows-x86_64-${{ hashFiles('scripts/build-whisper-windows.ps1') }}
+      - name: Bundle the speech runtime and transcribe a sample with it
+        run: pwsh -File scripts/build-whisper-windows.ps1 -Verify
       - name: Test discovery, Lantern sessions, safe delivery and Bus
         run: python scripts/smoke-windows.py --bus
       # A build to try: the release zip and installer (unsigned), as a workflow artifact.

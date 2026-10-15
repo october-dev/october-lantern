@@ -6,9 +6,12 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $Dest = Join-Path $Root 'build\windows'
 $Arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
-$Files = 'october-lantern.exe', 'lantern-engine.exe', 'october-bus.exe', 'october-lantern.png', 'LICENSE', 'OCTOBER-BUS-LICENSE', 'OCTOBER-BUS-COMMIT'
+# Dictation's speech runtime (whisper-cli.exe) ships next to Lantern, which runs it from there;
+# its model is downloaded on first use. Keep desktop/src/updates.rs (FILES) and
+# windows/installer.iss in step with this list.
+$Files = 'october-lantern.exe', 'lantern-engine.exe', 'october-bus.exe', 'october-lantern.png', 'LICENSE', 'OCTOBER-BUS-LICENSE', 'OCTOBER-BUS-COMMIT', 'whisper-cli.exe', 'WHISPER-LICENSE'
 foreach ($file in $Files) {
-    if (-not (Test-Path (Join-Path $Dest $file))) { throw "Missing $file; run scripts/build-windows.ps1 and scripts/build-bus-windows.ps1 first." }
+    if (-not (Test-Path (Join-Path $Dest $file))) { throw "Missing $file; run scripts/build-windows.ps1, scripts/build-bus-windows.ps1 and scripts/build-whisper-windows.ps1 first." }
 }
 # Signed before packing when a certificate is configured (see sign-windows.ps1).
 & (Join-Path $PSScriptRoot 'sign-windows.ps1') @($Files | Where-Object { $_ -like '*.exe' } | ForEach-Object { Join-Path $Dest $_ })

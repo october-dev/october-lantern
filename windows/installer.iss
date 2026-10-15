@@ -58,6 +58,9 @@ Source: "..\build\windows\october-lantern.png"; DestDir: "{app}"; Flags: ignorev
 Source: "..\build\windows\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\windows\OCTOBER-BUS-LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\build\windows\OCTOBER-BUS-COMMIT"; DestDir: "{app}"; Flags: ignoreversion
+; Dictation's speech runtime (scripts/build-whisper-windows.ps1); the model is downloaded on first use.
+Source: "..\build\windows\whisper-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\build\windows\WHISPER-LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; The same shortcut the in-app updater points at a new version.
@@ -78,3 +81,5 @@ Filename: "{app}\lantern-engine.exe"; Parameters: "hooks uninstall"; Flags: runh
 [UninstallDelete]
 ; Versions the in-app updater installed.
 Type: filesandordirs; Name: "{localappdata}\October Lantern\releases"
+; The speech model dictation downloaded on first use.
+Type: filesandordirs; Name: "{localappdata}\October Lantern\speech"
