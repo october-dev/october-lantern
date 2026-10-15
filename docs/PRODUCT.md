@@ -215,7 +215,7 @@ Lantern is in **beta (v0.6.3)**.
 |---|---|---|
 | Automation (Terminal, iTerm2) | Typing replies into the agent's tab | The first time you reply to an agent in that app |
 | Notifications | Telling you when an agent finishes or needs you | In the welcome, or when you turn them on |
-| Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button |
+| Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button, after Lantern asks "Turn on dictation?" (Turn On / Not Now; Not Now asks again next time). Holding the Point & Ask shortcut doesn't ask: it listens only once dictation is on. |
 
 | Screen Recording | Point & Ask, and including a screenshot when starting a session | In the welcome (required there unless you skip), or the first time you use Point & Ask |
 | Accessibility | Telling a Task's agent which window and document you have open | When you click Allow on the Task panel |

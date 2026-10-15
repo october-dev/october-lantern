@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import LanternCore
 import Speech
@@ -29,8 +30,10 @@ final class Dictation: ObservableObject {
     var isActive: Bool { isRecording || isAuthorizing }
 
     /// Starts dictating into the draft of `owner` (a recipient id, or "" for no recipient).
-    func start(prefix: String, owner: String) {
-        guard !isActive else { return }
+    /// `ask: false` (holding the Point & Ask shortcut, mid-selection): don't ask; just don't
+    /// listen until dictation has been turned on from a mic button.
+    func start(prefix: String, owner: String, ask: Bool = true) {
+        guard !isActive, ask ? Self.consented() : Self.turnedOn else { return }
         self.prefix = prefix.isEmpty || prefix.hasSuffix(" ") ? prefix : prefix + " "
         self.owner = owner
         let attempt = attempts.begin()
@@ -64,6 +67,24 @@ final class Dictation: ObservableObject {
         request = nil
         isRecording = false
         level = 0
+    }
+
+    /// The first time, asks before turning dictation on (yes is remembered; Not Now asks again
+    /// next time). On the Mac nothing is downloaded: it's Apple's on-device recognizer.
+    static var turnedOn: Bool { UserDefaults.standard.bool(forKey: "dictationTurnedOn") }
+
+    static func consented() -> Bool {
+        let key = "dictationTurnedOn"
+        if turnedOn { return true }
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.messageText = "Turn on dictation?"
+        alert.informativeText = "Lantern turns your voice into text with your Mac's own on-device speech recognition. Your audio never leaves this Mac, and Lantern doesn't download anything. macOS will ask for Microphone and Speech Recognition access."
+        alert.addButton(withTitle: "Turn On")
+        alert.addButton(withTitle: "Not Now")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        UserDefaults.standard.set(true, forKey: key)
+        return true
     }
 
     private static func authorize() async -> Bool {

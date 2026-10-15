@@ -134,7 +134,7 @@ final class PointAsk: ObservableObject {
         context = Context(app: t?.name, bundleId: t?.bundleId, window: t?.windowTitle, document: t?.document)
         recipientId = defaultRecipient()?.id
         contextTask = Task { await readPageAndSelection(pid: t?.pid, bundleId: t?.bundleId, conversation: conversation) }
-        if listen { dictation.start(prefix: "", owner: "point-ask") }
+        if listen { dictation.start(prefix: "", owner: "point-ask", ask: false) }
         select()
     }
 
