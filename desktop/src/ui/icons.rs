@@ -25,7 +25,6 @@ pub enum Icon {
     Folder,
     Terminal,
     Window,
-    Chat,
     Copy,
     Check,
     /// SF `checkmark.circle.fill` (Settings hooks).
@@ -220,11 +219,6 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.circle(5.0, 7.0, 0.6, true);
             p.circle(8.0, 7.0, 0.6, true);
             p.circle(11.0, 7.0, 0.6, true);
-        }
-        Chat => {
-            p.rect((2.0, 3.0), (19.0, 17.0), 3.0, false);
-            p.line(&[(5.0, 17.0), (5.0, 21.0), (10.0, 17.0)]);
-            p.line(&[(19.0, 8.0), (23.0, 8.0), (23.0, 21.0), (19.0, 19.0), (13.0, 19.0)]);
         }
         Copy => {
             p.rect((8.0, 8.0), (21.0, 22.0), 2.0, false);

@@ -208,10 +208,10 @@ impl Lantern {
             self.upkeep.automatic = true;
             self.start_update_check();
         }
-        if self.upkeep.installed.is_some() && self.idle() {
-            if let Some(path) = self.upkeep.installed.take() {
-                self.restart_into(&path);
-            }
+        if self.idle()
+            && let Some(path) = self.upkeep.installed.take()
+        {
+            self.restart_into(&path);
         }
     }
 

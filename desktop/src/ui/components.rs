@@ -447,7 +447,6 @@ mod tests {
                         Folder,
                         Terminal,
                         Window,
-                        Chat,
                         Copy,
                         Check,
                         Hourglass,
