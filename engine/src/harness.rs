@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use crate::hooks::support_dir;
 
 /// The October project's Supabase (as in the app's OctoberAccount.swift).
-pub const SUPABASE_URL: &str = "https://latwxiqjgvluiddckvmj.supabase.co";
+pub const SUPABASE_URL: &str = "https://auth.october.dev";
 pub const SUPABASE_ANON_KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdHd4aXFqZ3ZsdWlkZGNrdm1qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAzMDExMzEsImV4cCI6MjA2NTg3NzEzMX0.Aor5lE6ZSvv83Or_CxQNUdRzRUqit3fODkNSJpcDJ7E";
 
 /// The pinned harness and Node.js for this Mac's chip.

@@ -11,7 +11,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const AUTH: &str = "https://latwxiqjgvluiddckvmj.supabase.co/auth/v1";
+/// October's own address for its sign-in service (the Supabase project's custom domain), as the
+/// website uses: some networks can't look up `*.supabase.co` (Indian ISPs blocked it in 2026).
+const AUTH: &str = "https://auth.october.dev/auth/v1";
 const KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdHd4aXFqZ3ZsdWlkZGNrdm1qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAzMDExMzEsImV4cCI6MjA2NTg3NzEzMX0.Aor5lE6ZSvv83Or_CxQNUdRzRUqit3fODkNSJpcDJ7E";
 #[derive(Clone)]
 pub struct Session {
@@ -89,7 +91,9 @@ impl Flow {
                     }
                     session = next;
                 }
-                Err(error) if Instant::now() >= session.expires => {
+                // Only October refusing the sign-in ends it; a network that can't reach October
+                // keeps it, and Lantern keeps trying.
+                Err(error) if refused(&error) && Instant::now() >= session.expires => {
                     let _ = self.engine.credentials(self.generation, &self.current, None, || {});
                     if self.active() {
                         let _ = self.events.send(crate::os::Event::Account {
@@ -100,7 +104,13 @@ impl Flow {
                     return;
                 }
                 Err(_) => {
-                    if !self.wait_until((Instant::now() + Duration::from_secs(15)).min(session.expires)) {
+                    let now = Instant::now();
+                    let retry = if now < session.expires {
+                        (now + Duration::from_secs(15)).min(session.expires)
+                    } else {
+                        now + Duration::from_secs(30)
+                    };
+                    if !self.wait_until(retry) {
                         return;
                     }
                 }
@@ -111,13 +121,21 @@ impl Flow {
 pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(90))).build().into()
 }
+/// October answered and turned the sign-in down (a wrong password, a revoked or used refresh
+/// token), as opposed to not being reachable at all.
+pub fn refused(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| matches!(cause.downcast_ref::<ureq::Error>(), Some(ureq::Error::StatusCode(400..=403))))
+}
 fn exchange(grant: &str, body: Value) -> Result<Session> {
     let agent = agent();
-    let mut response = agent
-        .post(&format!("{AUTH}/token?grant_type={grant}"))
-        .header("apikey", KEY)
-        .send_json(body)
-        .context("October sign-in failed; check your credentials and connection")?;
+    let mut response = agent.post(&format!("{AUTH}/token?grant_type={grant}")).header("apikey", KEY).send_json(body).map_err(|error| {
+        let context = match error {
+            ureq::Error::StatusCode(400..=403) => "October sign-in failed; check your email and password",
+            ureq::Error::StatusCode(_) => "October's sign-in service had a problem; try again in a minute",
+            _ => "Can't reach October's sign-in service (auth.october.dev); check your internet connection",
+        };
+        anyhow::Error::new(error).context(context)
+    })?;
     let value: Value = response.body_mut().with_config().limit(1024 * 1024).read_json()?;
     let access = value["access_token"].as_str().context("missing access token")?.to_owned();
     let refresh = value["refresh_token"].as_str().context("missing refresh token")?.to_owned();
@@ -269,8 +287,22 @@ pub fn vault(events: std::sync::mpsc::Sender<crate::os::Event>) -> std::sync::mp
     });
     tx
 }
-pub fn restore() -> Result<Session> {
-    refresh(crate::os::secret_lookup()?)
+/// The sign-in kept in the system keyring, refreshed. While October can't be reached (offline at
+/// login, or a network that can't look it up), it keeps trying every 30 seconds rather than
+/// giving the sign-in up, until a newer sign-in or sign-out replaces this one.
+pub fn restore(generation: u64, current: Arc<AtomicU64>) -> Result<Session> {
+    let token = crate::os::secret_lookup()?;
+    loop {
+        match refresh(token.clone()) {
+            Err(error) if !refused(&error) && current.load(Ordering::SeqCst) == generation => {
+                let until = Instant::now() + Duration::from_secs(30);
+                while Instant::now() < until && current.load(Ordering::SeqCst) == generation {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+            }
+            result => return result,
+        }
+    }
 }
 pub fn logout(access: String) {
     let _ = agent().post(&format!("{AUTH}/logout")).header("apikey", KEY).header("Authorization", &format!("Bearer {access}")).send_empty();
@@ -373,6 +405,17 @@ mod tests {
         assert_eq!(callback_error("/callback?error=access_denied").as_deref(), Some("access_denied"));
         assert_eq!(callback_error("/callback?code=x"), None);
         assert_eq!(callback_error("/favicon.ico?error=x"), None);
+    }
+
+    #[test]
+    fn only_october_turning_it_down_ends_a_sign_in() {
+        let wrapped = |error: ureq::Error| anyhow::Error::new(error).context("October sign-in");
+        assert!(refused(&wrapped(ureq::Error::StatusCode(400))), "a revoked refresh token");
+        assert!(!refused(&wrapped(ureq::Error::StatusCode(503))), "October having a moment");
+        assert!(!refused(&wrapped(ureq::Error::HostNotFound)), "a network that can't look October up");
+        let lookup = std::io::Error::other("No such host is known. (os error 11001)");
+        assert!(!refused(&wrapped(ureq::Error::Io(lookup))));
+        assert!(!refused(&anyhow::anyhow!("no saved sign-in")));
     }
 
     #[test]

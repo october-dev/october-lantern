@@ -14,7 +14,7 @@ final class OctoberAccount: ObservableObject {
     static let shared = OctoberAccount()
 
     // October's public Supabase client values (row-level security protects the data).
-    static let supabaseURL = URL(string: "https://latwxiqjgvluiddckvmj.supabase.co")!
+    static let supabaseURL = URL(string: "https://auth.october.dev")!
     static let anonKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxhdHd4aXFqZ3ZsdWlkZGNrdm1qIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTAzMDExMzEsImV4cCI6MjA2NTg3NzEzMX0.Aor5lE6ZSvv83Or_CxQNUdRzRUqit3fODkNSJpcDJ7E"
     static let planURL = URL(string: "https://www.october.dev/api/plan")!
     static let callbackPort: UInt16 = 54547

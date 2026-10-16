@@ -252,7 +252,8 @@ impl Lantern {
     /// Restores the October sign-in kept in the system keyring, and keeps it fresh.
     fn restore_account(&mut self) {
         let generation = self.auth.load(std::sync::atomic::Ordering::SeqCst);
-        self.account_flow(generation).start(crate::account::restore);
+        let current = self.auth.clone();
+        self.account_flow(generation).start(move || crate::account::restore(generation, current));
     }
 
     /// A sign-in that runs (and refreshes itself) off the frame loop; newer attempts make it stale.

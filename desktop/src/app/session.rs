@@ -154,6 +154,11 @@ impl Lantern {
             self.launching.after_harness = Some(request);
             return true;
         }
+        // A task's own folder (Documents/Lantern Tasks/<app>) is made when its first task starts.
+        if let Err(error) = make_tasks_folder(&request.folder, &crate::settings::home()) {
+            self.launch_failed(error);
+            return true;
+        }
         self.remember_launch(&request);
         let context = request.context.as_ref().map(|context| context.summary(self.model.caps.platform));
         let sent = self.request(json!({
@@ -318,8 +323,30 @@ impl Lantern {
     }
 }
 
+/// Creates `folder` when it's one of Lantern's own task folders (under Documents/Lantern Tasks)
+/// that doesn't exist yet. Any other folder is left as it is.
+fn make_tasks_folder(folder: &str, home: &std::path::Path) -> Result<(), String> {
+    let path = std::path::Path::new(folder);
+    if path.exists() || !path.starts_with(home.join("Documents").join("Lantern Tasks")) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(path).map_err(|error| format!("Couldn't create {folder}: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tasks_folder_is_made_when_its_first_task_starts() {
+        let home = std::env::temp_dir().join(format!("lantern-home-{}", uuid::Uuid::new_v4().simple()));
+        let chrome = home.join("Documents").join("Lantern Tasks").join("Google Chrome");
+        super::make_tasks_folder(&chrome.to_string_lossy(), &home).unwrap();
+        assert!(chrome.is_dir());
+        let elsewhere = home.join("project");
+        super::make_tasks_folder(&elsewhere.to_string_lossy(), &home).unwrap();
+        assert!(!elsewhere.exists(), "only Lantern's own task folders are made");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
     use super::*;
     use crate::model::{Agent, AgentState, TmuxPane};
     use serde_json::Value;
