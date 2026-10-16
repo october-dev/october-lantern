@@ -392,6 +392,8 @@ pub enum Capture {
 pub struct NewSessionModel {
     /// Installed agents, most recently used first; `None` until the engine has checked.
     pub installed: Option<Vec<AgentKind>>,
+    /// Installed agents signed in to the user's own plan, best first (engine `subscriptions`).
+    pub signed_in: Vec<AgentKind>,
     /// "In Lantern" sessions are possible (tmux on Linux, ConPTY sessions on Windows).
     pub in_lantern_available: bool,
     /// Models by kind, once listed.
@@ -699,8 +701,10 @@ pub struct Prefs {
     /// Top of the pill as a fraction of the work area's height, measured from the bottom.
     pub pill_top: f32,
     pub open_in_terminal: bool,
-    /// The agent Ask Lantern starts tasks with (no picker; routing only).
-    pub default_task_agent: String,
+    /// The agent Ask Lantern starts tasks with (no picker; routing only), or empty to choose: your
+    /// own signed-in plan first, then October. (It replaced `default_task_agent`, which was always
+    /// "october".)
+    pub task_agent: String,
     pub screenshot_new_sessions: bool,
     pub bus_for_sessions: bool,
     pub toolkit_in_sessions: bool,
@@ -731,7 +735,7 @@ impl Default for Prefs {
             edge: Edge::Right,
             pill_top: 0.72,
             open_in_terminal: false,
-            default_task_agent: AgentKind::OCTOBER.into(),
+            task_agent: String::new(),
             screenshot_new_sessions: false,
             bus_for_sessions: true,
             // As Preferences.swift registers them: finishing notifies, the toolkit list is opt-in.

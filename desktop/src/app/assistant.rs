@@ -412,9 +412,11 @@ impl Lantern {
         }
     }
 
-    /// The agent new tasks start with (Swift `defaultAgentKind`): the preference if it can start
-    /// (October counts once October Harness is ready, or will be installed because there's no
-    /// Claude Code or Codex), else Claude Code, else Codex, else the first installed agent.
+    /// The agent new tasks start with (Swift `defaultAgentKind`): the preference if it's set and
+    /// can start; else an agent signed in to a plan the user already pays for, so their own
+    /// subscription is used before October's; else October (counted once October Harness is ready,
+    /// or will be installed because there's no Claude Code or Codex), Claude Code, Codex, then the
+    /// first installed agent.
     pub(super) fn default_agent_kind(&self) -> Option<AgentKind> {
         let installed = self.model.new_session.installed.clone().unwrap_or_default();
         let harness = self.model.harness.as_ref().map(|h| h.status);
@@ -423,8 +425,11 @@ impl Lantern {
                 || kind.as_str() == AgentKind::OCTOBER
                     && (harness == Some(HarnessState::Ready) || self.needs_harness() && harness != Some(HarnessState::Failed))
         };
-        [AgentKind(self.model.prefs.default_task_agent.clone()), AgentKind::new(AgentKind::CLAUDE), AgentKind::new(AgentKind::CODEX)]
+        let chosen = Some(AgentKind(self.model.prefs.task_agent.clone())).filter(|k| !k.as_str().is_empty());
+        chosen
             .into_iter()
+            .chain(self.model.new_session.signed_in.iter().cloned())
+            .chain([AgentKind::OCTOBER, AgentKind::CLAUDE, AgentKind::CODEX].map(AgentKind::new))
             .find(usable)
             .or_else(|| installed.first().cloned())
     }
@@ -535,12 +540,18 @@ mod tests {
     }
 
     #[test]
-    fn default_agent_prefers_the_setting_then_claude_codex_and_october_when_it_must() {
+    fn default_agent_prefers_the_setting_then_your_own_plan_then_october() {
         let mut both = lantern(&["codex", "claude", "gemini"]);
-        both.model.prefs.default_task_agent = "october".into();
         assert_eq!(both.default_agent_kind(), Some(AgentKind::new("claude")), "October isn't installed and isn't needed");
+        both.model.new_session.signed_in = vec![AgentKind::new("codex")];
+        assert_eq!(both.default_agent_kind(), Some(AgentKind::new("codex")), "a signed-in plan comes first");
+        both.model.prefs.task_agent = "gemini".into();
+        assert_eq!(both.default_agent_kind(), Some(AgentKind::new("gemini")), "unless another agent was chosen");
+        let mut with_october = lantern(&["claude", "october"]);
+        assert_eq!(with_october.default_agent_kind(), Some(AgentKind::new("october")), "Claude Code without a plan");
+        with_october.model.new_session.signed_in = vec![AgentKind::new("claude")];
+        assert_eq!(with_october.default_agent_kind(), Some(AgentKind::new("claude")));
         let mut only_gemini = lantern(&["gemini"]);
-        only_gemini.model.prefs.default_task_agent = "october".into();
         assert_eq!(only_gemini.default_agent_kind(), Some(AgentKind::new("october")), "no Claude or Codex: the harness will install");
         only_gemini.model.harness = Some(HarnessStatus { status: HarnessState::Failed, ..Default::default() });
         assert_eq!(only_gemini.default_agent_kind(), Some(AgentKind::new("gemini")), "a failed harness install falls back");

@@ -48,6 +48,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var seen: Set<String>
     /// Installed agents; `nil` until the engine has checked.
     @Published private(set) var installedKinds: [AgentKind]?
+    /// Installed agents signed in to your own plan (Claude, ChatGPT, x.ai, Google), best first.
+    @Published private(set) var signedInKinds: [AgentKind] = []
     @Published private(set) var tmuxAvailable = false
     /// October Harness (built in, installed on first use); `nil` until the engine has said.
     @Published private(set) var harness: EngineMessage.HarnessStatus?
@@ -162,6 +164,7 @@ final class AppModel: ObservableObject {
         engine.onModels = { [weak self] list in self?.models[list.kind.rawValue] = list }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
+            self?.signedInKinds = installed.signedIn ?? []
             self?.tmuxAvailable = installed.tmux
             self?.installHarnessIfNoOtherAgent()
         }
@@ -491,9 +494,11 @@ final class AppModel: ObservableObject {
 
     // MARK: Default agent and October Harness
 
-    /// The agent new sessions and tasks start with: the `defaultAgent` preference if it can start
-    /// (October counts when Lantern can install October Harness), else Claude Code, else Codex,
-    /// else the first installed agent. `nil` when no agent can start.
+    /// The agent new sessions and tasks start with: the `defaultAgent` preference if it's set and
+    /// can start; else an agent signed in to a plan you already pay for (Claude Code, Codex, Grok,
+    /// Gemini), so your own subscription is used before October's; else October (counted when
+    /// Lantern can install October Harness), Claude Code, Codex, then the first installed agent.
+    /// `nil` when no agent can start.
     var defaultAgentKind: AgentKind? {
         let installed = installedKinds ?? []
         // October Harness counts once it's here (on PATH or installed by Lantern), or when there's
@@ -502,7 +507,8 @@ final class AppModel: ObservableObject {
         let usable = { (k: AgentKind) in
             installed.contains(k) || (k == .october && (self.harness?.isReady == true || (self.needsHarness && self.harness?.status != "failed")))
         }
-        for kind in [AgentKind(rawValue: prefs.defaultAgent), .claude, .codex] where usable(kind) { return kind }
+        let chosen = prefs.defaultAgent.isEmpty ? [] : [AgentKind(rawValue: prefs.defaultAgent)]
+        for kind in chosen + signedInKinds + [.october, .claude, .codex] where usable(kind) { return kind }
         return installed.first
     }
 

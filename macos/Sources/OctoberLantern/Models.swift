@@ -198,6 +198,8 @@ enum EngineMessage: Decodable {
     struct Installed: Decodable {
         let kinds: [AgentKind]
         let tmux: Bool
+        /// Installed agents signed in to the user's own plan, best first (engine `subscriptions`).
+        let signedIn: [AgentKind]?
     }
 
     /// October Harness, built in (see engine/src/harness.rs): `ready` (on PATH or installed by

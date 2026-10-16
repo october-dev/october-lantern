@@ -29,6 +29,7 @@ mod run;
 mod scanner;
 mod serve;
 mod sqlite;
+mod subscriptions;
 #[cfg(test)]
 mod tests;
 mod tmux;

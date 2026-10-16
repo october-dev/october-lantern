@@ -83,6 +83,9 @@ pub fn quote(s: &str) -> String {
 pub struct Installed {
     pub kinds: Vec<Kind>,
     pub tmux: bool,
+    /// Installed agents signed in to the user's own plan, in the order Ask Lantern prefers them
+    /// (see `subscriptions`). Filled in by `installed`.
+    pub signed_in: Vec<Kind>,
 }
 
 /// Which agents are installed, according to the user's login shell. Cached: it takes a moment.
@@ -95,7 +98,7 @@ pub fn on_path() -> &'static Installed {
         if kinds.contains(&Kind::Codex) {
             check_codex_early();
         }
-        Installed { kinds, tmux: false }
+        Installed { kinds, tmux: false, signed_in: Vec::new() }
     });
     #[cfg(unix)]
     CACHE.get_or_init(|| {
@@ -108,6 +111,7 @@ pub fn on_path() -> &'static Installed {
         Installed {
             kinds: ALL.iter().copied().filter(|k| found.iter().any(|f| f == program(*k))).collect(),
             tmux: Path::new(tmux::tmux_bin()).is_absolute(),
+            signed_in: Vec::new(),
         }
     })
 }
@@ -115,7 +119,9 @@ pub fn on_path() -> &'static Installed {
 /// Which agents can be started: those on the user's PATH, and October when Lantern's own October
 /// Harness is installed (see `harness`).
 pub fn installed() -> Installed {
-    with_bundled(on_path(), crate::harness::binary().is_some())
+    let mut i = with_bundled(on_path(), crate::harness::binary().is_some());
+    i.signed_in = crate::subscriptions::signed_in().into_iter().filter(|k| i.kinds.contains(k)).collect();
+    i
 }
 
 pub(crate) fn with_bundled(on_path: &Installed, bundled_october: bool) -> Installed {

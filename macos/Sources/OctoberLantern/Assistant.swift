@@ -320,15 +320,6 @@ final class Assistant: ObservableObject {
         Analytics.shared.capture("assistant_task", ["kind": p.kind.rawValue])
     }
 
-    /// The agent tasks start with: the one you picked in Settings if it's installed, else October,
-    /// Claude Code, Codex, then whatever is installed.
-    static func defaultKind(_ installed: [AgentKind]) -> AgentKind? {
-        let preferred = UserDefaults.standard.string(forKey: "defaultAgent").flatMap(AgentKind.init(rawValue:))
-        let order = [preferred] + ["october", "claude", "codex"].map { AgentKind(rawValue: $0) }
-        for k in order.compactMap({ $0 }) where installed.contains(k) { return k }
-        return installed.first
-    }
-
     /// The project you named (matched against recent folders and agents' folders); otherwise
     /// your home folder.
     static func folder(for project: String?, model: AppModel) -> String {

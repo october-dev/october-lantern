@@ -29,6 +29,12 @@ impl Lantern {
                 let mut ordered: Vec<String> = recent.iter().filter(|kind| kinds.contains(kind)).cloned().collect();
                 ordered.extend(kinds.into_iter().filter(|kind| !recent.contains(kind)));
                 self.model.new_session.installed = Some(ordered.into_iter().map(crate::model::AgentKind).collect());
+                self.model.new_session.signed_in = event["installed"]["signedIn"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|k| k.as_str().map(crate::model::AgentKind::new))
+                    .collect();
                 // Windows runs Lantern's own sessions without tmux.
                 self.model.new_session.in_lantern_available = event["installed"]["tmux"] == true || cfg!(windows);
                 if let Ok(harness) = serde_json::from_value::<HarnessStatus>(event["harness"].clone()) {

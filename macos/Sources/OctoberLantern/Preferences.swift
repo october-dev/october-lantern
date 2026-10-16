@@ -22,9 +22,8 @@ final class Preferences: ObservableObject {
     @Published var toolkitInSessions: Bool { didSet { d.set(toolkitInSessions, forKey: "toolkitInSessions") } }
     /// Connect agents Lantern starts to October Bus, so they can message each other.
     @Published var busForSessions: Bool { didSet { d.set(busForSessions, forKey: "busForSessions") } }
-    /// The agent new sessions and assistant tasks start with (an AgentKind raw value). October
-    /// Harness by default: Lantern installs it on first use when it isn't on PATH. See
-    /// `AppModel.defaultAgentKind`.
+    /// The agent new sessions and assistant tasks start with (an AgentKind raw value), or empty to
+    /// choose: your own signed-in plan first, then October. See `AppModel.defaultAgentKind`.
     @Published var defaultAgent: String { didSet { d.set(defaultAgent, forKey: "defaultAgent") } }
 
     private init() {
@@ -39,7 +38,7 @@ final class Preferences: ObservableObject {
         toolkitInSessions = d.bool(forKey: "toolkitInSessions")
         d.register(defaults: ["busForSessions": true])
         busForSessions = d.bool(forKey: "busForSessions")
-        defaultAgent = d.string(forKey: "defaultAgent").flatMap { $0.isEmpty ? nil : $0 } ?? AgentKind.october.rawValue
+        defaultAgent = d.string(forKey: "defaultAgent") ?? ""
     }
 
     func counts(_ kind: AgentKind) -> Bool { !mutedKinds.contains(kind.rawValue) }
