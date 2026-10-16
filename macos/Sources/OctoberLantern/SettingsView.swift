@@ -23,6 +23,39 @@ struct SettingsView: View {
         }
     }
 
+    @ObservedObject private var context = AppContext.shared
+
+    /// Cua Driver's state, and the permissions it needs.
+    @ViewBuilder private var computerStatus: some View {
+        switch model.computer?.status {
+        case "installing":
+            Label("Downloading Cua Driver…", systemImage: "arrow.down.circle").font(.caption).foregroundStyle(.secondary)
+        case "failed":
+            HStack {
+                Label("Cua Driver didn't start: \(model.computer?.message ?? "unknown error")", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                Spacer()
+                Button("Try Again") { model.setComputerUse(true) }
+            }
+        case "ready":
+            if !context.trusted || !CGPreflightScreenCaptureAccess() {
+                HStack {
+                    Label("Agents need Accessibility and Screen Recording for October Lantern to use your apps.", systemImage: "lock")
+                        .font(.caption).foregroundStyle(.orange)
+                    Spacer()
+                    Button("Allow…") {
+                        if !context.trusted { context.requestAccess() }
+                        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+                    }
+                }
+            } else {
+                Label("Ready (Cua Driver \(model.computer?.version ?? ""))", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var autoUpdate = Updater.shared.automaticallyChecks
     @State private var shareUsage = Analytics.shared.enabled
@@ -53,6 +86,10 @@ struct SettingsView: View {
                 Toggle("Connect new sessions to October Bus", isOn: $prefs.busForSessions)
                 Text("Agents Lantern starts (Claude Code, Codex, OpenCode, October) can see and message each other and share tasks. Everything stays on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Let agents use this Mac's apps", isOn: Binding(get: { prefs.computerUse }, set: { model.setComputerUse($0) }))
+                Text("Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source) and Lantern's Accessibility and Screen Recording permissions.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if prefs.computerUse { computerStatus }
                 Toggle("Also give new sessions the list of tools on this Mac", isOn: $prefs.toolkitInSessions)
                 HStack {
                     Text("Lantern keeps a short list of what this Mac has (tools, apps, local models) for agents it starts. Tasks always get it. You can add your own notes at the end of the list.")

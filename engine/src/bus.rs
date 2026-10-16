@@ -15,6 +15,7 @@
 //! Gemini CLI / Qwen Code a system-settings file of Lantern's (its own copy of any system settings
 //! already there, plus the Bus). The October harness talks to the Bus natively and runs under
 //! `october-bus agent run`. Grok, Cursor and Pi have no per-launch way yet and start without it.
+//! The same per-launch config carries Cua Driver's MCP server (see `computer`), on the Bus or not.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -198,7 +199,8 @@ fn word(s: &str) -> String {
     if cfg!(windows) { s.to_string() } else { quote(s) }
 }
 
-/// How one launch joins the Bus: arguments for the agent, environment, or a wrapper command.
+/// How one launch joins the Bus and gets other MCP servers (Cua Driver): arguments for the agent,
+/// environment, or a wrapper command.
 #[derive(Debug, Default, PartialEq)]
 pub struct Attach {
     pub id: String,
@@ -209,6 +211,10 @@ pub struct Attach {
     pub env: Vec<(String, String)>,
     /// Shell words run in place of the program, with the program after them.
     pub wrap: Vec<String>,
+    /// The agent joins October Bus.
+    pub on_bus: bool,
+    /// The agent got Cua Driver's MCP tools.
+    pub computer: bool,
 }
 
 /// A new Bus identity for an agent Lantern is starting.
@@ -216,52 +222,94 @@ pub fn new_id(kind: Kind) -> String {
     format!("lantern-{}-{}", kind.as_str(), &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
-/// Prepares one launch. Writes the agent's MCP file, when it needs one, in Lantern's support
-/// folder.
-pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
-    let bin = binary().context("October Bus isn't downloaded yet")?;
-    let bin = bin.to_string_lossy().into_owned();
-    let mut a = Attach { id: id.into(), name: name.into(), ..Default::default() };
+/// Agents that take MCP servers per launch (all the Bus's but the October harness).
+pub fn takes_mcp(kind: Kind) -> bool {
+    supported(kind) && kind != Kind::October
+}
+
+/// An MCP server: (command, arguments).
+pub type Server = (String, Vec<String>);
+
+/// The MCP server name Cua Driver gets in an agent's config.
+const COMPUTER: &str = "cua_driver";
+
+/// Prepares one launch: on October Bus when `on_bus`, and with Cua Driver's MCP server when
+/// `computer` is given (command, arguments). Writes the agent's MCP file, when it needs one, in
+/// Lantern's support folder.
+pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&Server>) -> Result<Attach> {
+    let computer = computer.filter(|_| takes_mcp(kind));
+    let mut a = Attach { id: id.into(), name: name.into(), on_bus, computer: computer.is_some(), ..Default::default() };
+    if !on_bus && computer.is_none() {
+        return Ok(a);
+    }
+    let bin = if on_bus { binary().context("October Bus isn't downloaded yet")?.to_string_lossy().into_owned() } else { String::new() };
     let dir = support_dir().join("bus");
     std::fs::create_dir_all(&dir)?;
-    let generate = |host: &str, file: &PathBuf| -> Result<()> {
+    // The Bus's config for `host` when on the Bus, else `empty`; then Cua Driver added by `add`.
+    let config = |host: &str, file: &PathBuf, empty: serde_json::Value, add: &dyn Fn(&mut serde_json::Value, &Server)| -> Result<()> {
         let _ = std::fs::remove_file(file);
-        let out = bus(
-            &["harness", "config", host, "--scope", SCOPE, "--agent", id, "--name", name, "--output", &file.to_string_lossy()],
-            Duration::from_secs(5),
-        )?;
-        if !out.status.success() {
-            bail!("October Bus couldn't prepare {host}: {}", String::from_utf8_lossy(&out.stderr).trim());
+        let mut v = if on_bus {
+            let out = bus(
+                &["harness", "config", host, "--scope", SCOPE, "--agent", id, "--name", name, "--output", &file.to_string_lossy()],
+                Duration::from_secs(5),
+            )?;
+            if !out.status.success() {
+                bail!("October Bus couldn't prepare {host}: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            serde_json::from_slice(&std::fs::read(file)?).context("October Bus wrote an unreadable config file")?
+        } else {
+            empty
+        };
+        if let Some(c) = computer {
+            add(&mut v, c);
         }
+        crate::hooks::write_atomic(file, &serde_json::to_vec_pretty(&v)?)?;
         Ok(())
+    };
+    let stdio = |v: &mut serde_json::Value, (command, args): &Server| {
+        v["mcpServers"][COMPUTER] = serde_json::json!({"type": "stdio", "command": command, "args": args});
     };
     match kind {
         Kind::Claude => {
             let file = dir.join(format!("{id}.mcp.json"));
-            generate("claude-code", &file)?;
+            config("claude-code", &file, serde_json::json!({"mcpServers": {}}), &stdio)?;
             a.args = vec!["--mcp-config".into(), word(&file.to_string_lossy())];
         }
         Kind::Codex => {
             // Codex takes config overrides as TOML values.
-            let args = mcp_args(id, name);
-            let toml_args = format!("[{}]", args.iter().map(|s| toml_string(s)).collect::<Vec<_>>().join(","));
-            for kv in [
-                format!("mcp_servers.october_bus.command={}", toml_string(&bin)),
-                format!("mcp_servers.october_bus.args={toml_args}"),
-                "mcp_servers.october_bus.startup_timeout_sec=20".to_string(),
-            ] {
-                a.args.push("-c".into());
-                a.args.push(word(&kv));
+            let mut servers = Vec::new();
+            if on_bus {
+                servers.push(("october_bus", bin.clone(), mcp_args(id, name)));
+            }
+            if let Some((command, args)) = computer {
+                servers.push((COMPUTER, command.clone(), args.clone()));
+            }
+            for (server, command, args) in servers {
+                let toml_args = format!("[{}]", args.iter().map(|s| toml_string(s)).collect::<Vec<_>>().join(","));
+                for kv in [
+                    format!("mcp_servers.{server}.command={}", toml_string(&command)),
+                    format!("mcp_servers.{server}.args={toml_args}"),
+                    format!("mcp_servers.{server}.startup_timeout_sec=20"),
+                ] {
+                    a.args.push("-c".into());
+                    a.args.push(word(&kv));
+                }
             }
         }
         Kind::Opencode => {
             let file = dir.join(format!("{id}.opencode.json"));
-            generate("opencode", &file)?;
+            config("opencode", &file, serde_json::json!({"mcp": {}}), &|v, (command, args)| {
+                let mut words = vec![command.clone()];
+                words.extend(args.iter().cloned());
+                v["mcp"][COMPUTER] = serde_json::json!({"type": "local", "command": words, "enabled": true});
+            })?;
             a.env.push(("OPENCODE_CONFIG".into(), file.to_string_lossy().into_owned()));
         }
         Kind::Copilot => {
             let file = dir.join(format!("{id}.copilot.json"));
-            generate("copilot-cli", &file)?;
+            config("copilot-cli", &file, serde_json::json!({"mcpServers": {}}), &|v, (command, args)| {
+                v["mcpServers"][COMPUTER] = serde_json::json!({"type": "local", "command": command, "args": args, "tools": ["*"]});
+            })?;
             a.args = vec!["--additional-mcp-config".into(), word(&format!("@{}", file.to_string_lossy()))];
         }
         Kind::Gemini | Kind::Qwen => {
@@ -272,8 +320,10 @@ pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
                 (false, true) => ("qwen-code", "QWEN_CODE_SYSTEM_SETTINGS_PATH", r"C:\ProgramData\qwen-code\settings.json"),
             };
             let file = dir.join(format!("{id}.{host}.json"));
-            generate(host, &file)?;
-            // These read one system settings file; keep whatever the Mac's own one says.
+            config(host, &file, serde_json::json!({"mcpServers": {}}), &|v, (command, args)| {
+                v["mcpServers"][COMPUTER] = serde_json::json!({"command": command, "args": args});
+            })?;
+            // These read one system settings file; keep whatever the computer's own one says.
             let existing = std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(system));
             let merged = merge_settings(std::fs::read(&existing).ok().as_deref(), &std::fs::read(&file)?)?;
             crate::hooks::write_atomic(&file, &merged)?;
@@ -281,12 +331,24 @@ pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
         }
         Kind::Goose => {
             // `goose session --with-extension '<command>'`, the command in one string Goose splits
-            // the way a shell would.
-            let mut words = vec![quote(&bin)];
-            words.extend(mcp_args(id, name).iter().map(|w| quote(w)));
-            a.args = vec!["session".into(), "--with-extension".into(), word(&words.join(" "))];
+            // the way a shell would; one per server.
+            a.args = vec!["session".into()];
+            let mut servers = Vec::new();
+            if on_bus {
+                servers.push((bin.clone(), mcp_args(id, name)));
+            }
+            if let Some(c) = computer {
+                servers.push(c.clone());
+            }
+            for (command, args) in servers {
+                let mut words = vec![quote(&command)];
+                words.extend(args.iter().map(|w| quote(w)));
+                a.args.extend(["--with-extension".into(), word(&words.join(" "))]);
+            }
         }
         Kind::October => {
+            // The harness talks to the Bus natively; it uses Cua Driver through its command
+            // (`computer::note`).
             a.wrap = vec![word(&bin), "agent".into(), "run".into(), "--scope".into(), SCOPE.into(), "--id".into(), word(id)];
             a.wrap.extend(["--name".into(), word(name), "--".into()]);
         }
@@ -295,8 +357,8 @@ pub fn attach(kind: Kind, id: &str, name: &str) -> Result<Attach> {
     Ok(a)
 }
 
-/// A settings file with the Bus's `mcpServers.october_bus` added to `base` (another settings file,
-/// kept as it is otherwise).
+/// A settings file with `bus`'s MCP servers (October Bus's, Cua Driver's) added to `base` (another
+/// settings file, kept as it is otherwise).
 pub(crate) fn merge_settings(base: Option<&[u8]>, bus: &[u8]) -> Result<Vec<u8>> {
     let bus: serde_json::Value = serde_json::from_slice(bus).context("October Bus wrote an unreadable settings file")?;
     let mut out =
@@ -304,7 +366,9 @@ pub(crate) fn merge_settings(base: Option<&[u8]>, bus: &[u8]) -> Result<Vec<u8>>
     if !out["mcpServers"].is_object() {
         out["mcpServers"] = serde_json::json!({});
     }
-    out["mcpServers"]["october_bus"] = bus["mcpServers"]["october_bus"].clone();
+    for (name, server) in bus["mcpServers"].as_object().into_iter().flatten() {
+        out["mcpServers"][name] = server.clone();
+    }
     Ok(serde_json::to_vec_pretty(&out)?)
 }
 
@@ -366,4 +430,46 @@ pub fn link_when_ready(id: String) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod computer_tests {
+    use super::*;
+
+    fn driver() -> (String, Vec<String>) {
+        ("/x/cua-driver".into(), vec!["mcp".into(), "--socket".into(), "/x/cua.sock".into()])
+    }
+
+    #[test]
+    fn cua_driver_is_added_per_launch_without_the_bus() {
+        let codex = attach(Kind::Codex, "id", "Codex · p", false, Some(&driver())).unwrap();
+        assert!(codex.computer && !codex.on_bus);
+        let joined = codex.args.join(" ");
+        assert!(joined.contains("mcp_servers.cua_driver.command="), "{joined}");
+        assert!(joined.contains("cua.sock"), "{joined}");
+        assert!(!joined.contains("october_bus"), "{joined}");
+
+        let goose = attach(Kind::Goose, "id", "Goose · p", false, Some(&driver())).unwrap();
+        assert_eq!(goose.args[..2], ["session".to_string(), "--with-extension".to_string()]);
+
+        // The October harness has no per-launch MCP: it's told the command instead.
+        let october = attach(Kind::October, "id", "October · p", false, Some(&driver())).unwrap();
+        assert!(!october.computer && october.wrap.is_empty());
+        let none = attach(Kind::Codex, "id", "Codex · p", false, None).unwrap();
+        assert!(none.args.is_empty() && !none.computer);
+    }
+
+    #[test]
+    fn settings_files_keep_every_server() {
+        let merged = merge_settings(
+            Some(br#"{"theme":"dark","mcpServers":{"mine":{"command":"x"}}}"#),
+            br#"{"mcpServers":{"october_bus":{"command":"b"},"cua_driver":{"command":"c"}}}"#,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&merged).unwrap();
+        assert_eq!(v["theme"], "dark");
+        for name in ["mine", "october_bus", "cua_driver"] {
+            assert!(v["mcpServers"][name].is_object(), "{name}");
+        }
+    }
 }

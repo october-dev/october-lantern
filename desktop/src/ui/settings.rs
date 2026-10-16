@@ -291,6 +291,21 @@ fn general(ui: &mut Ui, cx: &mut Ctx) {
             ui,
             "The new agent gets a screenshot of the screen you're on (without Lantern) with its first message, for context. It stays on this computer. Needs screen capture permission; you can also switch it per session.",
         );
+        toggle(ui, cx, "Let agents use this computer's apps", cx.model.prefs.computer_use, SettingChange::ComputerUse);
+        let status = match cx.model.computer.as_ref().filter(|_| cx.model.prefs.computer_use) {
+            Some(s) if s.status == "installing" => " Downloading Cua Driver…".to_string(),
+            Some(s) if s.status == "failed" => {
+                format!(" Cua Driver didn't start: {}. Switch it off and on to try again.", s.message.as_deref().unwrap_or("unknown error"))
+            }
+            Some(s) if s.status == "ready" => format!(" Ready (Cua Driver {}).", s.version.as_deref().unwrap_or("")),
+            _ => String::new(),
+        };
+        caption(
+            ui,
+            &format!(
+                "Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source).{status}"
+            ),
+        );
         toggle(ui, cx, "Connect new sessions to October Bus", cx.model.prefs.bus_for_sessions, SettingChange::BusForSessions);
         caption(
             ui,

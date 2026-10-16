@@ -164,7 +164,7 @@ impl Lantern {
         let sent = self.request(json!({
             "type": "launch", "kind": request.kind.as_str(), "cwd": request.folder, "prompt": request.prompt,
             "screenshot": request.screenshot, "model": request.model, "context": context,
-            "toolkit": request.toolkit, "bus": request.bus, "background": request.background,
+            "toolkit": request.toolkit, "bus": request.bus, "computer": self.model.prefs.computer_use, "background": request.background,
         }));
         match sent {
             Some(id) => {

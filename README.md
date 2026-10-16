@@ -47,6 +47,7 @@ Lantern watches tools like Claude Code, Codex, October, and Cursor, and brings t
 | You want to start something new    | Pick an installed agent and a folder, then open a terminal or background session.        |
 | Something on screen puzzles you    | Point & Ask: drag a box around it, ask, and get an answer, or send it to an agent.       |
 | You have a quick question          | Click the lantern to ask, like "which agent needs me first?", or describe a task to start. |
+| A task needs an app or a website   | Agents Lantern starts can use your apps and signed-in browser in the background, with their own cursor ([Cua Driver](https://github.com/trycua/cua)). |
 
 Collapsed, it's one small lantern. It stays beside you across desktop Spaces and full-screen apps. Optional notifications let you step away from the bar, too.
 

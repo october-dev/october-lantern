@@ -19,6 +19,15 @@ impl Lantern {
                     EngineHealth::Failed("this engine speaks a different protocol; reinstall Lantern".into())
                 };
                 self.turns.restart();
+                // Agents can use this computer's apps: get Cua Driver ready (downloaded on first use).
+                if self.connected && self.model.prefs.computer_use {
+                    self.request(serde_json::json!({"type": "computer.prepare", "enabled": true}));
+                }
+            }
+            "computer" => {
+                if let Ok(status) = serde_json::from_value::<crate::model::ComputerStatus>(event.clone()) {
+                    self.model.computer = Some(status);
+                }
             }
             "snapshot" => self.snapshot(&event),
             "installed" => {

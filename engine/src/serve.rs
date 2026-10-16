@@ -50,9 +50,18 @@ enum Request {
         /// Connect the agent to October Bus with the other agents Lantern started.
         #[serde(default)]
         bus: bool,
+        /// Let the agent use the computer's apps (Cua Driver). On unless the app says otherwise.
+        #[serde(default = "yes")]
+        computer: bool,
         background: bool,
         #[serde(default = "launch_timeout")]
         timeout_ms: u64,
+    },
+    /// Turn Cua Driver on (download it if needed and start Lantern's driver) or off (stop it);
+    /// answered with `computer` events.
+    #[serde(rename = "computer.prepare", rename_all = "camelCase")]
+    ComputerPrepare {
+        enabled: bool,
     },
     /// Download October Bus now if it isn't here (answered with `bus`), so the first session with
     /// the Bus doesn't wait for it.
@@ -134,6 +143,10 @@ enum Request {
     },
     #[serde(rename = "phone.stop")]
     PhoneStop,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn launch_timeout() -> u64 {
@@ -309,7 +322,20 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Launch { request_id, kind, cwd, prompt, screenshot, model, context, toolkit, bus, background, timeout_ms }) => {
+                Ok(Request::Launch {
+                    request_id,
+                    kind,
+                    cwd,
+                    prompt,
+                    screenshot,
+                    model,
+                    context,
+                    toolkit,
+                    bus,
+                    computer,
+                    background,
+                    timeout_ms,
+                }) => {
                     if launch_pending {
                         emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false,
                             "message": "Another session is still starting. Wait for its outcome before starting another."}));
@@ -329,6 +355,8 @@ pub fn run() -> Result<()> {
                             toolkit: toolkit.as_deref(),
                             bus,
                             bus_note: None,
+                            computer,
+                            computer_note: None,
                         };
                         let result = match launch::launch(
                             kind,
@@ -348,6 +376,21 @@ pub fn run() -> Result<()> {
                         let _ = finished.send(Incoming::LaunchFinished(result));
                     });
                     next_scan = Instant::now() + Duration::from_millis(1500);
+                }
+                Ok(Request::ComputerPrepare { enabled }) => {
+                    std::thread::spawn(move || {
+                        if !enabled {
+                            crate::computer::stop();
+                            return emit(&crate::computer::status_json("off", None));
+                        }
+                        if !crate::computer::ready() {
+                            emit(&crate::computer::status_json("installing", None));
+                        }
+                        match crate::computer::start() {
+                            Ok(()) => emit(&crate::computer::status_json("ready", None)),
+                            Err(e) => emit(&crate::computer::status_json("failed", Some(format!("{e:#}")))),
+                        }
+                    });
                 }
                 Ok(Request::BusPrepare) => {
                     std::thread::spawn(|| match crate::bus::ensure_installed() {
@@ -480,7 +523,10 @@ pub fn run() -> Result<()> {
                 // The line itself isn't logged: some requests carry an access token.
                 Err(e) => eprintln!("lantern-engine: bad request ({e})"),
             },
-            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => {
+                crate::computer::stop();
+                return Ok(());
+            }
             Err(RecvTimeoutError::Timeout) => {}
         }
     }

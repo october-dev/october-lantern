@@ -10,6 +10,7 @@
 mod actions;
 mod apps;
 mod bus;
+mod computer;
 mod console;
 mod deliver;
 mod harness;

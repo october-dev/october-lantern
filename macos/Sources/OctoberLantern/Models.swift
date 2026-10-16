@@ -172,6 +172,7 @@ enum EngineMessage: Decodable {
     /// `harness`: October Harness's status, from engines that have it.
     case installed(Installed, harness: HarnessStatus?)
     case harness(HarnessStatus)
+    case computer(ComputerStatus)
     case models(ModelList)
     /// `session`: the tmux session a started agent runs in (absent without tmux).
     case launchResult(requestId: String, ok: Bool, message: String?, session: String?)
@@ -200,6 +201,14 @@ enum EngineMessage: Decodable {
         let tmux: Bool
         /// Installed agents signed in to the user's own plan, best first (engine `subscriptions`).
         let signedIn: [AgentKind]?
+    }
+
+    /// Cua Driver, which lets agents use this Mac's apps (engine/src/computer.rs): `ready`,
+    /// `installing`, `failed` (with `message`) or `off`.
+    struct ComputerStatus: Decodable, Equatable {
+        let status: String
+        let message: String?
+        let version: String?
     }
 
     /// October Harness, built in (see engine/src/harness.rs): `ready` (on PATH or installed by
@@ -256,6 +265,8 @@ enum EngineMessage: Decodable {
             )
         case "harness":
             self = .harness(try HarnessStatus(from: decoder))
+        case "computer":
+            self = .computer(try ComputerStatus(from: decoder))
         case "launchResult", "attachResult":
             let id = try c.decode(String.self, forKey: .requestId)
             let ok = try c.decode(Bool.self, forKey: .ok)

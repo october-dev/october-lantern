@@ -48,6 +48,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var seen: Set<String>
     /// Installed agents; `nil` until the engine has checked.
     @Published private(set) var installedKinds: [AgentKind]?
+    /// Cua Driver's state, once the engine has reported it.
+    @Published private(set) var computer: EngineMessage.ComputerStatus?
     /// Installed agents signed in to your own plan (Claude, ChatGPT, x.ai, Google), best first.
     @Published private(set) var signedInKinds: [AgentKind] = []
     @Published private(set) var tmuxAvailable = false
@@ -169,6 +171,7 @@ final class AppModel: ObservableObject {
             self?.installHarnessIfNoOtherAgent()
         }
         engine.onHarness = { [weak self] status in self?.harnessChanged(status) }
+        engine.onComputer = { [weak self] status in if self?.computer != status { self?.computer = status } }
         // October launches sign in with your October account: the engine keeps the access token
         // in memory (never the refresh token).
         octoberSessionWatch = OctoberAccount.shared.$session.sink { [weak self] session in
@@ -190,6 +193,8 @@ final class AppModel: ObservableObject {
                 let s = OctoberAccount.shared.session
                 self.engine.octoberSession(accessToken: s?.accessToken, expiresAt: s?.expiresAt)
                 if self.launchAfterHarness != nil { self.engine.prepareHarness() }
+                // Agents can use this Mac's apps: get Cua Driver ready (downloaded on first use).
+                if self.prefs.computerUse { self.engine.prepareComputer(enabled: true) }
             }
             // Fetch October Bus a minute after start, so the first session on it doesn't wait.
             Task { @MainActor [weak self] in
@@ -526,6 +531,13 @@ final class AppModel: ObservableObject {
         prepareHarness()
     }
 
+    /// Turns "Let agents use this Mac's apps" on or off.
+    func setComputerUse(_ on: Bool) {
+        prefs.computerUse = on
+        engine.prepareComputer(enabled: on)
+        Analytics.shared.capture("computer_use", ["on": on])
+    }
+
     /// October can start now: on PATH, or October Harness installed.
     var octoberReady: Bool { harness?.isReady == true || (installedKinds ?? []).contains(.october) }
 
@@ -675,7 +687,7 @@ final class AppModel: ObservableObject {
             id, .launch,
             sent: engine.launch(
                 requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, context: context,
-                toolkit: toolkit, bus: prefs.busForSessions, background: background
+                toolkit: toolkit, bus: prefs.busForSessions, computer: prefs.computerUse, background: background
             )
         )
     }

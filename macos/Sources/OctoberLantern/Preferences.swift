@@ -22,6 +22,8 @@ final class Preferences: ObservableObject {
     @Published var toolkitInSessions: Bool { didSet { d.set(toolkitInSessions, forKey: "toolkitInSessions") } }
     /// Connect agents Lantern starts to October Bus, so they can message each other.
     @Published var busForSessions: Bool { didSet { d.set(busForSessions, forKey: "busForSessions") } }
+    /// Let agents Lantern starts use this Mac's apps through Cua Driver (engine `computer`).
+    @Published var computerUse: Bool { didSet { d.set(computerUse, forKey: "computerUse") } }
     /// The agent new sessions and assistant tasks start with (an AgentKind raw value), or empty to
     /// choose: your own signed-in plan first, then October. See `AppModel.defaultAgentKind`.
     @Published var defaultAgent: String { didSet { d.set(defaultAgent, forKey: "defaultAgent") } }
@@ -36,8 +38,9 @@ final class Preferences: ObservableObject {
         pointAsk = PointAskPreset(rawValue: d.string(forKey: "pointAsk") ?? "") ?? .controlOptionP
         screenshotNewSessions = d.bool(forKey: "screenshotNewSessions")
         toolkitInSessions = d.bool(forKey: "toolkitInSessions")
-        d.register(defaults: ["busForSessions": true])
+        d.register(defaults: ["busForSessions": true, "computerUse": true])
         busForSessions = d.bool(forKey: "busForSessions")
+        computerUse = d.bool(forKey: "computerUse")
         defaultAgent = d.string(forKey: "defaultAgent") ?? ""
     }
 

@@ -203,6 +203,10 @@ pub struct Extras<'a> {
     pub bus: bool,
     /// What the first message says about October Bus (set by `launch`).
     pub bus_note: Option<&'a str>,
+    /// Let the agent use the computer's apps through Cua Driver (see `computer`).
+    pub computer: bool,
+    /// What the first message says about Cua Driver (set by `launch`).
+    pub computer_note: Option<&'a str>,
 }
 
 /// How Lantern asks every agent it starts to answer, after the first message: where it is, and
@@ -245,6 +249,9 @@ pub fn first_message(prompt: Option<&str>, extras: Extras) -> Option<String> {
         out.push_str(&format!("\n\nFor context, a screenshot of my screen when I started this session: {}", s.display()));
     }
     if let Some(n) = extras.bus_note {
+        out.push_str(&format!("\n\n{n}"));
+    }
+    if let Some(n) = extras.computer_note {
         out.push_str(&format!("\n\n{n}"));
     }
     if let Some(t) = extras.toolkit.map(str::trim).filter(|t| !t.is_empty()) {
@@ -520,7 +527,7 @@ fn launch_session(
     env.extend(bus.as_ref().map(|b| b.env.clone()).unwrap_or_default());
     let spec = crate::pty::Spec { cwd: cwd.to_path_buf(), program, args, env };
     crate::pty::start(&session, &spec)?;
-    if let Some(b) = &bus {
+    if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
         crate::bus::link_when_ready(b.id.clone());
     }
     if mode == Mode::Terminal {
@@ -622,13 +629,25 @@ pub fn launch(
             bail!("\"{m}\" doesn't look like a model id");
         }
     }
-    // October Bus: a new identity for this agent, and the tools to reach the others.
+    // October Bus: a new identity for this agent, and the tools to reach the others. Cua Driver:
+    // the computer's apps, through Lantern's own driver (started when the app turned it on).
     let mut bus_problem = None;
-    let bus = if extras.bus && crate::bus::supported(kind) {
+    let computer = extras.computer && crate::computer::ready();
+    let server = if computer { crate::computer::mcp_server() } else { None };
+    let on_bus = extras.bus
+        && crate::bus::supported(kind)
+        && match crate::bus::ensure_ready() {
+            Ok(()) => true,
+            Err(e) => {
+                bus_problem = Some(format!("{e:#}"));
+                false
+            }
+        };
+    let bus = if on_bus || (server.is_some() && crate::bus::takes_mcp(kind)) {
         let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
         let name = format!("{} · {project}", display_name(kind));
         let id = crate::bus::new_id(kind);
-        match crate::bus::ensure_ready().and_then(|_| crate::bus::attach(kind, &id, &name)) {
+        match crate::bus::attach(kind, &id, &name, on_bus, server.as_ref()) {
             Ok(a) => Some(a),
             Err(e) => {
                 bus_problem = Some(format!("{e:#}"));
@@ -638,8 +657,9 @@ pub fn launch(
     } else {
         None
     };
-    let note = bus.as_ref().map(|b| crate::bus::note(&b.name));
-    let extras = Extras { bus_note: note.as_deref(), ..extras };
+    let note = bus.as_ref().filter(|b| b.on_bus).map(|b| crate::bus::note(&b.name));
+    let computer_note = if computer { crate::computer::note(bus.as_ref().is_some_and(|b| b.computer)) } else { None };
+    let extras = Extras { bus_note: note.as_deref(), computer_note: computer_note.as_deref(), ..extras };
     let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), extras).map(|m| with_guidance(m, cwd));
     let prompt = message.as_deref();
 
@@ -675,7 +695,7 @@ fn launch_tmux(
         let name = format!("{}-{}", kind.as_str(), now_ms());
         check_launch_deadline(deadline)?;
         open_in_terminal(&name, &agent_command_with(kind, cwd, prompt, screenshot, model, bus.as_ref(), extra))?;
-        if let Some(b) = &bus {
+        if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
             crate::bus::link_when_ready(b.id.clone());
         }
         return Ok(Launched { session: None, bus_problem });
@@ -695,7 +715,7 @@ fn launch_tmux(
         bail!("tmux couldn't start the session");
     }
 
-    if let Some(b) = &bus {
+    if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
         crate::bus::link_when_ready(b.id.clone());
     }
 

@@ -321,6 +321,16 @@ pub enum HarnessState {
     Failed,
 }
 
+/// Cua Driver, which lets agents use this computer's apps (engine/src/computer.rs): "ready",
+/// "installing", "failed" (with `message`) or "off".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComputerStatus {
+    pub status: String,
+    pub message: Option<String>,
+    pub version: Option<String>,
+}
+
 /// October Harness (engine/src/harness.rs).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -707,6 +717,8 @@ pub struct Prefs {
     pub task_agent: String,
     pub screenshot_new_sessions: bool,
     pub bus_for_sessions: bool,
+    /// Let agents Lantern starts use this computer's apps through Cua Driver (engine `computer`).
+    pub computer_use: bool,
     pub toolkit_in_sessions: bool,
     pub notifications: bool,
     pub notify_finished: bool,
@@ -738,6 +750,7 @@ impl Default for Prefs {
             task_agent: String::new(),
             screenshot_new_sessions: false,
             bus_for_sessions: true,
+            computer_use: true,
             // As Preferences.swift registers them: finishing notifies, the toolkit list is opt-in.
             toolkit_in_sessions: false,
             notifications: true,
@@ -851,6 +864,8 @@ pub struct Model {
     pub account: AccountState,
     pub october: Option<OctoberLink>,
     pub harness: Option<HarnessStatus>,
+    /// Cua Driver's state, once the engine has reported it.
+    pub computer: Option<ComputerStatus>,
     pub engine: EngineHealth,
     pub toast: Option<Toast>,
     pub dictation_offer: Option<DictationOffer>,

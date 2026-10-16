@@ -21,6 +21,7 @@ final class EngineClient {
     var onInstalled: ((EngineMessage.Installed) -> Void)?
     /// October Harness's status (with `installed`, and in answer to `prepareHarness`).
     var onHarness: ((EngineMessage.HarnessStatus) -> Void)?
+    var onComputer: ((EngineMessage.ComputerStatus) -> Void)?
     var onModels: ((EngineMessage.ModelList) -> Void)?
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
@@ -163,17 +164,24 @@ final class EngineClient {
     @discardableResult
     func launch(
         requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, model: String?, context: String?, toolkit: Bool,
-        bus: Bool, background: Bool
+        bus: Bool, computer: Bool, background: Bool
     ) -> Bool {
         var request: [String: Any] = [
             "type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background,
-            "toolkit": toolkit, "bus": bus,
+            "toolkit": toolkit, "bus": bus, "computer": computer,
             "timeoutMs": Int(AppModel.launchDeadline * 1000),
         ]
         if let context { request["context"] = context }
         if let screenshot { request["screenshot"] = screenshot }
         if let model { request["model"] = model }
         return send(request)
+    }
+
+    /// Turns Cua Driver on (downloads it if needed and starts Lantern's driver) or off; answered
+    /// with `computer` messages.
+    @discardableResult
+    func prepareComputer(enabled: Bool) -> Bool {
+        send(["type": "computer.prepare", "enabled": enabled])
     }
 
     /// Downloads October Bus in the background if it isn't here yet.
@@ -298,6 +306,7 @@ final class EngineClient {
                     onInstalled?(installed)
                     if let harness { onHarness?(harness) }
                 case .harness(let status): onHarness?(status)
+                case .computer(let status): onComputer?(status)
                 case .models(let list): onModels?(list)
                 case .history(let id, let agentId, let supported, let messages, let busy):
                     if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
