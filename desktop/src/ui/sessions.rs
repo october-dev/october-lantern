@@ -887,8 +887,9 @@ mod tests {
             inputs.new_session.prompt = prompt.into();
             frame(&ctx, &assets, &model, &mut inputs, &mut view, Vec::new());
             let (height, _, _) = frame(&ctx, &assets, &model, &mut inputs, &mut view, Vec::new());
-            // Footer button: 34pt high, with 16pt padding beneath it.
-            let hover = egui::Event::PointerMoved(egui::pos2(190.0, height - 16.0 - 17.0));
+            // Footer button: 34pt high, then 8pt and the 16pt "Opens in Lantern" line, with 16pt
+            // padding beneath.
+            let hover = egui::Event::PointerMoved(egui::pos2(190.0, height - 16.0 - 16.0 - 8.0 - 17.0));
             frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![hover.clone()]);
             let (.., actions, texts) = frame(&ctx, &assets, &model, &mut inputs, &mut view, vec![hover.clone()]);
             let help = "Type what it should do in DaVinci/Resolve:Editor first.";
