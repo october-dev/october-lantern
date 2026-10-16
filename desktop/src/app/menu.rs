@@ -38,22 +38,19 @@ impl Lantern {
     fn menu_entries(&self) -> Vec<Entry> {
         let dictate = if self.model.dictating { "Stop Dictating" } else { "Dictate a Reply" };
         let owner = self.inputs.drafts.recipient().map_or(DictationOwner::Assistant, |id| DictationOwner::Reply(id.to_string()));
-        let mut entries = vec![
+        vec![
             Entry::Item("Ask Lantern".into(), UiAction::SetPanel(Some(PanelMode::Assistant))),
-            Entry::Item("Your Agents".into(), UiAction::SetPanel(Some(PanelMode::Inbox))),
-            Entry::Item("New Session…".into(), UiAction::StartNewSession),
             Entry::Item("Point & Ask".into(), UiAction::StartPointAsk),
+            Entry::Item("Start New Agent…".into(), UiAction::StartNewSession),
+            Entry::Item("Your Agents".into(), UiAction::SetPanel(Some(PanelMode::Inbox))),
             Entry::Item(dictate.into(), UiAction::ToggleDictation { owner }),
             Entry::Separator,
             Entry::Item("October…".into(), UiAction::SetPanel(Some(PanelMode::October))),
             Entry::Item("Settings…".into(), UiAction::ShowSettings),
-        ];
-        // The Mac quits from its menu bar. Without a tray host (GNOME without AppIndicator
-        // support) this menu is the only way out, so it carries Quit too.
-        if !self.model.caps.tray {
-            entries.extend([Entry::Separator, Entry::Item("Quit October Lantern".into(), UiAction::Quit)]);
-        }
-        entries
+            // Also in the tray menu, which Windows can tuck away behind the overflow arrow.
+            Entry::Separator,
+            Entry::Item("Quit October Lantern".into(), UiAction::Quit),
+        ]
     }
 
     /// The menu window, while open.
@@ -160,14 +157,22 @@ mod tests {
     fn the_menu_matches_the_macs_and_dictation_toggles_its_title() {
         let (engine, _) = crate::sidecar::test_sender();
         let mut lantern = Lantern::new(engine, None);
-        lantern.model.caps.tray = true;
         assert_eq!(
             titles(&lantern),
-            ["Ask Lantern", "Your Agents", "New Session…", "Point & Ask", "Dictate a Reply", "—", "October…", "Settings…"]
+            [
+                "Ask Lantern",
+                "Point & Ask",
+                "Start New Agent…",
+                "Your Agents",
+                "Dictate a Reply",
+                "—",
+                "October…",
+                "Settings…",
+                "—",
+                "Quit October Lantern"
+            ]
         );
         lantern.model.dictating = true;
         assert_eq!(titles(&lantern)[4], "Stop Dictating");
-        lantern.model.caps.tray = false;
-        assert_eq!(titles(&lantern).last().map(String::as_str), Some("Quit October Lantern"), "without a tray, the only way to quit");
     }
 }

@@ -146,25 +146,32 @@ impl Lantern {
         };
         #[cfg(not(windows))]
         let background: Option<egui::TextureId> = None;
+        // Windows treats a borderless window covering exactly a whole monitor as a fullscreen game:
+        // it stops compositing it, so it shows black or white (and drops transparency). One pixel
+        // short of the bottom it stays an ordinary window; the frozen display is still drawn whole.
+        let size = if cfg!(windows) { points.size() - vec2(0.0, 1.0 / scale) } else { points.size() };
         let builder = ViewportBuilder::default()
             .with_icon(crate::ui::assets::window_icon())
             .with_title(SELECT_TITLE)
             .with_position(points.min)
-            .with_inner_size(points.size())
+            .with_inner_size(size)
             .with_decorations(false)
             // Opaque over a frozen display; transparent over the live one.
             .with_transparent(background.is_none())
             .with_always_on_top()
             .with_taskbar(false)
-            .with_fullscreen(true);
+            .with_active(true)
+            .with_fullscreen(!cfg!(windows));
+        let display = points.size();
         let window_hit_test = self.model.caps.window_hit_test;
         let mut outcome: Option<Option<Rect>> = None;
         let mut shown = Rect::NOTHING;
         ctx.show_viewport_immediate(ViewportId::from_hash_of("lantern-select"), builder, |ui, _| {
             let area = ui.max_rect();
-            shown = area;
+            // The whole display, in this window's points (a pixel taller than it on Windows).
+            shown = Rect::from_min_size(area.min, display);
             if let Some(texture) = background {
-                ui.painter().image(texture, area, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
+                ui.painter().with_clip_rect(area).image(texture, shown, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
             }
             ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
             let response = ui.interact(area, ui.id().with("select"), Sense::click_and_drag());

@@ -11,7 +11,7 @@ struct PanelView: View {
             EngineBanner(health: model.engineHealth)
             switch model.panel {
             case .newSession:
-                PanelTitle(title: "New session", model: model)
+                PanelTitle(title: "Start a new agent", model: model)
                 NewSessionView(model: model)
             case .october:
                 PanelTitle(title: "October", model: model)

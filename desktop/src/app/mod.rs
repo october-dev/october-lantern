@@ -201,6 +201,7 @@ impl Lantern {
             Event::Transcript { owner, generation, result } => self.transcript(&owner, generation, result),
             Event::SpeechSetup(step) => self.speech_setup(step),
             Event::Update(result) => self.update_result(result),
+            Event::UpdateInstalled { result, quietly } => self.update_installed(result, quietly),
             Event::Assistant { generation, turn, piece } => self.assistant_piece(generation, turn, piece),
             Event::AssistantDone { generation, turn, error } => self.assistant_done(generation, turn, error),
             Event::Account { generation, result } if generation == self.auth.load(std::sync::atomic::Ordering::SeqCst) => {

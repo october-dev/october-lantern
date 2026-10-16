@@ -72,7 +72,7 @@ pub fn panel_title(ui: &mut Ui, cx: &mut Ctx, title: &str) {
 }
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
-    panel_title(ui, cx, "New session");
+    panel_title(ui, cx, "Start a new agent");
     let kind = selected_kind(cx).cloned();
     if cx.view.model_search_kind != kind {
         cx.view.model_search_kind = kind.clone();
@@ -88,31 +88,12 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
             egui::Frame::new().inner_margin(Margin { left: 16, right: 16, top: 0, bottom: 4 }).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 12.0;
                 prompt(ui, cx);
-                section(ui, "Agent", |ui| agents(ui, cx, kind.as_ref()));
+                section(ui, "Choose your agent", |ui| agents(ui, cx, kind.as_ref()));
                 if let Some(kind) = &kind {
                     section(ui, "Model", |ui| model(ui, cx, kind));
                 }
-                section(ui, "Folder", |ui| folder(ui, cx));
+                section(ui, "Folder it works in", |ui| folder(ui, cx));
                 section(ui, "Context", |ui| context(ui, cx));
-                section(ui, "Open in", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 8.0;
-                        let width = (ui.available_width() - 8.0) / 2.0;
-                        let terminal = cx.inputs.new_session.open_in_terminal || !cx.model.new_session.in_lantern_available;
-                        if choice(ui, "Terminal window", Icon::Window, terminal, true, width).clicked() {
-                            cx.emit(UiAction::SetOpenInTerminal(true));
-                        }
-                        if choice(ui, "In Lantern", Icon::Chat, !terminal, cx.model.new_session.in_lantern_available, width).clicked() {
-                            cx.emit(UiAction::SetOpenInTerminal(false));
-                        }
-                    })
-                    .response
-                    .on_hover_text(if cx.model.new_session.in_lantern_available {
-                        "In Lantern: the session runs in the background and its chat opens here; click Open to see it in its terminal."
-                    } else {
-                        "Background sessions are unavailable. You can still open a Terminal window."
-                    });
-                });
             });
         });
     ui.add_space(10.0);
@@ -249,7 +230,7 @@ fn model(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind) {
                 .find(|m| &m.id == chosen)
                 .map_or_else(|| chosen.clone(), |m| m.group.as_ref().map_or_else(|| m.label.clone(), |g| format!("{} · {g}", m.label)))
         })
-        .unwrap_or_else(|| "Default".into());
+        .unwrap_or_else(|| "Default model".into());
     let response = field(ui, "session-model", Icon::Cpu, &label).on_hover_text(format!("Model: {label}"));
     egui::Popup::menu(&response).show(|ui| {
         if ui.button("Default").clicked() {
@@ -337,27 +318,36 @@ fn pick_model(cx: &mut Ctx, kind: &AgentKind, model: Option<String>) {
     cx.view.model_query.clear();
 }
 
-/// SessionViews.swift's model and folder menus: `.menuStyle(.borderlessButton)` with the
-/// indicator hidden, so AppKit draws a plain row, just the symbol and the text (panel-new.png).
+/// SessionViews.swift's model and folder menus: a full-width box with the symbol, the value and an
+/// up-down chevron, so it reads as something to click.
 pub fn field(ui: &mut Ui, id: &str, icon: Icon, value: &str) -> Response {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 24.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 34.0), Sense::hover());
     let response = ui.interact(rect, ui.make_persistent_id(id), Sense::click());
-    let ink = if response.is_pointer_button_down_on() { t::white(0.7) } else { t::INK };
+    let ink = if response.is_pointer_button_down_on() { t::white(0.7) } else { t::white(0.9) };
+    let hovered = response.hovered();
+    ui.painter().rect(
+        rect,
+        10.0,
+        if hovered { t::white(0.1) } else { t::FAINT },
+        Stroke::new(1.0, if response.has_focus() { t::opacity(t::AMBER, 0.6) } else { t::HAIRLINE }),
+        egui::StrokeKind::Inside,
+    );
     c::paint_icon(
         ui.painter(),
-        Rect::from_center_size(egui::pos2(rect.left() + 11.0, rect.center().y), egui::Vec2::splat(14.0)),
+        Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), egui::Vec2::splat(14.0)),
         icon,
         ink,
     );
-    let display = middle_truncate(ui, value, 13.0, Weight::Regular, width - 28.0);
-    let galley = ui.painter().layout_no_wrap(display, t::font(13.0, Weight::Regular), ink);
-    let text = Rect::from_min_size(egui::pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0), galley.size());
-    ui.painter().galley(text.min, galley, ink);
-    if response.has_focus() {
-        let hit = Rect::from_min_max(rect.min, egui::pos2(text.right() + 4.0, rect.bottom()));
-        ui.painter().rect_stroke(hit, 6.0, Stroke::new(1.0, t::opacity(t::AMBER, 0.6)), egui::StrokeKind::Inside);
-    }
+    c::paint_icon(
+        ui.painter(),
+        Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), egui::Vec2::splat(10.0)),
+        Icon::ChevronUpDown,
+        ink,
+    );
+    let display = middle_truncate(ui, value, 12.5, Weight::Regular, width - 66.0);
+    let galley = ui.painter().layout_no_wrap(display, t::font(12.5, Weight::Regular), ink);
+    ui.painter().galley(egui::pos2(rect.left() + 34.0, rect.center().y - galley.size().y / 2.0), galley, ink);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, ui.is_enabled(), value));
     response
 }
@@ -543,33 +533,6 @@ pub fn switch(ui: &mut Ui, title: &str, value: &mut bool) -> Response {
     response
 }
 
-pub fn choice(ui: &mut Ui, title: &str, icon: Icon, selected: bool, enabled: bool, width: f32) -> Response {
-    ui.add_enabled_ui(enabled, |ui| {
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 31.0), Sense::click());
-        let color = if !enabled {
-            t::white(0.22)
-        } else if selected {
-            t::INK
-        } else {
-            t::MUTED
-        };
-        ui.painter().rect(
-            rect,
-            10.0,
-            if selected { t::FAINT } else { egui::Color32::TRANSPARENT },
-            Stroke::new(1.0, if selected { t::opacity(t::AMBER, if enabled { 0.7 } else { 0.28 }) } else { t::HAIRLINE }),
-            egui::StrokeKind::Inside,
-        );
-        let galley = ui.painter().layout_no_wrap(title.into(), t::font(12.0, Weight::Medium), color);
-        let x = rect.center().x - (galley.size().x + 18.0) / 2.0;
-        c::paint_icon(ui.painter(), Rect::from_center_size(egui::pos2(x + 6.0, rect.center().y), egui::Vec2::splat(12.0)), icon, color);
-        ui.painter().galley(egui::pos2(x + 18.0, rect.center().y - galley.size().y / 2.0), galley, color);
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, selected, title));
-        response
-    })
-    .inner
-}
-
 fn footer(ui: &mut Ui, cx: &mut Ctx) {
     ui.spacing_mut().item_spacing.y = 8.0;
     if let Some(error) = cx.view.session_error.as_ref().or(cx.model.new_session.launch_error.as_ref()) {
@@ -618,6 +581,48 @@ fn footer(ui: &mut Ui, cx: &mut Ctx) {
             cx.emit(UiAction::Launch(Box::new(request)));
         }
     }
+    open_in(ui, cx);
+}
+
+/// In Lantern by default (the session runs in the background and its chat opens here); a new
+/// terminal window if you'd rather, remembered. Without background sessions, only a terminal.
+fn open_in(ui: &mut Ui, cx: &mut Ctx) {
+    if !cx.model.new_session.in_lantern_available {
+        ui.vertical_centered(|ui| {
+            c::label(ui, "Opens in a new terminal window. Install tmux to keep agents in Lantern.", 11.0, Weight::Regular, t::MUTED)
+        });
+        return;
+    }
+    let terminal = cx.inputs.new_session.open_in_terminal;
+    let title = if terminal { "Opens in a new terminal window" } else { "Opens in Lantern" };
+    let galley = ui.painter().layout_no_wrap(title.into(), t::font(11.0, Weight::Regular), t::MUTED);
+    let size = egui::vec2(galley.size().x + 14.0, galley.size().y.max(16.0));
+    let response = ui
+        .vertical_centered(|ui| {
+            let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+            let color = if response.hovered() { t::INK } else { t::MUTED };
+            ui.painter().galley_with_override_text_color(egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0), galley, color);
+            c::paint_icon(
+                ui.painter(),
+                Rect::from_center_size(egui::pos2(rect.right() - 4.0, rect.center().y), egui::Vec2::splat(8.0)),
+                Icon::ChevronDown,
+                color,
+            );
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, title));
+            response
+        })
+        .inner
+        .on_hover_text(
+            "Where the agent opens. In Lantern, it runs in the background and its chat opens here; click Open to see its terminal.",
+        );
+    egui::Popup::menu(&response).show(|ui| {
+        for (label, to_terminal) in [("In Lantern", false), ("In a new terminal window", true)] {
+            let mark = if terminal == to_terminal { "✓  " } else { "    " };
+            if ui.button(c::text(format!("{mark}{label}"), 12.0, Weight::Regular, t::INK)).clicked() {
+                cx.emit(UiAction::SetOpenInTerminal(to_terminal));
+            }
+        }
+    });
 }
 
 fn loading(ui: &mut Ui, title: &str, size: f32, env: &super::Env) {

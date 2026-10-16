@@ -85,28 +85,19 @@ struct NewSessionView: View {
         }
     }
 
-    /// The message first; then the agent, its model, the folder, the context it gets, and where it
-    /// opens, each on its own row.
+    /// The message first; then the agent, its model, the folder and the context it gets, each on its
+    /// own row. Where it opens is a small menu by Start.
     private var form: some View {
         VStack(alignment: .leading, spacing: 12) {
             promptField(task ? "What should it do in \(app.target?.name ?? "this app")?" : "What should it work on? (optional)")
-            section("Agent") { agentRow }
+            section("Choose your agent") { agentRow }
             if let k = selectedKind { section("Model") { modelRow(k) } }
-            section("Folder") { folderRow }
+            section("Folder it works in") { folderRow }
             section("Context") {
                 if app.target != nil, !app.isTerminal { workOnApp }
                 screenshotToggle
                 if screenshotOn { screenshotPreview }
                 permissionLine
-            }
-            section("Open in") {
-                HStack(spacing: 8) {
-                    Choice(title: "Terminal window", symbol: "macwindow", selected: !background) { background = false; openInTerminal = true }
-                    Choice(title: "In Lantern", symbol: "bubble.left.and.text.bubble.right", selected: background, disabled: !model.tmuxAvailable) { background = true; openInTerminal = false }
-                }
-                .help(model.tmuxAvailable
-                      ? "In Lantern: the session runs in the background and its chat opens here; click Open to see it in Terminal."
-                      : "Install tmux (brew install tmux) to run sessions in Lantern instead of a Terminal window.")
             }
         }
     }
@@ -202,7 +193,7 @@ struct NewSessionView: View {
                 } label: {
                     field(symbol: "cpu", text: modelLabel(list))
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 .help("Model: \(modelLabel(list))")
                 if searchingModels { modelSearch(list) }
             } else {
@@ -231,7 +222,7 @@ struct NewSessionView: View {
         } label: {
             field(symbol: "folder", text: selectedFolder.map(Self.short) ?? "Choose a folder…")
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden)
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
         .help(selectedFolder.map { "Runs in \(Self.short($0))" } ?? "Choose a folder")
     }
 
@@ -274,6 +265,37 @@ struct NewSessionView: View {
             .buttonStyle(.plain)
             .disabled(!canStart)
             .keyboardShortcut(.defaultAction)
+            openInMenu
+        }
+    }
+
+    /// In Lantern by default (the session runs in the background and its chat opens here); a new
+    /// Terminal window if you'd rather, remembered. Without tmux, only a Terminal window.
+    @ViewBuilder private var openInMenu: some View {
+        if model.tmuxAvailable {
+            Menu {
+                Button { background = true; openInTerminal = false } label: {
+                    if background { Label("In Lantern", systemImage: "checkmark") } else { Text("In Lantern") }
+                }
+                Button { background = false; openInTerminal = true } label: {
+                    if !background { Label("In a new Terminal window", systemImage: "checkmark") } else { Text("In a new Terminal window") }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(background ? "Opens in Lantern" : "Opens in a new Terminal window")
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                }
+                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+            .help("Where the agent opens. In Lantern, it runs in the background and its chat opens here; click Open to see its terminal.")
+        } else {
+            Text("Opens in a new Terminal window. Install tmux (brew install tmux) to keep agents in Lantern.")
+                .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -339,7 +361,7 @@ struct NewSessionView: View {
     }
 
     private func modelLabel(_ list: EngineMessage.ModelList) -> String {
-        guard let chosenModel else { return "Default" }
+        guard let chosenModel else { return "Default model" }
         return list.models.first { $0.id == chosenModel }.map { m in m.group.map { "\(m.label) · \($0)" } ?? m.label } ?? chosenModel
     }
 
@@ -599,32 +621,6 @@ struct AgentTile: View {
         .accessibilityLabel(installed ? kind.displayName : "\(kind.displayName), not installed")
         .help(installed ? kind.displayName : "\(kind.displayName) isn't installed. Click to see how to get it.")
         .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-}
-
-struct Choice: View {
-    let title: String
-    let symbol: String
-    let selected: Bool
-    var disabled = false
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(selected ? Theme.ink : Theme.muted)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(selected ? Theme.faint : .clear))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(selected ? Theme.amber.opacity(0.7) : Theme.hairline)
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1)
     }
 }
 

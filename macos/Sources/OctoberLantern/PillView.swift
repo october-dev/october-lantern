@@ -28,9 +28,9 @@ struct PillView: View {
             }, onDrag: onDrag, onDragEnd: onDragEnd)
             .contextMenu {
                 Button("Ask Lantern") { model.panel = .assistant }
-                Button("Your Agents") { model.panel = .inbox }
-                Button("New Session…") { model.startNew() }
                 Button("Point & Ask") { PointAsk.shared.start(fromPill: true) }
+                Button("Start New Agent…") { model.startNew() }
+                Button("Your Agents") { model.panel = .inbox }
                 Button(dictation.isActive ? "Stop Dictating" : "Dictate a Reply") { model.toggleDictation() }
                 Divider()
                 Button("October…") { model.panel = .october }
@@ -54,12 +54,6 @@ struct PillView: View {
             if expanded {
                 VStack(spacing: 6) {
                     Rectangle().fill(Theme.stroke).frame(width: 22, height: 1).padding(.bottom, 2)
-                    PillIcon(symbol: "square.stack.3d.up", active: model.panel?.isList == true, help: "Your agents") {
-                        model.toggle(.inbox)
-                    }
-                    PillIcon(symbol: "plus", active: model.panel == .newSession, help: "New session, or a task for the app you're in") {
-                        model.startNew()
-                    }
                     PillIcon(symbol: "sparkles", tint: model.panel == .assistant ? Theme.amber : nil,
                              active: model.panel == .assistant, help: "Ask Lantern: ask anything, or tell it what to do") {
                         model.toggle(.assistant)
@@ -67,6 +61,12 @@ struct PillView: View {
                     PillIcon(symbol: "cursorarrow.and.square.on.square.dashed",
                              help: "Point & Ask: select part of the screen and ask about it") {
                         PointAsk.shared.start(fromPill: true)
+                    }
+                    PillIcon(symbol: "plus", active: model.panel == .newSession, help: "Start a new agent") {
+                        model.startNew()
+                    }
+                    PillIcon(symbol: "square.stack.3d.up", active: model.panel?.isList == true, help: "Your agents") {
+                        model.toggle(.inbox)
                     }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))

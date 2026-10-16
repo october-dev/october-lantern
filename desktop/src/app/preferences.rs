@@ -18,6 +18,10 @@ pub(super) struct Upkeep {
     /// The newest published release, once checked.
     release: Option<crate::updates::Release>,
     installing: bool,
+    /// The running check was the daily one: a newer release installs on its own.
+    automatic: bool,
+    /// Installed by the daily check: Lantern restarts into it once you're not using it.
+    pub(super) installed: Option<std::path::PathBuf>,
 }
 
 impl Lantern {
@@ -104,11 +108,20 @@ impl Lantern {
     }
 
     /// Check for Updates: finds a newer release; once one is known, choosing it again installs it
-    /// and restarts (the Mac's "Install Update" step).
+    /// and restarts (the Mac's "Install Update" step). Already installed by the daily check, it
+    /// restarts into it.
     pub(super) fn check_updates(&mut self) {
-        if let Some(release) = self.upkeep.release.clone().filter(crate::updates::Release::is_newer) {
-            return self.install_update(release);
+        if let Some(path) = self.upkeep.installed.take() {
+            return self.restart_into(&path);
         }
+        if let Some(release) = self.upkeep.release.clone().filter(crate::updates::Release::is_newer) {
+            return self.install_update(release, false);
+        }
+        self.upkeep.automatic = false;
+        self.start_update_check();
+    }
+
+    fn start_update_check(&mut self) {
         self.upkeep.checked = Some(Instant::now());
         self.model.system.checking_updates = true;
         crate::os::task(self.tx.clone(), crate::updates::check, Event::Update);
@@ -120,10 +133,13 @@ impl Lantern {
             Ok(release) => {
                 let newer = release.is_newer();
                 self.model.system.update = Some(UpdateInfo { newer, version: release.version.to_string() });
-                if newer {
+                self.upkeep.release = Some(release.clone());
+                if newer && std::mem::take(&mut self.upkeep.automatic) {
+                    // The daily check installs it quietly; Lantern restarts into it when idle.
+                    self.install_update(release, true);
+                } else if newer {
                     self.show(format!("Lantern {} is available. Choose Check for Updates again to install it.", release.version));
                 }
-                self.upkeep.release = Some(release);
                 self.publish_tray_menu();
             }
             Err(error) => {
@@ -133,25 +149,51 @@ impl Lantern {
         }
     }
 
-    /// Downloads and checks the release, installs it beside this one, and restarts into it.
-    fn install_update(&mut self, release: crate::updates::Release) {
+    /// Downloads and checks the release and installs it beside this one (the Start menu shortcut
+    /// and Open at login move to it). Then restarts into it, right away when you asked for it, or
+    /// once you're not using Lantern when the daily check found it. Agents running in Lantern
+    /// keep running: their sessions outlive the app.
+    fn install_update(&mut self, release: crate::updates::Release, quietly: bool) {
         if std::mem::replace(&mut self.upkeep.installing, true) {
             return;
         }
-        self.show(format!("Installing Lantern {}…", release.version));
+        if !quietly {
+            self.show(format!("Installing Lantern {}…", release.version));
+        }
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let restarted = crate::updates::install(release).and_then(|path| {
-                Ok(std::process::Command::new(path)
-                    .env_remove("LANTERN_ENGINE")
-                    .args(["--restart-after", &std::process::id().to_string()])
-                    .spawn()?)
-            });
-            let _ = tx.send(match restarted {
-                Ok(_) => Event::Quit,
-                Err(error) => Event::Update(Err(format!("Update failed: {error:#}"))),
-            });
+            let installed = crate::updates::install(release).map_err(|error| format!("Update failed: {error:#}"));
+            let _ = tx.send(Event::UpdateInstalled { result: installed, quietly });
         });
+    }
+
+    pub(super) fn update_installed(&mut self, result: Result<std::path::PathBuf, String>, quietly: bool) {
+        self.upkeep.installing = false;
+        match result {
+            Ok(path) if quietly => self.upkeep.installed = Some(path),
+            Ok(path) => self.restart_into(&path),
+            Err(error) => self.show(error),
+        }
+    }
+
+    fn restart_into(&mut self, path: &std::path::Path) {
+        match std::process::Command::new(path)
+            .env_remove("LANTERN_ENGINE")
+            .args(["--restart-after", &std::process::id().to_string()])
+            .spawn()
+        {
+            Ok(_) => self.windows.quit(),
+            Err(error) => self.show(format!("Update failed: couldn't start the new version: {error}")),
+        }
+    }
+
+    /// Nothing open, nothing being said or selected: a restart now goes unnoticed.
+    fn idle(&self) -> bool {
+        self.model.panel.is_none()
+            && !self.model.pill_expanded
+            && !self.model.dictating
+            && self.model.point_ask.phase == crate::model::PointAskPhase::Closed
+            && self.model.dictation_offer.is_none()
     }
 
     /// Daily, when automatic updates are on (the first check soon after start).
@@ -161,8 +203,15 @@ impl Lantern {
             && self.model.prefs.automatic_updates
             && !self.model.system.checking_updates
             && self.started.elapsed() > Duration::from_secs(30)
+            && self.upkeep.installed.is_none()
         {
-            self.check_updates();
+            self.upkeep.automatic = true;
+            self.start_update_check();
+        }
+        if self.upkeep.installed.is_some() && self.idle() {
+            if let Some(path) = self.upkeep.installed.take() {
+                self.restart_into(&path);
+            }
         }
     }
 

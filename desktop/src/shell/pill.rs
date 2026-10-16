@@ -75,12 +75,12 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
         painter.hline(rect.center().x - 11.0..=rect.center().x + 11.0, y + 0.5, Stroke::new(1.0, theme::STROKE));
         y += 1.0 + 2.0 + 6.0;
         let panel = model.panel;
-        // PillView.swift's order: Your agents, New session, Ask Lantern, Point & Ask.
+        // PillView.swift's order: Ask Lantern, Point & Ask, a new agent, your agents.
         for (icon, help, active) in [
-            (Icon::Layers, "Your agents", panel.is_some_and(PanelMode::is_list)),
-            (Icon::Plus, "New session, or a task for the app you're in", panel == Some(PanelMode::NewSession)),
             (Icon::Sparkles, "Ask Lantern: ask anything, or tell it what to do", panel == Some(PanelMode::Assistant)),
             (Icon::PointAsk, "Point & Ask: select part of the screen and ask about it", false),
+            (Icon::Plus, "Start a new agent", panel == Some(PanelMode::NewSession)),
+            (Icon::Layers, "Your agents", panel.is_some_and(PanelMode::is_list)),
         ] {
             let slot = Rect::from_min_size(pos2(rect.center().x - ICON / 2.0, y), vec2(ICON, ICON));
             let response = ui.interact(slot, ui.id().with(help), Sense::click());
@@ -232,16 +232,16 @@ mod tests {
         assert_eq!(help_at(&model, false, lantern).as_deref(), Some("2 new, waiting on you · Ask Lantern"));
         let badge = problem_badge(Rect::from_min_size(pos2(PAD, PAD), vec2(LANTERN, LANTERN))).center();
         assert_eq!(help_at(&model, false, badge), problem_text(&model.engine));
-        // Expanded, top to bottom: Your agents, New session, Ask Lantern, Point & Ask.
+        // Expanded, top to bottom: Ask Lantern, Point & Ask, a new agent, your agents.
         let first = PAD + LANTERN + 8.0 + 9.0 + ICON / 2.0;
         let helps: Vec<_> = (0..4).map(|i| help_at(&model, true, pos2(25.0, first + i as f32 * (ICON + 6.0))).unwrap()).collect();
         assert_eq!(
             helps,
             [
-                "Your agents",
-                "New session, or a task for the app you're in",
                 "Ask Lantern: ask anything, or tell it what to do",
-                "Point & Ask: select part of the screen and ask about it"
+                "Point & Ask: select part of the screen and ask about it",
+                "Start a new agent",
+                "Your agents"
             ]
         );
     }

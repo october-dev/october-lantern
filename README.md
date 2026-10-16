@@ -153,8 +153,8 @@ Where a platform can't do what the Mac does, Lantern does the closest thing and 
 GNOME has no backdrop blur, so the glass is a tinted fill; on Wayland the pill runs through
 XWayland (a Wayland app can't place its own window), and Point & Ask can't pick another
 app's window, so a click takes the whole screen; without XWayland at all there's no edge
-pill, and Lantern opens as a normal window; without a tray host (GNOME needs the
-AppIndicator extension) the lantern's right-click menu also has Quit. The shortcut choices
+pill, and Lantern opens as a normal window. The lantern's right-click menu has Quit, so
+Lantern can be closed without a tray host (GNOME needs the AppIndicator extension). The shortcut choices
 are the Mac's, except ⌥Space: Alt+Space opens the window menu on GNOME and Windows.
 
 #### Linux

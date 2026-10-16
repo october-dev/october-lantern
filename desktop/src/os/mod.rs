@@ -45,6 +45,12 @@ pub enum Event {
         result: Result<crate::account::Session, String>,
     },
     Update(Result<crate::updates::Release, String>),
+    /// A release finished installing (`quietly`: by the daily check, so Lantern restarts into it
+    /// once you're not using it).
+    UpdateInstalled {
+        result: Result<std::path::PathBuf, String>,
+        quietly: bool,
+    },
     /// A piece of an Ask Lantern answer, for the question `generation` and its `turn`.
     Assistant {
         generation: u64,
