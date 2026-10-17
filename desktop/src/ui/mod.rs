@@ -366,7 +366,7 @@ pub fn render_point_ask(ui: &mut egui::Ui, cx: &mut Ctx, max_height: f32) -> f32
     point_ask::render(ui, cx, max_height)
 }
 
-/// Welcome, 540 x 560.
+/// Welcome, 540 x 640.
 pub fn render_welcome(ui: &mut egui::Ui, cx: &mut Ctx) -> f32 {
     welcome::render(ui, cx)
 }

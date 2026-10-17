@@ -29,7 +29,7 @@ impl Surface {
         match self {
             Self::Panel => egui::vec2(380.0, max_height),
             Self::PointAsk => egui::vec2(400.0, max_height),
-            Self::Welcome => egui::vec2(540.0, 560.0),
+            Self::Welcome => egui::vec2(540.0, 640.0),
             Self::Settings => egui::vec2(520.0, 480.0),
         }
     }

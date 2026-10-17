@@ -6,7 +6,7 @@ use eframe::egui::{self, Rect, ViewportBuilder, ViewportId, vec2};
 use std::time::{Duration, Instant};
 
 pub const SETTINGS_SIZE: egui::Vec2 = vec2(520.0, 480.0);
-pub const WELCOME_SIZE: egui::Vec2 = vec2(540.0, 560.0);
+pub const WELCOME_SIZE: egui::Vec2 = vec2(540.0, 640.0);
 /// On a first launch, Welcome waits this long so the engine can find agents to show.
 const WELCOME_DELAY: Duration = Duration::from_millis(1500);
 

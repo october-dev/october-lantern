@@ -1,5 +1,5 @@
 //! Port of `WelcomeView.swift`: what Lantern is, the agents it found, and the optional setup, in
-//! three steps on a fixed 540 x 560 surface. Only the platform noun changes from the Mac's copy.
+//! three steps on a fixed 540 x 640 surface. Only the platform noun changes from the Mac's copy.
 use super::{
     Ctx, SettingChange, UiAction,
     components::{self as c, paint_icon},
@@ -11,7 +11,7 @@ use crate::model::{AgentKind, HookState, Platform};
 use eframe::egui::{self, Align, Color32, Galley, Key, Label, Layout, Modifiers, Rect, Sense, Ui, UiBuilder, Vec2, vec2};
 use std::sync::Arc;
 
-pub const SIZE: Vec2 = vec2(540.0, 560.0);
+pub const SIZE: Vec2 = vec2(540.0, 640.0);
 /// Swift `Color(white: 0.09)`.
 const BACKGROUND: Color32 = Color32::from_gray(23);
 /// SwiftUI's dark-mode `.orange`.
@@ -239,7 +239,7 @@ fn setup(ui: &mut Ui, cx: &mut Ctx) {
         ui,
         Icon::PointAsk,
         "Let agents use your apps",
-        "Agents Lantern starts can use your apps and browser for you (click, type, read windows) in the background, with their own cursor.",
+        "Agents can use your apps and browser for you, in the background, with their own cursor.",
         |ui| {
             let response = sessions::switch(ui, "", &mut computer_use);
             response.widget_info(|| {
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(view.welcome_step, 2);
         let (height, actions, texts) = frame(&ctx, &assets, &model, &mut view, vec![key(Key::Enter)]);
         assert_eq!(actions, vec![UiAction::FinishWelcome]);
-        assert_eq!(height, 560.0);
+        assert_eq!(height, 640.0);
         assert!(texts.iter().any(|(text, _)| text == "Start using Lantern"));
         assert!(texts.iter().any(|(text, _)| text == "Back"), "Back shows on the last step too");
         let (_, _, first) = frame(&ctx, &assets, &model, &mut UiState::default(), Vec::new());
@@ -586,7 +586,7 @@ mod tests {
         for step in 0..3 {
             let (_, _, texts) = frame(&ctx, &assets, &model, &mut UiState { welcome_step: step, ..Default::default() }, Vec::new());
             assert!(texts.iter().all(|(text, _)| !text.contains("Mac")), "step {step}: {texts:?}");
-            assert!(texts.iter().all(|(_, rect)| rect.right() <= 540.0 - 28.0 + 0.5 && rect.bottom() <= 560.0), "step {step} overflows");
+            assert!(texts.iter().all(|(_, rect)| rect.right() <= 540.0 - 28.0 + 0.5 && rect.bottom() <= 640.0), "step {step} overflows");
         }
     }
 
@@ -613,9 +613,9 @@ mod tests {
         model.prefs.notifications = false;
         let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
         assert!(has(&texts, "Turn On"));
-        // Every row, including the long hook detail, ends above the footer (560 - 20 - 32 - 20).
+        // Every row, including the long hook detail, ends above the footer (640 - 20 - 32 - 20).
         let rows = texts.iter().filter(|(text, _)| text != "Back" && text != "Continue");
-        assert!(rows.clone().all(|(_, rect)| rect.bottom() <= 488.0), "{texts:?}");
+        assert!(rows.clone().all(|(_, rect)| rect.bottom() <= 568.0), "{texts:?}");
         assert!(rows.clone().count() > 8);
     }
 
