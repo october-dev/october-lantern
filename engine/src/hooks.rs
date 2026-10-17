@@ -602,11 +602,53 @@ pub fn uninstall() -> Result<()> {
 /// settings), the hooks' engine copy, hook events and launch scripts.
 pub fn uninstall_everything() -> Result<()> {
     uninstall()?;
+    // Lantern's background programs run from its folder, and Windows can't delete a running
+    // program: stop them first.
+    crate::bus::stop();
+    crate::computer::stop_any();
     let dir = support_dir();
-    if dir.exists() {
-        fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
-        println!("Removed {}", dir.display());
+    if !dir.exists() {
+        return Ok(());
     }
+    // A stopped program can take a moment to let go of its files.
+    let mut result = fs::remove_dir_all(&dir);
+    for _ in 0..10 {
+        if result.is_ok() || !dir.exists() {
+            println!("Removed {}", dir.display());
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        result = fs::remove_dir_all(&dir);
+    }
+    if cfg!(windows) {
+        // What's left is in use, by agents Lantern started (they keep running) or their hooks:
+        // Windows removes it the next time you sign in, after they've ended.
+        remove_at_next_sign_in(&dir)?;
+        println!("Removed {} except files still in use; Windows removes those when you next sign in", dir.display());
+        return Ok(());
+    }
+    result.with_context(|| format!("removing {}", dir.display()))
+}
+
+/// Has Windows delete a folder at the next sign-in (a per-user RunOnce entry; no administrator
+/// rights needed).
+fn remove_at_next_sign_in(dir: &Path) -> Result<()> {
+    let command = format!("cmd.exe /d /c rmdir /s /q \"{}\"", dir.display());
+    let mut reg = std::process::Command::new("reg");
+    reg.args([
+        "add",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce",
+        "/v",
+        "October Lantern cleanup",
+        "/t",
+        "REG_SZ",
+        "/d",
+        &command,
+        "/f",
+    ]);
+    let output =
+        crate::run::output(&mut reg, std::time::Duration::from_secs(10)).context("scheduling the rest of Lantern's folder for removal")?;
+    anyhow::ensure!(output.status.success(), "Windows couldn't schedule {} for removal; delete it by hand", dir.display());
     Ok(())
 }
 

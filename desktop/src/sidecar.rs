@@ -18,6 +18,8 @@ pub struct Sidecar {
     pub events: Receiver<Result<Value>>,
     latest: Arc<Mutex<HashMap<String, Value>>>,
     observer: Arc<Mutex<Option<Observer>>>,
+    /// Makes the engine's command again, to restart it after it stops.
+    command: Box<dyn Fn() -> Result<Command> + Send>,
 }
 
 #[derive(Clone)]
@@ -119,11 +121,13 @@ pub fn engine_path() -> Result<PathBuf> {
 }
 
 /// Where the engine's log goes: Lantern's own stderr, or on Windows (where the app has no
-/// console) a file in its data folder.
+/// console) a file in its data folder. The last run's log is kept as `engine-previous.log`, so
+/// why an engine stopped survives the restart. An update's `--check-sidecar` leaves both alone.
 fn engine_log() -> Stdio {
     #[cfg(windows)]
-    {
+    if !std::env::args().any(|arg| arg == "--check-sidecar") {
         let path = crate::settings::data_dir().join("logs").join("engine.log");
+        let _ = std::fs::rename(&path, path.with_file_name("engine-previous.log"));
         let file = std::fs::create_dir_all(path.parent().unwrap()).and_then(|_| std::fs::File::create(&path));
         if let Ok(file) = file {
             return file.into();
@@ -137,27 +141,41 @@ impl Sidecar {
         Self::with_terminal("")
     }
     pub fn with_terminal(terminal: &str) -> Result<Self> {
-        let path = engine_path()?;
-        let mut command = crate::os::command(&path);
-        if !terminal.trim().is_empty() {
-            command.env("LANTERN_TERMINAL", terminal.trim());
-        }
-        command.arg("serve");
-        Self::spawn(command).with_context(|| format!("starting {}", path.display()))
-    }
-    fn spawn(mut command: Command) -> Result<Self> {
-        let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(engine_log()).spawn()?;
-        let input = EngineSender {
-            input: Arc::new(Mutex::new(child.stdin.take().context("engine stdin missing")?)),
-            compatible: Arc::new(AtomicBool::new(false)),
+        let terminal = terminal.trim().to_string();
+        let command = move || -> Result<Command> {
+            let path = engine_path()?;
+            let mut command = crate::os::command(&path);
+            if !terminal.is_empty() {
+                command.env("LANTERN_TERMINAL", &terminal);
+            }
+            command.arg("serve");
+            Ok(command)
         };
-        let output = child.stdout.take().context("engine stdout missing")?;
-        let (tx, events) = mpsc::channel();
+        Self::spawn(Box::new(command)).context("starting Lantern's engine")
+    }
+    fn spawn(command: Box<dyn Fn() -> Result<Command> + Send>) -> Result<Self> {
         let latest = Arc::new(Mutex::new(HashMap::new()));
         let observer = Arc::new(Mutex::new(None::<Observer>));
+        let compatible = Arc::new(AtomicBool::new(false));
+        let (child, stdin, events) = Self::run(&command, &latest, &observer, &compatible)?;
+        let input = EngineSender { input: Arc::new(Mutex::new(stdin)), compatible };
+        Ok(Self { child, input, events, latest, observer, command })
+    }
+    /// Starts the engine and the thread reading its events.
+    fn run(
+        command: &dyn Fn() -> Result<Command>,
+        latest: &Arc<Mutex<HashMap<String, Value>>>,
+        observer: &Arc<Mutex<Option<Observer>>>,
+        compatible: &Arc<AtomicBool>,
+    ) -> Result<(Child, ChildStdin, Receiver<Result<Value>>)> {
+        let mut child = command()?.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(engine_log()).spawn()?;
+        let stdin = child.stdin.take().context("engine stdin missing")?;
+        let output = child.stdout.take().context("engine stdout missing")?;
+        let (tx, events) = mpsc::channel();
         let reader_latest = latest.clone();
         let reader_observer = observer.clone();
-        let compatible = input.compatible.clone();
+        let compatible = compatible.clone();
+        compatible.store(false, Ordering::SeqCst);
         std::thread::spawn(move || {
             for line in BufReader::new(output).lines() {
                 let event = line.map_err(anyhow::Error::from).and_then(|l| serde_json::from_str(&l).context("invalid engine response"));
@@ -186,7 +204,17 @@ impl Sidecar {
             compatible.store(false, Ordering::SeqCst);
             let _ = tx.send(Err(anyhow::anyhow!("engine disconnected; close and reopen Lantern")));
         });
-        Ok(Self { child, input, events, latest, observer })
+        Ok((child, stdin, events))
+    }
+    /// Starts the engine again after it stopped. Senders already handed out (sign-in's) reach the
+    /// new one; it says hello like a fresh start.
+    pub fn restart(&mut self) -> Result<()> {
+        self.stop();
+        let (child, stdin, events) = Self::run(&self.command, &self.latest, &self.observer, &self.input.compatible)?;
+        *self.input.input.lock().map_err(|_| anyhow::anyhow!("engine input unavailable"))? = stdin;
+        self.child = child;
+        self.events = events;
+        Ok(())
     }
 
     pub fn send(&mut self, request: &Value) -> Result<()> {
@@ -271,11 +299,14 @@ mod tests {
     fn echo() -> Sidecar {
         if cfg!(windows) {
             let script = "while(($l=[Console]::In.ReadLine()) -ne $null){[Console]::Out.WriteLine($l);[Console]::Out.Flush()}";
-            let mut command = Command::new("powershell");
-            command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
-            return Sidecar::spawn(command).unwrap();
+            return Sidecar::spawn(Box::new(move || {
+                let mut command = Command::new("powershell");
+                command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+                Ok(command)
+            }))
+            .unwrap();
         }
-        Sidecar::spawn(Command::new("cat")).unwrap()
+        Sidecar::spawn(Box::new(|| Ok(Command::new("cat")))).unwrap()
     }
     #[test]
     fn locked_ui_coalesces_snapshots_and_keeps_reply_results() {
@@ -342,6 +373,16 @@ mod tests {
         assert!(engine.sender().credentials(1, &AtomicU64::new(1), Some(("test", std::time::Instant::now())), || {}).is_err());
         engine.send(&json!({"type":"marker"})).unwrap();
         assert_eq!(engine.events.recv_timeout(Duration::from_secs(10)).unwrap().unwrap()["type"], "marker");
+    }
+    #[test]
+    fn a_restarted_engine_is_reached_through_senders_handed_out_before() {
+        let mut engine = echo();
+        let sender = engine.sender();
+        engine.restart().unwrap();
+        engine.send(&json!({"type":"hello","protocol":3})).unwrap();
+        assert_eq!(engine.events.recv_timeout(Duration::from_secs(10)).unwrap().unwrap()["type"], "hello");
+        assert!(sender.credentials(1, &AtomicU64::new(1), None, || {}).unwrap(), "sign-in's sender reaches the new engine");
+        assert_eq!(engine.events.recv_timeout(Duration::from_secs(10)).unwrap().unwrap()["type"], "phone.stop");
     }
     pub(super) fn test_sender() -> (Sidecar, EngineSender) {
         let mut engine = echo();

@@ -44,6 +44,10 @@ impl Lantern {
     pub(super) fn dismiss_uninstall(&mut self) {
         if self.model.system.uninstall != Uninstall::Removing {
             self.model.system.uninstall = Uninstall::Idle;
+            // Uninstalling stopped the engine; Lantern keeps working without what was removed.
+            if !self.connected && !cfg!(test) {
+                self.restart_engine();
+            }
         }
     }
 

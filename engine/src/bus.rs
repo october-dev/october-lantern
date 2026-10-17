@@ -151,6 +151,13 @@ fn bus(args: &[&str], limit: Duration) -> Result<std::process::Output> {
     crate::run::output(Command::new(bin).args(args), limit)
 }
 
+/// Stops Lantern's Bus daemon, if one is running (uninstalling: it runs from Lantern's folder).
+pub fn stop() {
+    if binary().is_some() {
+        let _ = bus(&["stop"], Duration::from_secs(5));
+    }
+}
+
 /// Starts the daemon if it isn't running and makes sure Lantern's scope exists.
 pub fn ensure_ready() -> Result<()> {
     static READY: Mutex<Option<Instant>> = Mutex::new(None);

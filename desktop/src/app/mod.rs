@@ -102,6 +102,8 @@ pub struct Lantern {
     tx: Sender<Event>,
     events: Receiver<Event>,
     started: Instant,
+    /// When the engine was last restarted after stopping on its own.
+    engine_restarts: Vec<Instant>,
 }
 
 impl Lantern {
@@ -146,6 +148,7 @@ impl Lantern {
             tx,
             events,
             started: Instant::now(),
+            engine_restarts: Vec::new(),
         }
     }
 
@@ -305,6 +308,35 @@ impl Lantern {
         self.clear_assistant();
     }
 
+    /// The engine stopped: Lantern starts it again (up to three times in five minutes), except
+    /// while uninstalling, which stops it on purpose.
+    fn engine_stopped(&mut self, error: String) {
+        self.connected = false;
+        self.engine_restarts.retain(|at| at.elapsed() < Duration::from_secs(300));
+        if self.model.system.uninstall != crate::model::Uninstall::Idle || self.engine_restarts.len() >= 3 {
+            self.model.engine = crate::model::EngineHealth::Failed(error);
+            return;
+        }
+        self.restart_engine();
+    }
+
+    fn restart_engine(&mut self) {
+        self.engine_restarts.push(Instant::now());
+        self.connected = false;
+        self.model.engine = match self.engine.restart() {
+            Ok(()) => crate::model::EngineHealth::Restarting,
+            Err(error) => crate::model::EngineHealth::Failed(format!("couldn't restart Lantern's engine: {error:#}")),
+        };
+    }
+
+    /// A fresh engine (a restart) has no sign-in yet: it gets the current one.
+    fn give_engine_sign_in(&self) {
+        if let Some(session) = &self.session {
+            let generation = self.auth.load(std::sync::atomic::Ordering::SeqCst);
+            let _ = self.engine.sender().credentials(generation, &self.auth, Some((&session.access, session.expires)), || {});
+        }
+    }
+
     /// Sends a request to the engine with a fresh id; `None` when the engine isn't there.
     fn request(&mut self, mut request: Value) -> Option<String> {
         if !self.connected {
@@ -379,10 +411,7 @@ impl eframe::App for Lantern {
         while let Ok(event) = self.engine.events.try_recv() {
             match event {
                 Ok(event) => self.engine_event(event),
-                Err(error) => {
-                    self.connected = false;
-                    self.model.engine = crate::model::EngineHealth::Failed(format!("{error:#}"));
-                }
+                Err(error) => self.engine_stopped(format!("{error:#}")),
             }
         }
         for event in self.engine.take_latest() {

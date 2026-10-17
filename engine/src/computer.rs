@@ -270,6 +270,15 @@ pub fn stop() {
     let _ = d.child.wait();
 }
 
+/// Stops whichever engine's daemon is running (uninstalling: one started by an engine that was
+/// then killed outlives it, holding its files in Lantern's folder).
+pub fn stop_any() {
+    stop();
+    if let Some(bin) = binary() {
+        let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(5));
+    }
+}
+
 /// Status for the app: `ready`, `installing`, `failed` (with `message`) or `off`.
 pub fn status_json(status: &str, message: Option<String>) -> serde_json::Value {
     serde_json::json!({"type": "computer", "status": status, "message": message, "version": version()})
