@@ -25,16 +25,22 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Group {
-                switch step {
-                case 0: intro
-                case 1: setup
-                default: done
+            // Scrolls when a page is taller than the window, so Continue (below) is always visible.
+            ScrollView(.vertical) {
+                Group {
+                    switch step {
+                    case 0: intro
+                    case 1: setup
+                    default: done
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .top)
+                .padding(.horizontal, 36)
+                .padding(.top, 32)
+                .padding(.bottom, 12)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.horizontal, 36)
-            .padding(.top, 32)
+            .scrollIndicators(.automatic)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
                 HStack(spacing: 6) {
