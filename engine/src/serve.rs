@@ -62,6 +62,9 @@ enum Request {
     #[serde(rename = "computer.prepare", rename_all = "camelCase")]
     ComputerPrepare {
         enabled: bool,
+        /// Stop a running driver first (it checks its permissions when it starts).
+        #[serde(default)]
+        restart: bool,
     },
     /// Download October Bus now if it isn't here (answered with `bus`), so the first session with
     /// the Bus doesn't wait for it.
@@ -377,8 +380,11 @@ pub fn run() -> Result<()> {
                     });
                     next_scan = Instant::now() + Duration::from_millis(1500);
                 }
-                Ok(Request::ComputerPrepare { enabled }) => {
+                Ok(Request::ComputerPrepare { enabled, restart }) => {
                     std::thread::spawn(move || {
+                        if !enabled || restart {
+                            crate::computer::stop();
+                        }
                         if !enabled {
                             crate::computer::stop();
                             return emit(&crate::computer::status_json("off", None));

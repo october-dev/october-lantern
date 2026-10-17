@@ -16,6 +16,11 @@ struct WelcomeView: View {
     /// Screen Recording, which Point & Ask needs: the one setup step that isn't optional.
     @State private var screenAllowed = CGPreflightScreenCaptureAccess()
     @State private var screenAsked = false
+    /// Accessibility, which agents need to use your apps (Cua Driver) and Tasks use to read the
+    /// front window: also required.
+    @State private var accessAllowed = AXIsProcessTrusted()
+    @State private var accessAsked = false
+    private var permissionsAllowed: Bool { screenAllowed && accessAllowed }
     private let poll = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -38,9 +43,9 @@ struct WelcomeView: View {
                     }
                 }
                 Spacer()
-                if step == 1 && !screenAllowed {
+                if step == 1 && !permissionsAllowed {
                     Button("Skip for now") { step += 1 }.buttonStyle(.plain).foregroundStyle(Theme.muted)
-                        .help("Point & Ask can't capture your screen until you allow it. It asks again the first time you use it.")
+                        .help("Point & Ask and agents using your apps need these. You can allow them later in Settings.")
                 }
                 if step > 0 {
                     Button("Back") { step -= 1 }.buttonStyle(.plain).foregroundStyle(Theme.muted)
@@ -50,17 +55,22 @@ struct WelcomeView: View {
                 }
                 .buttonStyle(AmberButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(step == 1 && !screenAllowed)
+                .disabled(step == 1 && !permissionsAllowed)
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 20)
         }
-        .frame(width: 540, height: 560)
+        .frame(width: 540, height: 640)
         .background(Color(white: 0.09))
         .environment(\.colorScheme, .dark)
         .task { hooks.refresh() }
         .onReceive(poll) { _ in
             if step == 1, !screenAllowed { screenAllowed = CGPreflightScreenCaptureAccess() }
+            if step == 1, !accessAllowed, AXIsProcessTrusted() {
+                accessAllowed = true
+                // The driver checks its permissions when it starts: start it again with this one.
+                model.restartComputer()
+            }
         }
         .onChange(of: step) { _, now in UserDefaults.standard.set(now, forKey: "welcomeStep") }
     }
@@ -95,7 +105,7 @@ struct WelcomeView: View {
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("A few choices").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
-            Text("Point & Ask needs Screen Recording. The rest is optional.")
+            Text("Point & Ask and agents using your apps need Screen Recording and Accessibility. The rest is optional.")
                 .font(.system(size: 13.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
 
             SetupRow(symbol: "rectangle.dashed.badge.record", title: "Screen Recording (needed)",
@@ -113,6 +123,25 @@ struct WelcomeView: View {
                     Button("Allow…") {
                         ScreenCapture.shared.requestPermission()
                         screenAsked = true
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
+            }
+
+            SetupRow(symbol: "cursorarrow.click.2", title: "Accessibility (needed)",
+                     detail: "So agents can use your apps for you (click, type, read windows) in the background, and Tasks know which window you're in.") {
+                if accessAllowed {
+                    Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
+                } else if accessAsked {
+                    Button("Open Settings…") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .help("Switch on October Lantern under Privacy & Security › Accessibility")
+                } else {
+                    Button("Allow…") {
+                        AppContext.shared.requestAccess()
+                        accessAsked = true
                     }
                     .buttonStyle(SecondaryButtonStyle())
                 }

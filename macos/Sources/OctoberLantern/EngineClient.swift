@@ -180,8 +180,8 @@ final class EngineClient {
     /// Turns Cua Driver on (downloads it if needed and starts Lantern's driver) or off; answered
     /// with `computer` messages.
     @discardableResult
-    func prepareComputer(enabled: Bool) -> Bool {
-        send(["type": "computer.prepare", "enabled": enabled])
+    func prepareComputer(enabled: Bool, restart: Bool = false) -> Bool {
+        send(["type": "computer.prepare", "enabled": enabled, "restart": restart])
     }
 
     /// Downloads October Bus in the background if it isn't here yet.

@@ -538,6 +538,12 @@ final class AppModel: ObservableObject {
         Analytics.shared.capture("computer_use", ["on": on])
     }
 
+    /// Starts Lantern's Cua Driver again, so it picks up a permission just granted.
+    func restartComputer() {
+        guard prefs.computerUse else { return }
+        engine.prepareComputer(enabled: true, restart: true)
+    }
+
     /// October can start now: on PATH, or October Harness installed.
     var octoberReady: Bool { harness?.isReady == true || (installedKinds ?? []).contains(.october) }
 

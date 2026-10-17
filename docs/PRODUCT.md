@@ -98,7 +98,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 
 **Welcome.** The first launch shows a short, three-page welcome (Back on every page after the first):
 1. What the lantern's states mean, and the agents Lantern found.
-2. Setup. On the Mac, **Screen Recording is required here** (Point & Ask needs it): Continue stays off until it's allowed, with **Allow…** (macOS's prompt, else System Settings), then **Reopen Lantern** (macOS applies it after a reopen; the welcome picks up on this page) and a small **Skip for now**. The rest is optional: open at login, notifications, exact status (hooks) and the shortcut. Windows and Linux need no permission for Point & Ask.
+2. Setup. On the Mac, **Screen Recording and Accessibility are required here** (Point & Ask, and agents using your apps through Cua Driver): Continue stays off until both are allowed. Screen Recording has **Allow…** (macOS's prompt, else System Settings), then **Reopen Lantern** (macOS applies it after a reopen; the welcome picks up on this page); Accessibility has **Allow…**, then **Open Settings…**, and Lantern restarts its driver as soon as it's allowed. A small **Skip for now** goes on without them. Macs that went through the welcome before agents could use apps see this page once more, when Accessibility is missing. The rest is optional: open at login, notifications, exact status (hooks) and the shortcut. Windows and Linux need no permission for Point & Ask or for agents using apps; their setup page has **Let agents use your apps** (on) instead.
 3. Where to find everything.
 
 **Settings** (from the menu bar lantern) has four tabs:
@@ -220,7 +220,7 @@ Lantern is in **beta (v0.6.4)**.
 | Microphone and Speech Recognition | Dictating a reply | The first time you press the mic button, after Lantern asks "Turn on dictation?" (Turn On / Not Now; Not Now asks again next time). Holding the Point & Ask shortcut doesn't ask: it listens only once dictation is on. |
 
 | Screen Recording | Point & Ask, including a screenshot when starting a session, and agents seeing your apps' windows (Cua Driver) | In the welcome (required there unless you skip), or the first time you use Point & Ask |
-| Accessibility | Telling a Task's agent which window and document you have open; letting agents use your apps (Cua Driver) | When you click Allow on the Task panel, or Allow… in Settings › General |
+| Accessibility | Letting agents use your apps (Cua Driver); telling a Task's agent which window and document you have open | In the welcome (required there unless you skip; asked once more on Macs that finished the welcome earlier), on the Task panel, or Allow… in Settings › General |
 
 Lantern doesn't need Full Disk Access.
 

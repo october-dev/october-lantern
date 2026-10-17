@@ -90,6 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Reopened mid-welcome (macOS asks to after allowing Screen Recording): pick up there.
             let step = UserDefaults.standard.integer(forKey: "welcomeStep")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome(step: step) }
+        } else if Preferences.shared.computerUse, !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: "askedAppsAccess") {
+            // Agents can now use your apps, which needs Accessibility: ask once, on the welcome's
+            // permissions page.
+            UserDefaults.standard.set(true, forKey: "askedAppsAccess")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome(step: 1) }
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Support.offerCrashReportIfNeeded(agents: self.model.agents) }
         }

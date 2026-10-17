@@ -234,6 +234,22 @@ fn setup(ui: &mut Ui, cx: &mut Ctx) {
             cx.emit(UiAction::ChangeSetting(SettingChange::OpenAtLogin(open_at_login)));
         }
     });
+    let mut computer_use = prefs.computer_use;
+    setup_row(
+        ui,
+        Icon::PointAsk,
+        "Let agents use your apps",
+        "Agents Lantern starts can use your apps and browser for you (click, type, read windows) in the background, with their own cursor.",
+        |ui| {
+            let response = sessions::switch(ui, "", &mut computer_use);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), computer_use, "Let agents use your apps")
+            });
+            if response.changed() {
+                cx.emit(UiAction::ChangeSetting(SettingChange::ComputerUse(computer_use)));
+            }
+        },
+    );
     setup_row(
         ui,
         Icon::BellBadge,
