@@ -83,11 +83,26 @@ pub fn system_prompt(platform: Platform) -> String {
     )
 }
 
+/// Modes this server turned down (it answered the plain way): asked plainly from then on, until
+/// Lantern restarts, so later questions don't pay for a refused request first.
+static UNSUPPORTED_MODES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
 /// Streams the answer into `sink`, which returns false to stop (a cancelled question).
 pub fn stream(request: &Request, token: &str, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
+    let known = |mode: &String| !UNSUPPORTED_MODES.lock().unwrap_or_else(|e| e.into_inner()).contains(mode);
+    let request = &Request { mode: request.mode.clone().filter(known), ..request.clone() };
     let first = match ask(request, token, sink) {
-        // A server without the mode refuses the request as invalid: ask the plain way instead.
-        Err(Failure::Invalid(_)) if request.mode.is_some() => ask(&Request { mode: None, ..request.clone() }, token, sink),
+        // A server without the mode refuses the request as invalid: ask the plain way instead (and
+        // from now on, once that works).
+        Err(Failure::Invalid(_)) if request.mode.is_some() => {
+            let plain = ask(&Request { mode: None, ..request.clone() }, token, sink);
+            if plain.is_ok()
+                && let Some(mode) = &request.mode
+            {
+                UNSUPPORTED_MODES.lock().unwrap_or_else(|e| e.into_inner()).push(mode.clone());
+            }
+            plain
+        }
         other => other,
     };
     match first {

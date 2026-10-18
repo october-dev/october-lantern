@@ -8,7 +8,8 @@
 //! only once the launch succeeded; a failed one shows its error instead.
 use super::{Lantern, Pending};
 use crate::model::{
-    AgentKind, AgentState, AssistantTurn, Chat, ChatMessage, Conversation, HarnessState, PanelMode, PendingTask, Platform, TaskLink,
+    AgentKind, AgentState, AppContext, AssistantTurn, Chat, ChatMessage, Conversation, HarnessState, PanelMode, PendingTask, Platform,
+    TaskLink,
 };
 use crate::october_ai::{self, Failure, Piece};
 use crate::os::Event;
@@ -172,18 +173,50 @@ impl Lantern {
     /// The answer asked for work: start it after a short window to cancel. The agent gets your own
     /// words (see `task_prompt`).
     fn propose(&mut self, prompt: String, agent: Option<String>, project: Option<String>, turn: u64) {
+        self.propose_with(prompt, agent, project, turn, None, None);
+    }
+
+    /// Point & Ask decided its question is work (Swift `Assistant.adopt`): a new conversation here
+    /// with that question and answer, starting the task with the selection's screenshot.
+    /// October's prompt is used as it is: it says what the screenshot shows, which the user's own
+    /// words ("move these") don't.
+    pub(super) fn adopt_point_task(
+        &mut self,
+        question: String,
+        answer: String,
+        work: (String, Option<String>, Option<String>),
+        screenshot: Option<std::path::PathBuf>,
+        context: Option<AppContext>,
+    ) {
+        self.clear_assistant();
+        self.asking.next_id += 1;
+        let turn = self.asking.next_id;
+        self.model.assistant.turns.push(AssistantTurn { id: turn, question, answer, ..Default::default() });
+        let (prompt, agent, project) = work;
+        self.propose_with(prompt, agent, project, turn, screenshot, context);
+    }
+
+    fn propose_with(
+        &mut self,
+        prompt: String,
+        agent: Option<String>,
+        project: Option<String>,
+        turn: u64,
+        screenshot: Option<std::path::PathBuf>,
+        context: Option<AppContext>,
+    ) {
         let installed = self.model.new_session.installed.clone().unwrap_or_default();
         let named = agent.map(AgentKind).filter(|kind| installed.contains(kind));
         let Some(kind) = named.or_else(|| self.default_agent_kind()) else { return };
         let folder = self.task_folder(project.as_deref());
         let turns = &self.model.assistant.turns;
         let prompt = match turns.iter().position(|t| t.id == turn) {
-            Some(i) => task_prompt(&turns[i].question, prompt, i > 0),
-            None => prompt,
+            Some(i) if screenshot.is_none() => task_prompt(&turns[i].question, prompt, i > 0),
+            _ => prompt,
         };
         self.asking.next_id += 1;
         self.model.assistant.pending_task =
-            Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, seconds_left: CANCEL_WINDOW });
+            Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, seconds_left: CANCEL_WINDOW, screenshot, context });
         self.asking.countdown = Some(Instant::now());
     }
 
@@ -231,6 +264,8 @@ impl Lantern {
             kind: task.kind,
             folder: task.folder,
             prompt: task.prompt,
+            screenshot: task.screenshot,
+            context: task.context,
             toolkit: true,
             bus: self.model.prefs.bus_for_sessions,
             background,

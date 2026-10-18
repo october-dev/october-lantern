@@ -35,6 +35,8 @@ pub(super) struct Pointing {
     shot: Option<Vec<u8>>,
     /// When the shortcut was pressed, while it's held (letting go after a hold stops listening).
     pressed_at: Option<Instant>,
+    /// The answer said the question is work: started through Ask Lantern once it's complete.
+    work: Option<(String, Option<String>, Option<String>)>,
     /// The next selection starts with dictation on (the shortcut, not the pill's button).
     listen: bool,
 }
@@ -271,9 +273,10 @@ impl Lantern {
             question,
             image: self.pointing.shot.as_deref().and_then(super::shots::jpeg),
             context: context_lines(self.model.point_ask.context.as_ref()).join("\n"),
-            mode: None,
+            mode: Some("point_task".into()),
             platform: self.model.caps.platform,
         };
+        self.pointing.work = None;
         let generation = self.pointing.conversation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.pointing.conversation.clone();
         let tx = self.tx.clone();
@@ -295,7 +298,7 @@ impl Lantern {
         match piece {
             Piece::Text(text) => t.answer.push_str(&text),
             Piece::Note(note) => t.note = Some(note),
-            Piece::Task { .. } => {} // Point & Ask never starts tasks
+            Piece::Task { prompt, agent, project } => self.pointing.work = Some((prompt, agent, project)),
         }
     }
 
@@ -313,10 +316,29 @@ impl Lantern {
                     t.answer = "No answer came back. Try again.".into();
                     t.failed = true;
                 }
-                None => {}
+                None => {
+                    if let Some(work) = self.pointing.work.take() {
+                        let (question, answer) = (t.question.clone(), t.answer.clone());
+                        return self.start_point_task(question, answer, work);
+                    }
+                }
             }
         }
         self.model.point_ask.asking = false;
+    }
+
+    /// The answer is work ("make a folder and move these into it"): Ask Lantern starts an agent on
+    /// it with this selection's screenshot, where the countdown, Cancel and the agent's progress
+    /// are (Swift `PointAsk.startTask`). Point & Ask closes.
+    fn start_point_task(&mut self, question: String, answer: String, work: (String, Option<String>, Option<String>)) {
+        let screenshot = match &self.model.point_ask.screenshot {
+            Capture::Ready { path } => Some(path.clone()),
+            _ => None,
+        };
+        let context = self.model.point_ask.context.clone();
+        self.adopt_point_task(question, answer, work, screenshot, context);
+        self.cancel_point_ask();
+        self.set_panel(Some(PanelMode::Assistant));
     }
 
     pub(super) fn copy_point_ask_answer(&mut self) {
@@ -491,7 +513,7 @@ pub fn default_recipient(agents: &[crate::model::Agent], context: Option<&AppCon
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Agent, HostApp};
+    use crate::model::{Agent, AgentKind, HostApp};
 
     fn agent(id: &str, cwd: &str, project: &str) -> Agent {
         Agent { id: id.into(), cwd: Some(cwd.into()), project: Some(project.into()), ..Default::default() }
@@ -618,6 +640,29 @@ mod tests {
         lantern.model.point_ask.problem = Some("Couldn't take the screenshot: denied".into());
         lantern.choose_point_recipient("live".into());
         assert_eq!(lantern.model.point_ask.problem.as_deref(), Some("Couldn't take the screenshot: denied"));
+    }
+
+    #[test]
+    fn work_from_point_ask_starts_in_ask_lantern_with_the_screenshot() {
+        let mut lantern = lantern();
+        lantern.model.new_session.installed = Some(vec![AgentKind::new("claude")]);
+        lantern.begin_point_ask();
+        lantern.model.point_ask.phase = PointAskPhase::Card;
+        lantern.model.point_ask.screenshot = Capture::Ready { path: "/shots/point-1.png".into() };
+        lantern.model.point_ask.turns.push(AskTurn { question: "move these into a folder".into(), ..Default::default() });
+        let generation = lantern.pointing.conversation.load(Ordering::SeqCst);
+        lantern.point_ask_piece(generation, 0, Piece::Text("Starting an agent to make the folder.".into()));
+        let prompt = "Make a folder on the Desktop and move the images in the attached screenshot into it.";
+        lantern.point_ask_piece(generation, 0, Piece::Task { prompt: prompt.into(), agent: None, project: None });
+        assert_eq!(lantern.model.point_ask.phase, PointAskPhase::Card, "nothing starts before the answer is complete");
+        lantern.point_ask_done(generation, 0, None);
+        assert_eq!(lantern.model.point_ask.phase, PointAskPhase::Closed);
+        assert_eq!(lantern.model.panel, Some(PanelMode::Assistant));
+        let turn = &lantern.model.assistant.turns[0];
+        assert_eq!((turn.question.as_str(), turn.answer.as_str()), ("move these into a folder", "Starting an agent to make the folder."));
+        let pending = lantern.model.assistant.pending_task.clone().expect("a task waiting out its cancel window");
+        assert_eq!(pending.prompt, prompt, "October's prompt, which says what the screenshot shows");
+        assert_eq!(pending.screenshot, Some("/shots/point-1.png".into()));
     }
 
     #[test]

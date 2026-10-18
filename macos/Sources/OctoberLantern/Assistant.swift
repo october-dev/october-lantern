@@ -17,6 +17,9 @@ final class Assistant: ObservableObject {
         let kind: AgentKind
         let folder: String
         var secondsLeft: Int
+        /// From Point & Ask: the selection, which the agent gets, and where the user was.
+        var screenshot: URL?
+        var context: String?
     }
 
     struct Turn: Identifiable, Codable {
@@ -267,17 +270,30 @@ final class Assistant: ObservableObject {
         return followUp || mine.isEmpty ? suggested : mine
     }
 
+    /// Point & Ask decided its question is work: a new conversation here with that question and
+    /// answer, starting the task with the selection's screenshot. October's prompt is used as it
+    /// is: it says what the screenshot shows, which the user's own words ("move these") don't.
+    func adopt(question: String, answer: String, prompt: String, agent: String?, project: String?, screenshot: URL?, context: String?) {
+        clear()
+        let turn = Turn(question: question, answer: answer)
+        turns = [turn]
+        propose(prompt: prompt, agent: agent, project: project, turn: turn.id, screenshot: screenshot, context: context)
+    }
+
     /// The answer asked for work to be done: start it after a short window to cancel.
-    private func propose(prompt: String, agent: String?, project: String?, turn: UUID) {
+    private func propose(
+        prompt: String, agent: String?, project: String?, turn: UUID, screenshot: URL? = nil, context: String? = nil
+    ) {
         guard let model else { return }
         let installed = model.installedKinds ?? []
         let named = agent.flatMap { AgentKind(rawValue: $0) }.flatMap { installed.contains($0) ? $0 : nil }
         guard let kind = named ?? model.defaultAgentKind else { return }
         let folder = Self.folder(for: project, model: model)
         let index = turns.firstIndex { $0.id == turn }
-        let own = index.map { Self.taskPrompt(question: turns[$0].question, suggested: prompt, followUp: $0 > 0) } ?? prompt
+        let own = screenshot != nil ? prompt
+            : index.map { Self.taskPrompt(question: turns[$0].question, suggested: prompt, followUp: $0 > 0) } ?? prompt
         cancelTask()
-        pending = PendingTask(prompt: own, kind: kind, folder: folder, secondsLeft: 3)
+        pending = PendingTask(prompt: own, kind: kind, folder: folder, secondsLeft: 3, screenshot: screenshot, context: context)
         countdown = Task { [weak self] in
             for left in stride(from: 2, through: 0, by: -1) {
                 try? await Task.sleep(for: .seconds(1))
@@ -306,7 +322,9 @@ final class Assistant: ObservableObject {
         // shows its terminal. Without tmux, a Terminal window. Waits for October Harness to
         // finish installing when that's the agent.
         turns[i].task = TaskLink(kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable)
-        let started = model.launchTask(prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable) { [weak self] outcome in
+        let started = model.launchTask(
+            prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable, screenshot: p.screenshot, context: p.context
+        ) { [weak self] outcome in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
             switch outcome {
             case .started(let session):

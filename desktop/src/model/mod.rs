@@ -470,6 +470,9 @@ pub struct PendingTask {
     pub kind: AgentKind,
     pub folder: String,
     pub seconds_left: u32,
+    /// From Point & Ask: the selection, which the agent gets, and where the user was.
+    pub screenshot: Option<std::path::PathBuf>,
+    pub context: Option<AppContext>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
