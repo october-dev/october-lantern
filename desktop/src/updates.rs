@@ -43,11 +43,21 @@ const OPTIONAL: &[&str] = &["whisper-cli.exe", "WHISPER-LICENSE"];
 const PROGRAMS: [&str; 3] = ["october-lantern", "lantern-engine", "october-bus"];
 /// Programs a bundle may carry, checked the same way when it does.
 const OPTIONAL_PROGRAMS: [&str; 1] = ["whisper-cli"];
+/// Lantern's own download site: the same release files as GitHub, for networks that block
+/// GitHub's file host. `latest.json` names the newest Windows bundle and its checksum.
+const SITE: &str = "https://lantern.october.dev/download/";
 #[derive(Clone)]
 pub struct Release {
     pub version: String,
     pub url: String,
-    pub checksum_url: String,
+    pub checksum: Checksum,
+}
+/// Where a bundle's SHA-256 comes from: the site's `latest.json` says it, GitHub serves it as a
+/// file beside the bundle.
+#[derive(Clone)]
+pub enum Checksum {
+    Known(String),
+    At(String),
 }
 impl Release {
     pub fn is_newer(&self) -> bool {
@@ -57,7 +67,32 @@ impl Release {
             .is_some_and(|(release, current)| release > current)
     }
 }
+/// The newest release: from Lantern's site (Windows on x86_64), else from GitHub.
 pub fn check() -> Result<Release> {
+    if cfg!(all(windows, target_arch = "x86_64"))
+        && let Ok(release) = check_site()
+    {
+        return Ok(release);
+    }
+    check_github()
+}
+fn check_site() -> Result<Release> {
+    let mut response = crate::account::agent().get(&format!("{SITE}latest.json")).header("User-Agent", "October-Lantern").call()?;
+    let value: Value = response.body_mut().with_config().limit(64 * 1024).read_json()?;
+    site_release(&value)
+}
+fn site_release(value: &Value) -> Result<Release> {
+    let windows = &value["windows"];
+    let version = windows["version"].as_str().context("no Windows version")?.to_owned();
+    anyhow::ensure!(safe_version(&version), "invalid release version");
+    let update = &windows["update"];
+    anyhow::ensure!(update["file"] == asset_name().as_str(), "the site has no update bundle for this system");
+    let url = update["url"].as_str().context("no update bundle")?.to_owned();
+    anyhow::ensure!(trusted_url(&url), "update bundle is outside Lantern's site");
+    let sha256 = update["sha256"].as_str().context("no update checksum")?.to_owned();
+    Ok(Release { version, url, checksum: Checksum::Known(sha256) })
+}
+fn check_github() -> Result<Release> {
     let mut response = crate::account::agent()
         .get(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
         .header("User-Agent", "October-Lantern")
@@ -76,7 +111,7 @@ pub fn check() -> Result<Release> {
         anyhow::ensure!(trusted_url(url), "release download is outside Lantern's release repository");
         Ok(url.into())
     };
-    Ok(Release { version, url: find(&name)?, checksum_url: find(&format!("{name}.sha256"))? })
+    Ok(Release { version, url: find(&name)?, checksum: Checksum::At(find(&format!("{name}.sha256"))?) })
 }
 fn asset_name() -> String {
     if cfg!(windows) {
@@ -96,7 +131,7 @@ fn safe_version(version: &str) -> bool {
         && version != ".."
 }
 pub(crate) fn trusted_url(url: &str) -> bool {
-    url.starts_with(&format!("https://github.com/{REPO}/releases/download/"))
+    url.starts_with(&format!("https://github.com/{REPO}/releases/download/")) || url.starts_with(SITE)
 }
 fn exe(name: &str) -> String {
     format!("{name}{}", std::env::consts::EXE_SUFFIX)
@@ -112,12 +147,19 @@ pub(crate) fn tar() -> Command {
     }
 }
 pub fn install(release: Release) -> Result<PathBuf> {
+    let checksum_url = match &release.checksum {
+        Checksum::At(url) => Some(url),
+        Checksum::Known(_) => None,
+    };
     anyhow::ensure!(
-        safe_version(&release.version) && trusted_url(&release.url) && trusted_url(&release.checksum_url),
+        safe_version(&release.version) && trusted_url(&release.url) && checksum_url.is_none_or(|url| trusted_url(url)),
         "invalid release source"
     );
     let agent = crate::account::agent();
-    let checksum = agent.get(&release.checksum_url).call()?.body_mut().with_config().limit(4096).read_to_string()?;
+    let checksum = match &release.checksum {
+        Checksum::Known(sha256) => sha256.clone(),
+        Checksum::At(url) => agent.get(url).call()?.body_mut().with_config().limit(4096).read_to_string()?,
+    };
     let bytes = agent.get(&release.url).call()?.body_mut().with_config().limit(128 * 1024 * 1024).read_to_vec()?;
     verify(&bytes, &checksum)?;
     let root = data_dir().join("releases");
@@ -266,11 +308,27 @@ mod tests {
     }
     #[test]
     fn never_offers_same_version_or_downgrades() {
-        let release = |version: &str| Release { version: version.into(), url: String::new(), checksum_url: String::new() };
+        let release = |version: &str| Release { version: version.into(), url: String::new(), checksum: Checksum::At(String::new()) };
         assert!(!release("v0.1.0").is_newer());
         assert!(!release(env!("CARGO_PKG_VERSION")).is_newer());
         assert!(release("v1.0.0").is_newer());
         assert!(!release("invalid").is_newer());
+    }
+    #[test]
+    fn the_sites_latest_json_names_this_systems_bundle_and_checksum() {
+        let latest = |file: &str, url: &str| {
+            serde_json::json!({"version": "v0.6.7", "windows": {"version": "v0.6.6", "url": "https://lantern.october.dev/download/windows",
+                "update": {"url": url, "file": file, "sha256": "ab".repeat(32)}}})
+        };
+        let ours = latest(&asset_name(), "https://lantern.october.dev/download/windows-update");
+        let release = site_release(&ours).unwrap();
+        assert_eq!(release.version, "v0.6.6", "the Windows version, not the newest release's");
+        assert!(matches!(release.checksum, Checksum::Known(ref sha) if sha.len() == 64));
+        assert!(
+            site_release(&latest("October-Lantern-windows-aarch64.zip", "https://lantern.october.dev/download/windows-update")).is_err()
+        );
+        assert!(site_release(&latest(&asset_name(), "https://example.com/evil.zip")).is_err());
+        assert!(site_release(&serde_json::json!({"windows": {"version": "v0.6.6"}})).is_err(), "no bundle yet: GitHub instead");
     }
     #[test]
     fn checks_content_before_unpacking() {

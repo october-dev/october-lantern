@@ -93,4 +93,8 @@ else
   if [[ -n "$NOTES" && -f "$NOTES" ]]; then cp "$NOTES" "$NOTES_FILE"; else printf '%s\n' "${NOTES:-October Lantern $VERSION}" > "$NOTES_FILE"; fi
   gh release create "$TAG" "${UPLOADS[@]}" --repo "$REPO" --title "October Lantern $VERSION" --notes-file "$NOTES_FILE"
 fi
+echo "==> lantern.october.dev"
+# Uploading files to an existing release fires no release event: start the site's update now.
+gh workflow run update-lantern-site.yml --repo "$REPO" 2>/dev/null \
+  || echo "    couldn't start the site update; it runs hourly, or: gh workflow run update-lantern-site.yml -R $REPO -f force=true"
 echo "==> published $SYSTEM $TAG: https://github.com/$REPO/releases/tag/$TAG"

@@ -60,6 +60,10 @@ MOUNTED=0
 SHA="$(shasum -a 256 "$DMG" | cut -d' ' -f1)"
 echo "    $VERSION, $SIZE bytes, sha256 $SHA"
 
+# Beside the DMG, as the Windows and Linux bundles have: lantern.october.dev checks its copy against it.
+CHECKSUM="$WORK/$ASSET.sha256"
+printf '%s  %s\n' "$SHA" "$ASSET" > "$CHECKSUM"
+
 NOTES="${1:-October Lantern $VERSION}"
 NOTES_FILE="$WORK/notes.md"
 if [[ -f "$NOTES" ]]; then cp "$NOTES" "$NOTES_FILE"; else printf '%s\n' "$NOTES" > "$NOTES_FILE"; fi
@@ -75,8 +79,11 @@ if gh release view "v$VERSION" --repo "$REPO" >/dev/null 2>&1; then
   else
     gh release upload "v$VERSION" "$DMG" --repo "$REPO"
   fi
+  if ! gh release view "v$VERSION" --repo "$REPO" --json assets -q '.assets[].name' | grep -qxF "$ASSET.sha256"; then
+    gh release upload "v$VERSION" "$CHECKSUM" --repo "$REPO"
+  fi
 else
-  gh release create "v$VERSION" "$DMG" --repo "$REPO" --title "October Lantern $VERSION" --notes-file "$NOTES_FILE"
+  gh release create "v$VERSION" "$DMG" "$CHECKSUM" --repo "$REPO" --title "October Lantern $VERSION" --notes-file "$NOTES_FILE"
 fi
 
 echo "==> appcast"
@@ -90,4 +97,8 @@ else
   git -C "$CHECKOUT" commit -q -m "October Lantern $VERSION"
   git -C "$CHECKOUT" push -q
 fi
+echo "==> lantern.october.dev"
+# The site serves its own copy of the newest downloads (the releases repo's workflow rebuilds it).
+gh workflow run update-lantern-site.yml --repo "$REPO" 2>/dev/null \
+  || echo "    couldn't start the site update; it runs hourly, or: gh workflow run update-lantern-site.yml -R $REPO -f force=true"
 echo "==> published v$VERSION"
