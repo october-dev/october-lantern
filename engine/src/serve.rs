@@ -53,6 +53,10 @@ enum Request {
         /// Let the agent use the computer's apps (Cua Driver). On unless the app says otherwise.
         #[serde(default = "yes")]
         computer: bool,
+        /// The agent asks before each action, instead of starting in its own auto-approve mode
+        /// (Settings: "Ask before agents act"). Off unless the app says otherwise.
+        #[serde(default)]
+        ask_first: bool,
         background: bool,
         #[serde(default = "launch_timeout")]
         timeout_ms: u64,
@@ -336,6 +340,7 @@ pub fn run() -> Result<()> {
                     toolkit,
                     bus,
                     computer,
+                    ask_first,
                     background,
                     timeout_ms,
                 }) => {
@@ -360,6 +365,7 @@ pub fn run() -> Result<()> {
                             bus_note: None,
                             computer,
                             computer_note: None,
+                            ask_first,
                         };
                         let result = match launch::launch(
                             kind,

@@ -139,6 +139,7 @@ pub enum SettingChange {
     ScreenshotNewSessions(bool),
     BusForSessions(bool),
     ComputerUse(bool),
+    AskFirst(bool),
     ToolkitInSessions(bool),
     NotificationsEnabled(bool),
     NotifyOnFinish(bool),

@@ -52,6 +52,7 @@ impl Lantern {
                 prefs.computer_use = on;
                 self.request(serde_json::json!({"type": "computer.prepare", "enabled": on}));
             }
+            SettingChange::AskFirst(on) => prefs.ask_first = on,
             SettingChange::ToolkitInSessions(on) => prefs.toolkit_in_sessions = on,
             SettingChange::NotificationsEnabled(on) => {
                 prefs.notifications = on;

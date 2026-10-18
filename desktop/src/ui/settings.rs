@@ -306,6 +306,11 @@ fn general(ui: &mut Ui, cx: &mut Ctx) {
                 "Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source).{status}"
             ),
         );
+        toggle(ui, cx, "Ask before agents act", cx.model.prefs.ask_first, SettingChange::AskFirst);
+        caption(
+            ui,
+            "Off: agents Lantern starts work without stopping to ask (Claude Code, Codex and others in their auto-approve mode), so tasks finish on their own. On: each agent asks you before it runs commands or changes files.",
+        );
         toggle(ui, cx, "Connect new sessions to October Bus", cx.model.prefs.bus_for_sessions, SettingChange::BusForSessions);
         caption(
             ui,

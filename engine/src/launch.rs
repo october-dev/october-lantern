@@ -143,6 +143,8 @@ pub struct LaunchEnv {
     pub program: Option<String>,
     pub path_prefix: Option<String>,
     pub env: Vec<(String, String)>,
+    /// Without the agent's auto-approve flags (`hands_free_args`).
+    pub ask_first: bool,
 }
 
 /// October: the user's own `october` when it's on PATH, else Lantern's October Harness with its
@@ -153,6 +155,7 @@ pub(crate) fn october_env(on_path: bool, bundled: Option<&crate::harness::Bundle
         program: bundled.map(|b| b.bin.to_string_lossy().into_owned()),
         path_prefix: bundled.map(|b| b.node_bin.to_string_lossy().into_owned()),
         env: session,
+        ask_first: false,
     }
 }
 
@@ -211,6 +214,8 @@ pub struct Extras<'a> {
     pub computer: bool,
     /// What the first message says about Cua Driver (set by `launch`).
     pub computer_note: Option<&'a str>,
+    /// The agent asks before acting, as it does on its own (see `hands_free_args`).
+    pub ask_first: bool,
 }
 
 /// How Lantern asks every agent it starts to answer, after the first message: where it is, and
@@ -310,7 +315,7 @@ pub(crate) fn agent_command_with(
     for (k, v) in extra.env.iter().chain(bus.map(|b| b.env.as_slice()).unwrap_or_default()) {
         env.push_str(&format!("{k}={} ", quote(v)));
     }
-    for (k, v) in hands_free_env(kind) {
+    for (k, v) in hands_free_env(kind, extra.ask_first) {
         env.push_str(&format!("{k}={} ", quote(v)));
     }
     let wrap: String = bus.map(|b| b.wrap.iter().map(|w| format!("{w} ")).collect()).unwrap_or_default();
@@ -320,7 +325,7 @@ pub(crate) fn agent_command_with(
         cmd.push(' ');
         cmd.push_str(arg);
     }
-    for arg in hands_free_args(kind) {
+    for arg in hands_free_args(kind, extra.ask_first) {
         cmd.push(' ');
         cmd.push_str(&quote(arg));
     }
@@ -381,6 +386,7 @@ fn open_in_terminal(_name: &str, _script: &str) -> Result<()> {
 /// The program and arguments that start `kind` on Windows, run without a shell. An npm `.cmd`
 /// shim is unwrapped to Node and its script, so `cmd.exe` and its quoting never see the message.
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn agent_argv(
     kind: Kind,
     prompt: Option<&str>,
@@ -390,6 +396,7 @@ pub(crate) fn agent_argv(
     program_override: Option<&Path>,
     // Where a launch's own Node.js is (October Harness's), for npm shims that need it.
     node_dir: Option<&Path>,
+    ask_first: bool,
 ) -> Result<(PathBuf, Vec<String>)> {
     let name = program(kind);
     let found = match program_override {
@@ -427,7 +434,7 @@ pub(crate) fn agent_argv(
     if no_daemon {
         args.push("--no-daemon".into());
     }
-    args.extend(hands_free_args(kind).iter().map(|a| a.to_string()));
+    args.extend(hands_free_args(kind, ask_first).iter().map(|a| a.to_string()));
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         args.extend([flag.to_string(), m.to_string()]);
     }
@@ -463,13 +470,16 @@ pub(crate) fn agent_argv(
 
 /// Agents Lantern starts work without stopping to ask: Lantern's tasks often run in the
 /// background, where nobody sees a question (one waited half an hour on "Do you trust this
-/// folder?"). Each agent's own auto-approve mode. Claude Code runs in its auto mode (its default
-/// now: a check on each action that stops risky ones), without the mode's one-time opt-in
-/// question; its folder is trusted by `trust_claude_folder`. Codex skips its folder question when
-/// it's given an approval mode. Pi, OpenCode and the October harness don't ask.
-pub(crate) fn hands_free_args(kind: Kind) -> &'static [&'static str] {
+/// folder?"). Each agent's own auto-approve mode: Claude Code bypasses its permission checks,
+/// without the mode's one-time warning; its folder is trusted by `trust_claude_folder`. Codex
+/// skips its folder question when it's given an approval mode. Pi, OpenCode and the October
+/// harness don't ask. `ask_first` (Settings: "Ask before agents act") leaves them asking.
+pub(crate) fn hands_free_args(kind: Kind, ask_first: bool) -> &'static [&'static str] {
+    if ask_first {
+        return &[];
+    }
     match kind {
-        Kind::Claude => &["--permission-mode", "auto", "--settings", r#"{"skipAutoPermissionPrompt":true}"#],
+        Kind::Claude => &["--dangerously-skip-permissions", "--settings", r#"{"skipDangerousModePermissionPrompt":true}"#],
         Kind::Codex => &["--dangerously-bypass-approvals-and-sandbox"],
         Kind::Gemini | Kind::Qwen => &["--yolo"],
         Kind::Copilot => &["--allow-all-tools", "--allow-all-paths"],
@@ -480,7 +490,10 @@ pub(crate) fn hands_free_args(kind: Kind) -> &'static [&'static str] {
 }
 
 /// The environment that does the same, for agents set that way.
-pub(crate) fn hands_free_env(kind: Kind) -> &'static [(&'static str, &'static str)] {
+pub(crate) fn hands_free_env(kind: Kind, ask_first: bool) -> &'static [(&'static str, &'static str)] {
+    if ask_first {
+        return &[];
+    }
     match kind {
         Kind::Goose => &[("GOOSE_MODE", "auto")],
         _ => &[],
@@ -551,7 +564,7 @@ fn codex_has_no_daemon(found: &Path, program: &Path, args: &[String]) -> bool {
 #[cfg(windows)]
 fn check_codex_early() {
     // Working out Codex's arguments asks it, and remembers the answer.
-    std::thread::spawn(|| agent_argv(Kind::Codex, None, None, None, None, None, None).map(drop));
+    std::thread::spawn(|| agent_argv(Kind::Codex, None, None, None, None, None, None, false).map(drop));
 }
 
 /// Whether `codex --help` offers `--no-daemon` (as an option, not just in prose).
@@ -599,7 +612,7 @@ fn launch_session(
 ) -> Result<Launched> {
     let program_override = extra.program.as_deref().map(Path::new);
     let node_dir = extra.path_prefix.as_deref().map(Path::new);
-    let (program, args) = agent_argv(kind, prompt, screenshot, model, bus.as_ref(), program_override, node_dir)?;
+    let (program, args) = agent_argv(kind, prompt, screenshot, model, bus.as_ref(), program_override, node_dir, extra.ask_first)?;
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
     let session = format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000);
@@ -610,7 +623,7 @@ fn launch_session(
         env.push(("PATH".into(), format!("{prefix};{}", std::env::var("PATH").unwrap_or_default())));
     }
     env.extend(extra.env.iter().cloned());
-    env.extend(hands_free_env(kind).iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    env.extend(hands_free_env(kind, extra.ask_first).iter().map(|(k, v)| (k.to_string(), v.to_string())));
     env.extend(bus.as_ref().map(|b| b.env.clone()).unwrap_or_default());
     let spec = crate::pty::Spec { cwd: cwd.to_path_buf(), program, args, env };
     crate::pty::start(&session, &spec)?;
@@ -688,7 +701,7 @@ pub fn launch(
     if !cwd.is_dir() {
         bail!("{} is not a folder", cwd.display());
     }
-    let extra = if kind == Kind::October {
+    let mut extra = if kind == Kind::October {
         let on_path = on_path().kinds.contains(&Kind::October);
         // Install Lantern's October Harness if needed, leaving a few seconds of the deadline for
         // starting the session itself (the app normally prepares it ahead: `harness.prepare`).
@@ -707,7 +720,9 @@ pub fn launch(
             bail!("the screenshot wasn't saved; try again");
         }
     }
+    extra.ask_first = extras.ask_first;
     if kind == Kind::Claude
+        && !extras.ask_first
         && let Err(error) = trust_claude_folder(cwd)
     {
         eprintln!("lantern-engine: couldn't mark {} trusted for Claude Code: {error:#}", cwd.display());
@@ -997,11 +1012,16 @@ mod hands_free_tests {
     #[test]
     fn agents_start_without_stopping_to_ask() {
         let claude = agent_command(Kind::Claude, Path::new("/tmp/p"), Some("hi"), None, None, None);
-        assert!(claude.contains("--permission-mode") && claude.contains("auto") && claude.contains("skipAutoPermissionPrompt"), "{claude}");
+        assert!(claude.contains("--dangerously-skip-permissions") && claude.contains("skipDangerousModePermissionPrompt"), "{claude}");
         let codex = agent_command(Kind::Codex, Path::new("/tmp/p"), Some("hi"), None, None, None);
         assert!(codex.contains("--dangerously-bypass-approvals-and-sandbox"), "{codex}");
         assert!(agent_command(Kind::Goose, Path::new("/tmp/p"), None, None, None, None).contains("GOOSE_MODE="));
-        assert!(hands_free_args(Kind::Pi).is_empty());
+        assert!(hands_free_args(Kind::Pi, false).is_empty());
+        // "Ask before agents act": no auto-approve flags at all.
+        let asking = LaunchEnv { ask_first: true, ..Default::default() };
+        let claude = agent_command_with(Kind::Claude, Path::new("/tmp/p"), None, None, None, None, &asking);
+        assert!(!claude.contains("--dangerously-skip-permissions"), "{claude}");
+        assert!(hands_free_env(Kind::Goose, true).is_empty());
     }
 
     #[test]

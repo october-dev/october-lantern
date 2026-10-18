@@ -24,6 +24,9 @@ final class Preferences: ObservableObject {
     @Published var busForSessions: Bool { didSet { d.set(busForSessions, forKey: "busForSessions") } }
     /// Let agents Lantern starts use this Mac's apps through Cua Driver (engine `computer`).
     @Published var computerUse: Bool { didSet { d.set(computerUse, forKey: "computerUse") } }
+    /// Agents Lantern starts ask before each action instead of starting in their own
+    /// auto-approve mode (engine `askFirst`). Off: tasks often run where nobody sees a question.
+    @Published var askFirst: Bool { didSet { d.set(askFirst, forKey: "askFirst") } }
     /// The agent new sessions and assistant tasks start with (an AgentKind raw value), or empty to
     /// choose: your own signed-in plan first, then October. See `AppModel.defaultAgentKind`.
     @Published var defaultAgent: String { didSet { d.set(defaultAgent, forKey: "defaultAgent") } }
@@ -41,6 +44,7 @@ final class Preferences: ObservableObject {
         d.register(defaults: ["busForSessions": true, "computerUse": true])
         busForSessions = d.bool(forKey: "busForSessions")
         computerUse = d.bool(forKey: "computerUse")
+        askFirst = d.bool(forKey: "askFirst")
         defaultAgent = d.string(forKey: "defaultAgent") ?? ""
     }
 

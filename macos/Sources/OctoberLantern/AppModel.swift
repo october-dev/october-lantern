@@ -693,7 +693,7 @@ final class AppModel: ObservableObject {
             id, .launch,
             sent: engine.launch(
                 requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, context: context,
-                toolkit: toolkit, bus: prefs.busForSessions, computer: prefs.computerUse, background: background
+                toolkit: toolkit, bus: prefs.busForSessions, computer: prefs.computerUse, askFirst: prefs.askFirst, background: background
             )
         )
     }

@@ -90,6 +90,9 @@ struct SettingsView: View {
                 Text("Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source) and Lantern's Accessibility and Screen Recording permissions.")
                     .font(.caption).foregroundStyle(.secondary)
                 if prefs.computerUse { computerStatus }
+                Toggle("Ask before agents act", isOn: $prefs.askFirst)
+                Text("Off: agents Lantern starts work without stopping to ask (Claude Code, Codex and others in their auto-approve mode), so tasks finish on their own. On: each agent asks you before it runs commands or changes files.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Also give new sessions the list of tools on this Mac", isOn: $prefs.toolkitInSessions)
                 HStack {
                     Text("Lantern keeps a short list of what this Mac has (tools, apps, local models) for agents it starts. Tasks always get it. You can add your own notes at the end of the list.")
