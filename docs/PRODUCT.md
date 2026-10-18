@@ -105,9 +105,9 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **General:** open at login, which screen edge, the two shortcuts and automatic updates; new sessions and tasks (screenshot, using your apps, October Bus, the toolkit list); exact status (the hooks); notifications (on or off, and whether finished turns notify too).
 - **Agents:** which agents count toward Waiting and notifications.
 - **October:** the October account and October Desktop.
-- **About:** version, check for updates, anonymous usage counts (in builds that send them), report a problem, the welcome guide, and uninstall.
+- **About:** version, check for updates, anonymous usage counts (in builds that send them), report a problem, send logs, the welcome guide, and uninstall.
 
-**Menu bar.** A small lantern icon: Waiting, Agents, New Session or Task, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Welcome Guide, Quit.
+**Menu bar.** A small lantern icon: Waiting, Agents, New Session or Task, Message an Agent, Show/Hide Lantern, Settings, Check for Updates, Report a Problem, Send Logs, Welcome Guide, Quit.
 
 **Look and feel.** Dark, translucent glass (Apple's Liquid Glass on macOS 26, a frosted blur on earlier versions) with a light rim. Amber means "needs you", green means "working" and grey means "idle". Each agent is shown with its official logo.
 
@@ -167,7 +167,7 @@ Lantern is in **beta (v0.6.7)**.
 | October Harness built in | ✅ The default agent for assistant tasks when no agent is signed in to a plan you already pay for (Claude Code, Codex, Grok or Gemini go first; falls back to Claude Code, then Codex, when October can't start). Your own `october` is used when it's on your PATH; otherwise Lantern installs the pinned version on first use (not in the DMG; a few minutes and about 370 MB on disk, less when October Desktop's Node.js can be reused). Signs in with your October account when you're signed in to Lantern. |
 | Dictation, on-device only | ✅ When the Mac supports on-device recognition for your language; otherwise Lantern says so instead of sending audio to Apple |
 | Global shortcut (default ⌃⌥Space, changeable) | ✅ |
-| Welcome guide, Settings, Report a Problem, Uninstall | ✅ |
+| Welcome guide, Settings, Report a Problem, Send Logs, Uninstall | ✅ |
 | Automatic routing ("send this to whichever agent it's for") | ❌ Not yet. You choose the agent. |
 | Screenshot as context for a new session | ✅ Optional (New Session › Context, or Settings › General). Needs Screen Recording permission. |
 | Point & Ask (drag a box, then Ask October's AI or send to an agent) | ✅ Ask needs October sign-in (free plan: 20 questions a day; Pro and Max: the plan's Assistant credit). Needs Screen Recording permission. |
@@ -207,6 +207,7 @@ Lantern is in **beta (v0.6.7)**.
 - **Typing replies.** When you send a reply, Lantern types it into that agent's terminal: through cmux's command-line tool, tmux, or macOS Automation for Terminal and iTerm2. macOS asks you once per app before Automation is allowed.
 - **Optional hooks.** If you turn on exact status, Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`: PermissionRequest, Notification, Stop, UserPromptSubmit, PostToolUse, PostToolUseFailure) and Codex's `notify` setting (`~/.codex/config.toml`). It reads and checks both files before changing either, backs both up (never overwriting an earlier backup), replaces each atomically, puts the first file back if the second can't be written, keeps any existing Codex notify program working, and restores everything when you turn hooks off or uninstall. Settings shows Claude Code and Codex separately, and offers an update when an older Lantern's Claude hooks are installed. If Lantern is deleted without uninstalling, the hooks quietly do nothing. The hook events Lantern stores (`~/Library/Application Support/October Lantern/events`) hold the agent's last message and the command it asked permission for.
 - **Problem and crash reports are only ever sent by you**, as an email you see before sending. They contain versions and a summary of which agents and terminals are running, never conversations, folders or code.
+- **Send Logs** (Settings › About, and the menu) sends a report only when you choose it: Lantern's version, the system's, what Lantern shows (engine state, agent counts by kind) and the tails of Lantern's own logs (its engine, October Bus and Cua Driver; on the Mac, Lantern's crash reports from the last week). Passwords, keys and tokens are taken out, and your home folder's path becomes `~`. It goes to the October team's private store (the same one October Desktop's reports use), where only the team can read it, and you get a code (LAN-…) to quote. If it can't be sent, it's saved to your Desktop instead, to send however you like.
 
 ## Requirements and permissions
 

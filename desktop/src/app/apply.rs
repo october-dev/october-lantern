@@ -140,6 +140,7 @@ impl Lantern {
                     self.show(format!("Write to {SUPPORT_EMAIL} about the problem."));
                 }
             }
+            UiAction::SendLogs => self.send_logs(),
             UiAction::Copy(text) => self.windows.copy(text),
             UiAction::Quit => self.windows.quit(),
         }

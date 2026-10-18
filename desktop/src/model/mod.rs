@@ -686,6 +686,32 @@ pub struct SystemState {
     pub checking_updates: bool,
     pub version: String,
     pub uninstall: Uninstall,
+    /// Send Logs: the last report's outcome.
+    pub logs: Option<LogsReport>,
+}
+
+/// Send Logs (Settings › About): sending, sent with its code, or saved to the Desktop instead.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum LogsReport {
+    Sending,
+    Sent { code: String },
+    Saved { path: String, error: String },
+    Failed { error: String },
+}
+
+impl LogsReport {
+    pub fn summary(&self) -> String {
+        match self {
+            Self::Sending => "Sending logs…".into(),
+            Self::Sent { code } => format!("Logs sent: {code} (copied). Quote it to hey@october.dev."),
+            Self::Saved { path, .. } => format!(
+                "Couldn't send the logs. They're saved as {}: email that file to hey@october.dev.",
+                std::path::Path::new(path).file_name().map_or(path.clone(), |name| name.to_string_lossy().into_owned())
+            ),
+            Self::Failed { error } => format!("Couldn't send the logs: {error}"),
+        }
+    }
 }
 
 /// Uninstalling Lantern (Settings › About, after the person confirmed it; Swift `Support.uninstall`).

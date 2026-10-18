@@ -44,6 +44,7 @@ impl Lantern {
         menu.extend([
             None,
             item("Report a Problem…".into(), "report"),
+            item("Send Logs…".into(), "logs"),
             item("Welcome Guide".into(), "welcome"),
             None,
             item("Quit October Lantern".into(), "quit"),
@@ -88,6 +89,7 @@ impl Lantern {
             "settings" => UiAction::ShowSettings,
             "updates" => UiAction::CheckUpdates,
             "report" => UiAction::ReportProblem,
+            "logs" => UiAction::SendLogs,
             "welcome" => UiAction::ShowWelcome,
             "quit" => UiAction::Quit,
             agent if self.model.agent(agent).is_some() => UiAction::OpenChat { agent_id: agent.into() },

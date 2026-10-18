@@ -6,6 +6,7 @@
 //!   lantern-engine hook claude|codex      hook entry point (called by the agents)
 //!   lantern-engine hooks install|uninstall|status|remove-all
 //!   lantern-engine harness status|install [--root DIR] [--download-node]
+//!   lantern-engine report [--app NAME] [--app-version X]   send logs to October (details on stdin)
 
 mod actions;
 mod apps;
@@ -26,6 +27,7 @@ mod platform;
 mod procs;
 mod pty;
 mod readers;
+mod report;
 mod run;
 mod scanner;
 mod serve;
@@ -112,6 +114,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("report") => report::run(&args[1..]),
         Some("installed") => {
             println!("{}", serde_json::to_string(&launch::installed())?);
             Ok(())

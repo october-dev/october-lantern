@@ -502,6 +502,12 @@ fn about(ui: &mut Ui, cx: &mut Ctx) {
         if button_row(ui, "Report a Problem…") {
             cx.emit(UiAction::ReportProblem);
         }
+        if button_row(ui, "Send Logs…") {
+            cx.emit(UiAction::SendLogs);
+        }
+        if let Some(logs) = &cx.model.system.logs {
+            caption(ui, &logs.summary());
+        }
         if button_row(ui, "Show Welcome Guide") {
             cx.emit(UiAction::ShowWelcome);
         }

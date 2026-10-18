@@ -85,6 +85,20 @@ final class EngineClient {
         shutDown()
     }
 
+    /// The engine's log, for Send Logs: logs/engine.log in Lantern's support folder, the last
+    /// run's kept as engine-previous.log so why an engine stopped survives its restart.
+    private static func engineLog() -> FileHandle? {
+        let logs = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/October Lantern/logs", isDirectory: true)
+        let log = logs.appendingPathComponent("engine.log")
+        let previous = logs.appendingPathComponent("engine-previous.log")
+        try? FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: previous)
+        try? FileManager.default.moveItem(at: log, to: previous)
+        guard FileManager.default.createFile(atPath: log.path, contents: nil) else { return nil }
+        return try? FileHandle(forWritingTo: log)
+    }
+
     private func launch(_ generation: Int) {
         historyRequests.cancelAll()
         buffer = Data()
@@ -103,7 +117,7 @@ final class EngineClient {
         let output = Pipe()
         p.standardInput = input
         p.standardOutput = output
-        p.standardError = FileHandle.standardError
+        p.standardError = Self.engineLog() ?? FileHandle.standardError
         output.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             // At end of file the handler keeps firing with no data until it's removed.

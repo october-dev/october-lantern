@@ -25,6 +25,7 @@ mod dialogs;
 mod dictation;
 mod engine;
 pub mod fixture;
+mod logs;
 mod menu;
 mod point_ask;
 mod preferences;
@@ -200,6 +201,7 @@ impl Lantern {
             Event::Tray(available) => self.model.caps.tray = available,
             Event::Hooks(result) => self.hooks_result(result),
             Event::Uninstalled(failures) => self.uninstalled(failures),
+            Event::LogsSent(result) => self.logs_sent(result),
             Event::NotificationsAllowed(allowed) => self.model.system.notifications_allowed = allowed,
             Event::Transcript { owner, generation, result } => self.transcript(&owner, generation, result),
             Event::SpeechSetup(step) => self.speech_setup(step),

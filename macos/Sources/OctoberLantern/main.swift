@@ -267,6 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
         item("Report a Problem…") { [weak self] in Support.reportProblem(agents: self?.model.agents ?? []) }
+        item("Send Logs…") { [weak self] in if let model = self?.model { Support.sendLogs(model: model) } }
         item("Welcome Guide") { [weak self] in self?.showWelcome() }
         menu.addItem(.separator())
         item("Quit October Lantern", "q") { NSApp.terminate(nil) }

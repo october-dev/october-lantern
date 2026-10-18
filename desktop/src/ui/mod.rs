@@ -252,6 +252,7 @@ pub enum UiAction {
     OpenNotificationSettings,
     CheckUpdates,
     ReportProblem,
+    SendLogs,
     ShowWelcome,
     FinishWelcome,
     ConfirmUninstall,

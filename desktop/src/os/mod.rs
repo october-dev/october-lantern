@@ -78,6 +78,8 @@ pub enum Event {
     Hooks(Result<String, String>),
     /// Uninstalling removed everything but the app, except these (what's left, and how).
     Uninstalled(Vec<String>),
+    /// Send Logs finished: the engine's answer (`{"sent":…,"code":…}`).
+    LogsSent(Result<serde_json::Value, String>),
     /// Whether the desktop lets Lantern's notifications through (`None`: can't tell).
     NotificationsAllowed(Option<bool>),
     /// Windows: the display under the pointer, captured before Point & Ask's overlay shows (the
