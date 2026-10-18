@@ -89,37 +89,41 @@ pub struct Installed {
 }
 
 /// Which agents are installed, according to the user's login shell. Cached: it takes a moment.
-/// A shell whose startup files take longer than 10 s counts as finding nothing.
-pub fn on_path() -> &'static Installed {
-    static CACHE: OnceLock<Installed> = OnceLock::new();
+/// A shell whose startup files take longer than 10 s counts as finding nothing. On Windows,
+/// looked up each time (it's quick), so an agent installed while Lantern runs shows up.
+pub fn on_path() -> std::borrow::Cow<'static, Installed> {
     #[cfg(windows)]
-    return CACHE.get_or_init(|| {
+    {
         let kinds: Vec<Kind> = ALL.iter().copied().filter(|k| crate::platform::find_on_path(program(*k)).is_some()).collect();
+        static CODEX: std::sync::Once = std::sync::Once::new();
         if kinds.contains(&Kind::Codex) {
-            check_codex_early();
+            CODEX.call_once(check_codex_early);
         }
-        Installed { kinds, tmux: false, signed_in: Vec::new() }
-    });
+        std::borrow::Cow::Owned(Installed { kinds, tmux: false, signed_in: Vec::new() })
+    }
     #[cfg(unix)]
-    CACHE.get_or_init(|| {
-        let names: Vec<&str> = ALL.iter().map(|k| program(*k)).collect();
-        let script = format!("for c in {}; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c\"; done", names.join(" "));
-        let found: Vec<String> =
-            crate::deliver::output_within(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(10), false)
-                .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).collect())
-                .unwrap_or_default();
-        Installed {
-            kinds: ALL.iter().copied().filter(|k| found.iter().any(|f| f == program(*k))).collect(),
-            tmux: Path::new(tmux::tmux_bin()).is_absolute(),
-            signed_in: Vec::new(),
-        }
-    })
+    {
+        static CACHE: OnceLock<Installed> = OnceLock::new();
+        std::borrow::Cow::Borrowed(CACHE.get_or_init(|| {
+            let names: Vec<&str> = ALL.iter().map(|k| program(*k)).collect();
+            let script = format!("for c in {}; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c\"; done", names.join(" "));
+            let found: Vec<String> =
+                crate::deliver::output_within(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(10), false)
+                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).collect())
+                    .unwrap_or_default();
+            Installed {
+                kinds: ALL.iter().copied().filter(|k| found.iter().any(|f| f == program(*k))).collect(),
+                tmux: Path::new(tmux::tmux_bin()).is_absolute(),
+                signed_in: Vec::new(),
+            }
+        }))
+    }
 }
 
 /// Which agents can be started: those on the user's PATH, and October when Lantern's own October
 /// Harness is installed (see `harness`).
 pub fn installed() -> Installed {
-    let mut i = with_bundled(on_path(), crate::harness::binary().is_some());
+    let mut i = with_bundled(&on_path(), crate::harness::binary().is_some());
     i.signed_in = crate::subscriptions::signed_in().into_iter().filter(|k| i.kinds.contains(k)).collect();
     i
 }

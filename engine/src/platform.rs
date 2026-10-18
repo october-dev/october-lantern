@@ -143,9 +143,10 @@ pub fn detach(cmd: &mut Command) -> &mut Command {
 }
 
 /// Where `name` would run from in a new Command Prompt: the first folder on `PATH` holding it
-/// with one of `PATHEXT`'s extensions.
+/// with one of `PATHEXT`'s extensions. `PATH` is brought up to date first (see `refresh_path`).
 #[cfg(windows)]
 pub fn find_on_path(name: &str) -> Option<PathBuf> {
+    refresh_path();
     let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).find_map(|dir| {
@@ -155,6 +156,88 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
             // App execution aliases (e.g. `wt.exe`) are links metadata can't follow.
             .find(|p| p.is_file() || p.symlink_metadata().is_ok_and(|m| !m.is_dir()))
     })
+}
+
+/// Windows: makes the engine's `PATH` what a Command Prompt opened now would have, so an agent
+/// installed after Lantern started is found and runs, with what it needs (Node.js) on `PATH`
+/// too. A process keeps the `PATH` it started with, and Lantern often starts at sign-in, before
+/// the install. That's the system's and the user's `PATH` from the registry, then the engine's own
+/// (what Lantern added), then folders agent installers use without always adding them to `PATH`
+/// (Claude Code's native installer: `~\.local\bin`). At most every 10 seconds.
+#[cfg(windows)]
+pub fn refresh_path() {
+    use std::sync::Mutex;
+    use std::time::Instant;
+    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        if last.is_some_and(|at| at.elapsed() < Duration::from_secs(10)) {
+            return;
+        }
+        *last = Some(Instant::now());
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for key in [r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment", r"HKCU\Environment"] {
+        if let Some(value) = registry_path(key) {
+            dirs.extend(std::env::split_paths(&expand_env(&value)));
+        }
+    }
+    dirs.extend(std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default());
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let known = [
+        Some(home().join(".local").join("bin")),
+        var("APPDATA").map(|d| d.join("npm")),
+        var("LOCALAPPDATA").map(|d| d.join("Microsoft").join("WinGet").join("Links")),
+        Some(home().join(".bun").join("bin")),
+        Some(home().join("scoop").join("shims")),
+    ];
+    dirs.extend(known.into_iter().flatten().filter(|d| d.is_dir()));
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| !d.as_os_str().is_empty() && seen.insert(d.to_string_lossy().trim_end_matches('\\').to_lowercase()));
+    if let Ok(path) = std::env::join_paths(dirs) {
+        // SAFETY: Windows' environment block is guarded by the system (SetEnvironmentVariableW),
+        // so another thread reading PATH meanwhile sees the old or the new value, never a torn one.
+        unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
+/// A `Path` value under `key`, from `reg query`.
+#[cfg(windows)]
+fn registry_path(key: &str) -> Option<String> {
+    let out = crate::run::output(Command::new("reg").args(["query", key, "/v", "Path"]), Duration::from_secs(5)).ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.trim_start().to_ascii_lowercase().starts_with("path "))?;
+    let at = line.find("REG_EXPAND_SZ").map(|i| i + "REG_EXPAND_SZ".len()).or_else(|| line.find("REG_SZ").map(|i| i + "REG_SZ".len()))?;
+    Some(line[at..].trim().to_string())
+}
+
+/// `%NAME%` references replaced with the environment's values (unknown ones are left as they are).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn expand_env(value: &str) -> String {
+    let mut out = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('%') {
+            Some(end) if end > 0 => match std::env::var(&after[..end]) {
+                Ok(v) => {
+                    out.push_str(&v);
+                    rest = &after[end + 1..];
+                }
+                Err(_) => {
+                    out.push_str(&rest[start..start + end + 2]);
+                    rest = &after[end + 1..];
+                }
+            },
+            _ => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Brings the terminal window of `host` (a `HostApp` pid) to the front: a top-level window of
@@ -327,5 +410,16 @@ mod tests {
         assert!(open_files(std::process::id()).contains(&path));
         drop(file);
         std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    #[test]
+    fn registry_paths_expand_their_variables() {
+        let home = std::env::var("PATH").unwrap();
+        assert_eq!(super::expand_env("%PATH%"), home);
+        assert_eq!(super::expand_env(r"%LANTERN_NOT_SET_ANYWHERE%\bin;C:\x"), r"%LANTERN_NOT_SET_ANYWHERE%\bin;C:\x");
+        assert_eq!(super::expand_env("100% sure"), "100% sure");
     }
 }
