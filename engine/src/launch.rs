@@ -295,12 +295,19 @@ pub(crate) fn agent_command_with(
     for (k, v) in extra.env.iter().chain(bus.map(|b| b.env.as_slice()).unwrap_or_default()) {
         env.push_str(&format!("{k}={} ", quote(v)));
     }
+    for (k, v) in hands_free_env(kind) {
+        env.push_str(&format!("{k}={} ", quote(v)));
+    }
     let wrap: String = bus.map(|b| b.wrap.iter().map(|w| format!("{w} ")).collect()).unwrap_or_default();
     let program = extra.program.as_deref().map(quote).unwrap_or_else(|| program(kind).to_string());
     let mut cmd = format!("cd {} && {env}exec {wrap}{program}", quote(&cwd.to_string_lossy()));
     for arg in bus.map(|b| b.args.as_slice()).unwrap_or_default() {
         cmd.push(' ');
         cmd.push_str(arg);
+    }
+    for arg in hands_free_args(kind) {
+        cmd.push(' ');
+        cmd.push_str(&quote(arg));
     }
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         cmd.push_str(&format!(" {flag} {}", quote(m)));
@@ -405,6 +412,7 @@ pub(crate) fn agent_argv(
     if no_daemon {
         args.push("--no-daemon".into());
     }
+    args.extend(hands_free_args(kind).iter().map(|a| a.to_string()));
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         args.extend([flag.to_string(), m.to_string()]);
     }
@@ -436,6 +444,65 @@ pub(crate) fn agent_argv(
         }
         _ => Ok((program, args)),
     }
+}
+
+/// Agents Lantern starts work without stopping to ask: Lantern's tasks often run in the
+/// background, where nobody sees a question (one waited half an hour on "Do you trust this
+/// folder?"). Each agent's own auto-approve mode. Claude Code runs in its auto mode (its default
+/// now: a check on each action that stops risky ones), without the mode's one-time opt-in
+/// question; its folder is trusted by `trust_claude_folder`. Codex skips its folder question when
+/// it's given an approval mode. Pi, OpenCode and the October harness don't ask.
+pub(crate) fn hands_free_args(kind: Kind) -> &'static [&'static str] {
+    match kind {
+        Kind::Claude => &["--permission-mode", "auto", "--settings", r#"{"skipAutoPermissionPrompt":true}"#],
+        Kind::Codex => &["--dangerously-bypass-approvals-and-sandbox"],
+        Kind::Gemini | Kind::Qwen => &["--yolo"],
+        Kind::Copilot => &["--allow-all-tools", "--allow-all-paths"],
+        Kind::Cursor => &["--force"],
+        Kind::Grok => &["--always-approve"],
+        _ => &[],
+    }
+}
+
+/// The environment that does the same, for agents set that way.
+pub(crate) fn hands_free_env(kind: Kind) -> &'static [(&'static str, &'static str)] {
+    match kind {
+        Kind::Goose => &[("GOOSE_MODE", "auto")],
+        _ => &[],
+    }
+}
+
+/// Marks `folder` trusted for Claude Code, as answering "Yes" to its "Do you trust the files in
+/// this folder?" does: `projects[<folder>].hasTrustDialogAccepted` in `~/.claude.json` (its
+/// key: the folder's path, with `/` on Windows too). Only when Claude Code has its file already,
+/// and only that folder's entry changes.
+pub(crate) fn trust_claude_folder(folder: &Path) -> Result<()> {
+    trust_claude_folder_in(&crate::platform::home().join(".claude.json"), folder)
+}
+
+pub(crate) fn trust_claude_folder_in(file: &Path, folder: &Path) -> Result<()> {
+    let Ok(text) = std::fs::read_to_string(file) else { return Ok(()) };
+    let mut config: serde_json::Value = serde_json::from_str(&text).context("reading ~/.claude.json")?;
+    let key = folder.to_string_lossy().replace('\\', "/");
+    let projects =
+        config.as_object_mut().context("~/.claude.json isn't an object")?.entry("projects").or_insert_with(|| serde_json::json!({}));
+    let projects = projects.as_object_mut().context("~/.claude.json's projects isn't an object")?;
+    if projects.get(&key).is_some_and(|p| p["hasTrustDialogAccepted"] == true) {
+        return Ok(());
+    }
+    // A new entry has what Claude Code gives one.
+    let entry = projects.entry(key).or_insert_with(|| {
+        serde_json::json!({"allowedTools": [], "mcpContextUris": [], "mcpServers": {}, "enabledMcpjsonServers": [],
+            "disabledMcpjsonServers": [], "hasClaudeMdExternalIncludesApproved": false,
+            "hasClaudeMdExternalIncludesWarningShown": false})
+    });
+    entry.as_object_mut().context("a project entry isn't an object")?.insert("hasTrustDialogAccepted".into(), true.into());
+    let tmp = file.with_extension(format!("json.lantern-{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string_pretty(&config)?)?;
+    std::fs::rename(&tmp, file).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })?;
+    Ok(())
 }
 
 /// Codex runs its TUI through a shared background app-server ("daemon") by default since 0.160.
@@ -528,6 +595,7 @@ fn launch_session(
         env.push(("PATH".into(), format!("{prefix};{}", std::env::var("PATH").unwrap_or_default())));
     }
     env.extend(extra.env.iter().cloned());
+    env.extend(hands_free_env(kind).iter().map(|(k, v)| (k.to_string(), v.to_string())));
     env.extend(bus.as_ref().map(|b| b.env.clone()).unwrap_or_default());
     let spec = crate::pty::Spec { cwd: cwd.to_path_buf(), program, args, env };
     crate::pty::start(&session, &spec)?;
@@ -623,6 +691,11 @@ pub fn launch(
         if !inside || !s.is_file() {
             bail!("the screenshot wasn't saved; try again");
         }
+    }
+    if kind == Kind::Claude
+        && let Err(error) = trust_claude_folder(cwd)
+    {
+        eprintln!("lantern-engine: couldn't mark {} trusted for Claude Code: {error:#}", cwd.display());
     }
     let model = model.map(str::trim).filter(|m| !m.is_empty());
     if let Some(m) = model {
@@ -899,5 +972,42 @@ mod startup_tests {
         p.cmd[1] = "/usr/bin/copilot".into();
         live.exe = Some("/bin/zsh".into());
         assert!(startup_owner(Kind::Copilot, &p, &live, &pane).is_none(), "An exec between discovery and verification must fail");
+    }
+}
+
+#[cfg(test)]
+mod hands_free_tests {
+    use super::*;
+
+    #[test]
+    fn agents_start_without_stopping_to_ask() {
+        let claude = agent_command(Kind::Claude, Path::new("/tmp/p"), Some("hi"), None, None, None);
+        assert!(claude.contains("--permission-mode") && claude.contains("auto") && claude.contains("skipAutoPermissionPrompt"), "{claude}");
+        let codex = agent_command(Kind::Codex, Path::new("/tmp/p"), Some("hi"), None, None, None);
+        assert!(codex.contains("--dangerously-bypass-approvals-and-sandbox"), "{codex}");
+        assert!(agent_command(Kind::Goose, Path::new("/tmp/p"), None, None, None, None).contains("GOOSE_MODE="));
+        assert!(hands_free_args(Kind::Pi).is_empty());
+    }
+
+    #[test]
+    fn claude_trusts_only_the_launch_folder_and_keeps_the_rest_of_its_file() {
+        let dir = std::env::temp_dir().join(format!("lantern-trust-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(".claude.json");
+        std::fs::write(&file, r#"{"numStartups":3,"projects":{"/other":{"hasTrustDialogAccepted":false,"allowedTools":["x"]}}}"#).unwrap();
+        trust_claude_folder_in(&file, Path::new(r"C:\Users\Some One\Desktop")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(v["numStartups"], 3);
+        assert_eq!(v["projects"]["/other"]["hasTrustDialogAccepted"], false, "other folders stay as they were");
+        assert_eq!(
+            v["projects"]["C:/Users/Some One/Desktop"]["hasTrustDialogAccepted"], true,
+            "Windows paths use /, as Claude Code's keys do"
+        );
+        assert_eq!(v["projects"]["C:/Users/Some One/Desktop"]["allowedTools"], serde_json::json!([]));
+        // No file: Claude Code hasn't run yet, so nothing is written.
+        let missing = dir.join("missing.json");
+        trust_claude_folder_in(&missing, Path::new("/x")).unwrap();
+        assert!(!missing.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
