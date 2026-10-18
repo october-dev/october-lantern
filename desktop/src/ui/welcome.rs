@@ -1,5 +1,7 @@
-//! Port of `WelcomeView.swift`: what Lantern is, the agents it found, and the optional setup, in
-//! three steps on a fixed 540 x 640 surface. Only the platform noun changes from the Mac's copy.
+//! Port of `WelcomeView.swift`: what Lantern is, the agents it found, letting agents use your
+//! apps (and why), and the optional setup, in four steps on a fixed 540 x 640 surface. Windows and
+//! Linux need no Screen Recording or Accessibility grant, so the Mac's permissions page is the apps
+//! page here. Only the platform noun changes from the Mac's copy.
 use super::{
     Ctx, SettingChange, UiAction,
     components::{self as c, paint_icon},
@@ -12,6 +14,8 @@ use eframe::egui::{self, Align, Color32, Galley, Key, Label, Layout, Modifiers, 
 use std::sync::Arc;
 
 pub const SIZE: Vec2 = vec2(540.0, 640.0);
+/// The last step (tips): intro, your apps, setup, done.
+pub const LAST_STEP: usize = 3;
 /// Swift `Color(white: 0.09)`.
 const BACKGROUND: Color32 = Color32::from_gray(23);
 /// SwiftUI's dark-mode `.orange`.
@@ -20,12 +24,12 @@ const ORANGE: Color32 = Color32::from_rgb(255, 159, 10);
 pub fn render(ui: &mut Ui, cx: &mut Ctx) -> f32 {
     let rect = Rect::from_min_size(ui.cursor().min, SIZE);
     ui.painter().rect_filled(rect, 0.0, BACKGROUND);
-    let step = cx.view.welcome_step.min(2);
+    let step = cx.view.welcome_step.min(LAST_STEP);
     // `.keyboardShortcut(.defaultAction)` on Continue / Start using Lantern.
     if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Enter)) {
         advance(cx, step);
     }
-    let primary = if step == 2 { "Start using Lantern" } else { "Continue" };
+    let primary = if step == LAST_STEP { "Start using Lantern" } else { "Continue" };
     let button_height = ui.painter().layout_no_wrap(primary.into(), t::font(13.0, Weight::Semibold), t::INK).size().y + 16.0;
     let footer = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - button_height - 40.0), rect.max);
     let content = Rect::from_min_max(rect.min + vec2(36.0, 32.0), egui::pos2(rect.right() - 36.0, footer.top()));
@@ -34,12 +38,13 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) -> f32 {
     // outside the viewport. Exact SwiftUI compression in those states still needs a Mac run.
     let clip = ui.clip_rect().intersect(rect);
     ui.scope_builder(
-        UiBuilder::new().max_rect(content).layout(Layout::top_down(if step == 1 { Align::Min } else { Align::Center })),
+        UiBuilder::new().max_rect(content).layout(Layout::top_down(if step == 1 || step == 2 { Align::Min } else { Align::Center })),
         |ui| {
             ui.set_clip_rect(clip);
             match step {
                 0 => intro(ui, cx),
-                1 => setup(ui, cx),
+                1 => apps(ui, cx),
+                2 => setup(ui, cx),
                 _ => done(ui, cx),
             }
         },
@@ -50,7 +55,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) -> f32 {
 }
 
 fn advance(cx: &mut Ctx, step: usize) {
-    if step >= 2 {
+    if step >= LAST_STEP {
         cx.emit(UiAction::FinishWelcome);
     } else {
         cx.view.welcome_step = step + 1;
@@ -58,7 +63,7 @@ fn advance(cx: &mut Ctx, step: usize) {
 }
 
 fn footer_bar(ui: &mut Ui, cx: &mut Ctx, bar: Rect, step: usize, primary: &str) {
-    for i in 0..3 {
+    for i in 0..=LAST_STEP {
         let center = egui::pos2(bar.left() + 3.0 + i as f32 * 12.0, bar.center().y);
         ui.painter().circle_filled(center, 3.0, if i == step { t::AMBER } else { t::white(0.2) });
     }
@@ -221,6 +226,58 @@ pub fn blurred_disk(painter: &egui::Painter, center: egui::Pos2, radius: f32, si
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// Swift `permissions`: on Windows and Linux nothing needs granting, so this page says what
+/// letting agents use your apps means, with its switch.
+fn apps(ui: &mut Ui, cx: &mut Ctx) {
+    ui.spacing_mut().item_spacing.y = 14.0;
+    c::label(ui, "Let agents use your apps", 22.0, Weight::Bold, t::INK);
+    c::label(
+        ui,
+        "Agents you start from Lantern can do things in your apps for you: fill in a form in your browser, sort files into a folder, change a setting.",
+        13.5,
+        Weight::Regular,
+        t::MUTED,
+    );
+    let mut computer_use = cx.model.prefs.computer_use;
+    setup_row(ui, Icon::PointAsk, "Let agents use your apps", &apps_status(cx), |ui| {
+        let response = sessions::switch(ui, "", &mut computer_use);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), computer_use, "Let agents use your apps")
+        });
+        if response.changed() {
+            cx.emit(UiAction::ChangeSetting(SettingChange::ComputerUse(computer_use)));
+        }
+    });
+    egui::Frame::new().fill(t::FAINT).corner_radius(12).inner_margin(14).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 8.0;
+        c::label(ui, "How it works", 13.5, Weight::Semibold, t::INK);
+        for line in [
+            "They work in the background with their own cursor, so you can keep using your computer.",
+            "They only use your apps for something you asked them to do.",
+            "Lantern downloads Cua Driver (open source) for this the first time.",
+            "Turn it off anytime in Settings.",
+        ] {
+            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                c::label(ui, "•", 12.5, Weight::Regular, t::AMBER);
+                c::label(ui, line, 12.5, Weight::Regular, t::white(0.85));
+            });
+        }
+    });
+}
+
+/// The apps switch's detail: what it does, then Cua Driver's state while it's on.
+fn apps_status(cx: &Ctx) -> String {
+    let status = match cx.model.computer.as_ref().filter(|_| cx.model.prefs.computer_use) {
+        Some(s) if s.status == "installing" => " Downloading Cua Driver…",
+        Some(s) if s.status == "failed" => " Cua Driver didn't start; Settings can try again.",
+        Some(s) if s.status == "ready" => " Ready.",
+        _ => "",
+    };
+    format!("Recommended. Agents see and use your apps when they work on a task.{status}")
+}
+
 fn setup(ui: &mut Ui, cx: &mut Ctx) {
     ui.spacing_mut().item_spacing.y = 14.0;
     c::label(ui, "A few choices", 22.0, Weight::Bold, t::INK);
@@ -234,22 +291,6 @@ fn setup(ui: &mut Ui, cx: &mut Ctx) {
             cx.emit(UiAction::ChangeSetting(SettingChange::OpenAtLogin(open_at_login)));
         }
     });
-    let mut computer_use = prefs.computer_use;
-    setup_row(
-        ui,
-        Icon::PointAsk,
-        "Let agents use your apps",
-        "Agents can use your apps and browser for you, in the background, with their own cursor.",
-        |ui| {
-            let response = sessions::switch(ui, "", &mut computer_use);
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), computer_use, "Let agents use your apps")
-            });
-            if response.changed() {
-                cx.emit(UiAction::ChangeSetting(SettingChange::ComputerUse(computer_use)));
-            }
-        },
-    );
     setup_row(
         ui,
         Icon::BellBadge,
@@ -486,7 +527,7 @@ mod tests {
     fn setup_and_navigation_buttons_emit_only_the_coordinators_intents() {
         let (ctx, assets) = setup();
         let mut model = Model::default();
-        let mut view = UiState { welcome_step: 1, ..Default::default() };
+        let mut view = UiState { welcome_step: 2, ..Default::default() };
         model.system.notifications_allowed = Some(false);
         model.system.hooks.insert(AgentKind::CLAUDE.into(), HookState::NeedsUpdate);
         assert_eq!(click(&ctx, &assets, &model, &mut view, "Open Settings…"), vec![UiAction::OpenNotificationSettings]);
@@ -498,13 +539,13 @@ mod tests {
             vec![UiAction::ChangeSetting(SettingChange::NotificationsEnabled(true))]
         );
         assert!(click(&ctx, &assets, &model, &mut view, "Back").is_empty());
-        assert_eq!(view.welcome_step, 0);
-        assert!(click(&ctx, &assets, &model, &mut view, "Continue").is_empty());
         assert_eq!(view.welcome_step, 1);
-        view.welcome_step = 2;
+        assert!(click(&ctx, &assets, &model, &mut view, "Continue").is_empty());
+        assert_eq!(view.welcome_step, 2);
+        view.welcome_step = LAST_STEP;
         assert!(click(&ctx, &assets, &model, &mut view, "Back").is_empty());
-        assert_eq!(view.welcome_step, 1, "Back on the last step returns to setup");
-        view.welcome_step = 2;
+        assert_eq!(view.welcome_step, 2, "Back on the last step returns to setup");
+        view.welcome_step = LAST_STEP;
         assert_eq!(click(&ctx, &assets, &model, &mut view, "Start using Lantern"), vec![UiAction::FinishWelcome]);
     }
 
@@ -543,6 +584,7 @@ mod tests {
         for raw in [
             include_str!("../../fixtures/welcome-intro.json"),
             include_str!("../../fixtures/welcome-intro-empty.json"),
+            include_str!("../../fixtures/welcome-apps.json"),
             include_str!("../../fixtures/welcome-setup.json"),
             include_str!("../../fixtures/welcome-setup-off.json"),
             include_str!("../../fixtures/welcome-done.json"),
@@ -556,14 +598,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_walks_the_three_steps_then_finishes() {
+    fn enter_walks_the_four_steps_then_finishes() {
         let (ctx, assets) = setup();
         let model = Model::default();
         let mut view = UiState::default();
-        frame(&ctx, &assets, &model, &mut view, vec![key(Key::Enter)]);
-        assert_eq!(view.welcome_step, 1);
-        frame(&ctx, &assets, &model, &mut view, vec![key(Key::Enter)]);
-        assert_eq!(view.welcome_step, 2);
+        for step in 1..=LAST_STEP {
+            frame(&ctx, &assets, &model, &mut view, vec![key(Key::Enter)]);
+            assert_eq!(view.welcome_step, step);
+        }
         let (height, actions, texts) = frame(&ctx, &assets, &model, &mut view, vec![key(Key::Enter)]);
         assert_eq!(actions, vec![UiAction::FinishWelcome]);
         assert_eq!(height, 640.0);
@@ -583,7 +625,7 @@ mod tests {
         let (_, _, texts) = frame(&ctx, &assets, &model, &mut UiState::default(), Vec::new());
         assert!(texts.iter().any(|(text, _)| text == "Lantern already found 2 agents on this computer."));
         assert_eq!(found(1), "Lantern already found 1 agent on this computer.");
-        for step in 0..3 {
+        for step in 0..=LAST_STEP {
             let (_, _, texts) = frame(&ctx, &assets, &model, &mut UiState { welcome_step: step, ..Default::default() }, Vec::new());
             assert!(texts.iter().all(|(text, _)| !text.contains("Mac")), "step {step}: {texts:?}");
             assert!(texts.iter().all(|(_, rect)| rect.right() <= 540.0 - 28.0 + 0.5 && rect.bottom() <= 640.0), "step {step} overflows");
@@ -594,7 +636,7 @@ mod tests {
     fn setup_rows_reflect_hook_notification_and_login_state() {
         let (ctx, assets) = setup();
         let mut model = Model::default();
-        let mut view = UiState { welcome_step: 1, ..Default::default() };
+        let mut view = UiState { welcome_step: 2, ..Default::default() };
         model.system.hooks = [("claude".to_string(), HookState::NeedsUpdate), ("codex".to_string(), HookState::On)].into();
         let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
         let has = |texts: &[(String, Rect)], wanted: &str| texts.iter().any(|(text, _)| text == wanted);
@@ -620,12 +662,29 @@ mod tests {
     }
 
     #[test]
+    fn the_apps_page_explains_and_switches_computer_use() {
+        let (ctx, assets) = setup();
+        let mut model = Model::default();
+        let mut view = UiState { welcome_step: 1, ..Default::default() };
+        let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
+        let has = |texts: &[(String, Rect)], wanted: &str| texts.iter().any(|(text, _)| text.contains(wanted));
+        assert!(has(&texts, "Let agents use your apps") && has(&texts, "How it works") && has(&texts, "their own cursor"));
+        assert!(texts.iter().filter(|(text, _)| text != "Back" && text != "Continue").all(|(_, rect)| rect.bottom() <= 568.0), "{texts:?}");
+        model.computer = Some(crate::model::ComputerStatus { status: "installing".into(), message: None, version: None });
+        let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
+        assert!(has(&texts, "Downloading Cua Driver…"));
+        model.prefs.computer_use = false;
+        let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
+        assert!(!has(&texts, "Downloading"), "no driver status while it's off");
+    }
+
+    #[test]
     fn done_tips_name_this_platforms_shortcut_edge_and_tray() {
         let (ctx, assets) = setup();
         let mut model = Model::default();
         model.caps.global_hotkeys = true;
         model.prefs.edge = crate::model::Edge::Left;
-        let mut view = UiState { welcome_step: 2, ..Default::default() };
+        let mut view = UiState { welcome_step: LAST_STEP, ..Default::default() };
         let (_, _, texts) = frame(&ctx, &assets, &model, &mut view, Vec::new());
         let joined: String = texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n");
         assert!(joined.contains("on the left edge"));

@@ -6,5 +6,5 @@
     "prefs": {"edge": "right", "point_ask_hotkey": "ctrl+alt+p"},
     "caps": {"platform": "linux", "global_hotkeys": true, "tray": true}
   },
-  "view": {"welcome_step": 2}
+  "view": {"welcome_step": 3}
 }

@@ -7,5 +7,5 @@
     "prefs": {"open_at_login": true, "notifications": true, "message_hotkey": "ctrl+alt+space"},
     "caps": {"platform": "linux", "global_hotkeys": true}
   },
-  "view": {"welcome_step": 1}
+  "view": {"welcome_step": 2}
 }
