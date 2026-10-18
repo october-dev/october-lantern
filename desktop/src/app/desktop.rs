@@ -132,6 +132,7 @@ mod tests {
                 "Settings…",
                 "—",
                 "Report a Problem…",
+                "Send Logs…",
                 "Welcome Guide",
                 "—",
                 "Quit October Lantern",
