@@ -2,7 +2,11 @@ import CoreGraphics
 import ServiceManagement
 import SwiftUI
 
-/// First-run welcome: what Lantern is, the agents it found, and the optional setup.
+/// First-run welcome: what Lantern is, the two Mac permissions it needs (and why), the optional
+/// setup, then tips. Its page is saved as it goes, so a relaunch (macOS asks to reopen Lantern
+/// after Screen Recording is allowed) picks up there. On later launches, while Screen Recording or
+/// Accessibility is still off and the person hasn't chosen Skip for now, the permissions page
+/// shows again on its own (`permissionsOnly`).
 struct WelcomeView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var hooks = Hooks.shared
@@ -11,27 +15,37 @@ struct WelcomeView: View {
     @ObservedObject var prefs = Preferences.shared
     var onDone: () -> Void
     @State var step = 0
+    /// Only the permissions page, with Done instead of the rest of the welcome.
+    var permissionsOnly = false
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
     @State private var notificationsAllowed = false
-    /// Screen Recording, which Point & Ask needs: the one setup step that isn't optional.
+    /// Screen Recording: Point & Ask sees what you select, agents see the apps they work in.
     @State private var screenAllowed = CGPreflightScreenCaptureAccess()
     @State private var screenAsked = false
-    /// Accessibility, which agents need to use your apps (Cua Driver) and Tasks use to read the
-    /// front window: also required.
+    /// Accessibility: agents use your apps (Cua Driver), and Lantern sees which window you're in.
     @State private var accessAllowed = AXIsProcessTrusted()
     @State private var accessAsked = false
     private var permissionsAllowed: Bool { screenAllowed && accessAllowed }
     private let poll = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    /// Both permissions are on (the welcome's permissions page has nothing left to ask).
+    static var permissionsAllowed: Bool { CGPreflightScreenCaptureAccess() && AXIsProcessTrusted() }
+
+    enum Page { case intro, permissions, setup, done }
+    private var pages: [Page] { permissionsOnly ? [.permissions] : [.intro, .permissions, .setup, .done] }
+    private var page: Page { pages[min(max(step, 0), pages.count - 1)] }
+    private var last: Bool { step >= pages.count - 1 }
 
     var body: some View {
         VStack(spacing: 0) {
             // Scrolls when a page is taller than the window, so Continue (below) is always visible.
             ScrollView(.vertical) {
                 Group {
-                    switch step {
-                    case 0: intro
-                    case 1: setup
-                    default: done
+                    switch page {
+                    case .intro: intro
+                    case .permissions: permissions
+                    case .setup: setup
+                    case .done: done
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .top)
@@ -43,25 +57,32 @@ struct WelcomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             HStack {
-                HStack(spacing: 6) {
-                    ForEach(0..<3) { i in
-                        Circle().fill(i == step ? Theme.amber : Color.white.opacity(0.2)).frame(width: 6, height: 6)
+                if pages.count > 1 {
+                    HStack(spacing: 6) {
+                        ForEach(pages.indices, id: \.self) { i in
+                            Circle().fill(i == step ? Theme.amber : Color.white.opacity(0.2)).frame(width: 6, height: 6)
+                        }
                     }
                 }
                 Spacer()
-                if step == 1 && !permissionsAllowed {
-                    Button("Skip for now") { step += 1 }.buttonStyle(.plain).foregroundStyle(Theme.muted)
-                        .help("Point & Ask and agents using your apps need these. You can allow them later in Settings.")
+                if page == .permissions && !permissionsAllowed {
+                    Button("Skip for now") {
+                        // Not asked again on its own; Settings keeps the switches.
+                        UserDefaults.standard.set(true, forKey: "permissionsSkipped")
+                        if last { onDone() } else { step += 1 }
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.muted)
+                    .help("Point & Ask and agents using your apps need these. You can allow them later in System Settings › Privacy & Security.")
                 }
                 if step > 0 {
                     Button("Back") { step -= 1 }.buttonStyle(.plain).foregroundStyle(Theme.muted)
                 }
-                Button(step == 2 ? "Start using Lantern" : "Continue") {
-                    if step == 2 { onDone() } else { step += 1 }
+                Button(last ? (permissionsOnly ? "Done" : "Start using Lantern") : "Continue") {
+                    if last { onDone() } else { step += 1 }
                 }
                 .buttonStyle(AmberButtonStyle())
                 .keyboardShortcut(.defaultAction)
-                .disabled(step == 1 && !permissionsAllowed)
+                .disabled(page == .permissions && !permissionsAllowed)
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 20)
@@ -71,14 +92,14 @@ struct WelcomeView: View {
         .environment(\.colorScheme, .dark)
         .task { hooks.refresh() }
         .onReceive(poll) { _ in
-            if step == 1, !screenAllowed { screenAllowed = CGPreflightScreenCaptureAccess() }
-            if step == 1, !accessAllowed, AXIsProcessTrusted() {
+            if page == .permissions, !screenAllowed { screenAllowed = CGPreflightScreenCaptureAccess() }
+            if page == .permissions, !accessAllowed, AXIsProcessTrusted() {
                 accessAllowed = true
                 // The driver checks its permissions when it starts: start it again with this one.
                 model.restartComputer()
             }
         }
-        .onChange(of: step) { _, now in UserDefaults.standard.set(now, forKey: "welcomeStep") }
+        .onChange(of: step) { _, now in if !permissionsOnly { UserDefaults.standard.set(now, forKey: "welcomeStep") } }
     }
 
     private var intro: some View {
@@ -108,23 +129,22 @@ struct WelcomeView: View {
 
     @State private var shareUsage = Analytics.shared.enabled
 
-    private var setup: some View {
+    private var permissions: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("A few choices").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
-            Text("Point & Ask and agents using your apps need Screen Recording and Accessibility. The rest is optional.")
+            Text("Let Lantern see and use your screen").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Two Mac permissions make Lantern's best parts work. Here's what each one is for. You can turn them off anytime in System Settings › Privacy & Security.")
                 .font(.system(size: 13.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
 
-            SetupRow(symbol: "rectangle.dashed.badge.record", title: "Screen Recording (needed)",
-                     detail: "To capture what you select with Point & Ask. Only when you use it.") {
-                if screenAllowed {
-                    Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
-                } else if screenAsked {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Button("Reopen Lantern") { Self.relaunch() }.buttonStyle(SecondaryButtonStyle())
-                        Text("Allowed it? macOS applies it after Lantern reopens.").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                            .frame(maxWidth: 180, alignment: .trailing).multilineTextAlignment(.trailing)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+            PermissionCard(
+                symbol: "rectangle.dashed.badge.record", title: "Screen Recording", allowed: screenAllowed,
+                why: "Lets Point & Ask see the part of your screen you select, and lets agents you start see the apps they're working in. Lantern only looks when you or an agent asks.",
+                next: screenAsked
+                    ? "Allowed it? macOS applies it once Lantern reopens: choose Quit & Reopen when macOS asks, or Reopen Lantern here. You'll come back to this page."
+                    : "After you allow it, macOS asks to quit and reopen Lantern. That's expected: you'll come back to this page."
+            ) {
+                if screenAsked {
+                    Button("Reopen Lantern") { Self.relaunch() }.buttonStyle(SecondaryButtonStyle())
                 } else {
                     Button("Allow…") {
                         ScreenCapture.shared.requestPermission()
@@ -134,11 +154,14 @@ struct WelcomeView: View {
                 }
             }
 
-            SetupRow(symbol: "cursorarrow.click.2", title: "Accessibility (needed)",
-                     detail: "So agents can use your apps for you (click, type, read windows) in the background, and Tasks know which window you're in.") {
-                if accessAllowed {
-                    Label("On", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
-                } else if accessAsked {
+            PermissionCard(
+                symbol: "cursorarrow.click.2", title: "Accessibility", allowed: accessAllowed,
+                why: "Lets agents use your apps for you: click, type and read windows in the background, with their own cursor, while you keep working. Lantern also uses it to see which window you're in.",
+                next: accessAsked
+                    ? "In Privacy & Security › Accessibility, switch on October Lantern. This page updates by itself."
+                    : "macOS opens a list of apps: switch on October Lantern, then come back here."
+            ) {
+                if accessAsked {
                     Button("Open Settings…") {
                         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
                     }
@@ -152,6 +175,19 @@ struct WelcomeView: View {
                     .buttonStyle(SecondaryButtonStyle())
                 }
             }
+
+            if permissionsAllowed {
+                Label("All set. Continue when you're ready.", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.green)
+            }
+        }
+    }
+
+    private var setup: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("A few choices").font(.system(size: 22, weight: .bold)).foregroundStyle(Theme.ink)
+            Text("All optional. You can change them later in Settings.")
+                .font(.system(size: 13.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
 
             SetupRow(symbol: "power", title: "Open at login", detail: "Keep the lantern there whenever you're using your Mac.") {
                 Toggle("", isOn: $openAtLogin).toggleStyle(.switch).labelsHidden()
@@ -265,6 +301,41 @@ private struct StateRow: View {
                 Text(detail).font(.system(size: 12)).foregroundStyle(Theme.muted)
             }
         }
+    }
+}
+
+/// A permission on the welcome's permissions page: what it's for, its state, and what happens next.
+private struct PermissionCard<Control: View>: View {
+    let symbol: String
+    let title: String
+    let allowed: Bool
+    let why: String
+    let next: String
+    @ViewBuilder var control: Control
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(Theme.amber).frame(width: 24)
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                Spacer(minLength: 12)
+                if allowed {
+                    Label("Allowed", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
+                } else {
+                    control
+                }
+            }
+            Text(why).font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.85)).fixedSize(horizontal: false, vertical: true)
+            if !allowed {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle").font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.top, 1)
+                    Text(next).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.faint))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(allowed ? Theme.green.opacity(0.35) : Color.clear))
     }
 }
 

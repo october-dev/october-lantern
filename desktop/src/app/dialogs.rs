@@ -29,9 +29,14 @@ impl Lantern {
 
     /// Opens Welcome on its first step, with fresh hook states (Swift `.task { hooks.refresh() }`).
     pub(super) fn show_welcome(&mut self) {
+        self.show_welcome_at(0);
+    }
+
+    /// Opens Welcome on `step` (a first launch: where an unfinished welcome was left).
+    fn show_welcome_at(&mut self, step: usize) {
         if !self.windows.dialogs.welcome {
-            super::trace!("welcome: shown");
-            self.view.welcome_step = 0;
+            super::trace!("welcome: shown at step {}", step + 1);
+            self.view.welcome_step = step.min(ui::welcome::LAST_STEP);
             self.refresh_hooks();
             self.refresh_notifications();
         }
@@ -50,7 +55,7 @@ impl Lantern {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context) {
         if self.windows.dialogs.welcome_at.is_some_and(|at| Instant::now() >= at) {
             self.windows.dialogs.welcome_at = None;
-            self.show_welcome();
+            self.show_welcome_at(self.model.prefs.welcome_step);
         }
         let center = self.windows.work_areas().first().map_or(egui::pos2(960.0, 540.0), Rect::center);
         if self.windows.dialogs.settings {
@@ -62,11 +67,21 @@ impl Lantern {
         }
         if self.windows.dialogs.welcome {
             let open = self.dialog(ctx, "lantern-welcome", "Welcome to October Lantern", WELCOME_SIZE, center, ui::render_welcome);
+            self.note_welcome_step();
             if !open {
                 self.windows.dialogs.sized.remove("lantern-welcome");
                 // Closing the window counts as finishing it, like the Mac.
                 self.finish_welcome();
             }
+        }
+    }
+
+    /// Saves an unfinished welcome's page as it changes (Swift's `welcomeStep`), so quitting
+    /// Lantern partway through picks up there next time.
+    fn note_welcome_step(&mut self) {
+        if !self.model.prefs.welcomed && self.model.prefs.welcome_step != self.view.welcome_step {
+            self.model.prefs.welcome_step = self.view.welcome_step;
+            self.save_prefs();
         }
     }
 
@@ -113,5 +128,32 @@ impl Lantern {
             });
         });
         open
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unfinished_welcome_picks_up_where_it_was_left() {
+        let (engine, _) = crate::sidecar::test_sender();
+        let mut lantern = Lantern::new(engine, None);
+        lantern.model.prefs.welcome_step = 2;
+        lantern.first_launch();
+        lantern.windows.dialogs.welcome_at = Some(Instant::now());
+        lantern.show_welcome_at(lantern.model.prefs.welcome_step);
+        assert_eq!(lantern.view.welcome_step, 2);
+        lantern.view.welcome_step = 3;
+        lantern.note_welcome_step();
+        assert_eq!(lantern.model.prefs.welcome_step, 3);
+        // The Welcome Guide (from the menu) always starts at the beginning.
+        lantern.windows.dialogs.welcome = false;
+        lantern.show_welcome();
+        assert_eq!(lantern.view.welcome_step, 0);
+        lantern.finish_welcome();
+        lantern.view.welcome_step = 1;
+        lantern.note_welcome_step();
+        assert_eq!(lantern.model.prefs.welcome_step, 3, "a finished welcome isn't resumed");
     }
 }

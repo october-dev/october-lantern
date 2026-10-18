@@ -1,0 +1,12 @@
+{
+  "surface": "welcome",
+  "nowMs": 1790000000000,
+  "home": "/home/me",
+  "model": {
+    "agents": [
+      {"id": "claude:1:1", "kind": "claude", "handle": "claude-24", "state": "working", "canReply": true},
+      {"id": "codex:2:2", "kind": "codex", "handle": "codex-9", "state": "waiting", "canReply": true}
+    ]
+  },
+  "view": {"welcome_step": 1}
+}

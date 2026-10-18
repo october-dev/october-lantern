@@ -755,6 +755,8 @@ pub struct Prefs {
     pub point_ask_hotkey: String,
     pub automatic_updates: bool,
     pub welcomed: bool,
+    /// The welcome's page while it isn't finished, so the next launch picks up there.
+    pub welcome_step: usize,
     /// Last model chosen per agent kind.
     pub model_by_kind: HashMap<String, String>,
     /// Last task folder per app id.
@@ -787,6 +789,7 @@ impl Default for Prefs {
             point_ask_hotkey: "ctrl+alt+p".into(),
             automatic_updates: true,
             welcomed: false,
+            welcome_step: 0,
             model_by_kind: HashMap::new(),
             task_folder_by_app: HashMap::new(),
             recent_folders: Vec::new(),

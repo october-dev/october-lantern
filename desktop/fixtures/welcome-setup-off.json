@@ -7,5 +7,5 @@
     "prefs": {"open_at_login": false, "notifications": true},
     "caps": {"platform": "windows", "global_hotkeys": true}
   },
-  "view": {"welcome_step": 1}
+  "view": {"welcome_step": 2}
 }

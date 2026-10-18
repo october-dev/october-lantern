@@ -90,11 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Reopened mid-welcome (macOS asks to after allowing Screen Recording): pick up there.
             let step = UserDefaults.standard.integer(forKey: "welcomeStep")
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome(step: step) }
-        } else if Preferences.shared.computerUse, !AXIsProcessTrusted(), !UserDefaults.standard.bool(forKey: "askedAppsAccess") {
-            // Agents can now use your apps, which needs Accessibility: ask once, on the welcome's
-            // permissions page.
-            UserDefaults.standard.set(true, forKey: "askedAppsAccess")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome(step: 1) }
+        } else if !WelcomeView.permissionsAllowed, !UserDefaults.standard.bool(forKey: "permissionsSkipped") {
+            // Screen Recording or Accessibility is still off (allowed after the welcome, so macOS
+            // reopened Lantern; or set up before the welcome asked for them): the permissions page
+            // again, until both are on or the person chooses Skip for now.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.showWelcome(permissionsOnly: true) }
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { Support.offerCrashReportIfNeeded(agents: self.model.agents) }
         }
@@ -149,15 +149,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: Windows
 
-    func showWelcome(step: Int = 0) {
+    func showWelcome(step: Int = 0, permissionsOnly: Bool = false) {
         if welcomeWindow == nil {
             let view = WelcomeView(model: model, onDone: { [weak self] in
                 UserDefaults.standard.set(true, forKey: "welcomed")
                 self?.welcomeWindow?.close()
                 self?.windows.showPill()
                 self?.windows.flash()
-            }, step: step)
-            welcomeWindow = makeWindow(title: "Welcome to October Lantern", content: view)
+            }, step: permissionsOnly ? 0 : step, permissionsOnly: permissionsOnly)
+            welcomeWindow = makeWindow(title: permissionsOnly ? "October Lantern" : "Welcome to October Lantern", content: view)
             welcomeWindow?.titlebarAppearsTransparent = true
         }
         present(welcomeWindow)
@@ -186,11 +186,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func present(_ window: NSWindow?) {
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
+        // At launch (macOS reopening Lantern after Screen Recording was allowed) activating can be
+        // refused, and Lantern has no Dock icon to find the window by: put it in front anyway.
+        window?.orderFrontRegardless()
     }
 
     private func snapshot(into dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var jobs: [(String, AnyView)] = (0..<3).map { ("welcome-\($0)", AnyView(WelcomeView(model: model, onDone: {}, step: $0))) }
+        var jobs: [(String, AnyView)] = (0..<4).map { ("welcome-\($0)", AnyView(WelcomeView(model: model, onDone: {}, step: $0))) }
+        jobs.append(("welcome-permissions-only", AnyView(WelcomeView(model: model, onDone: {}, permissionsOnly: true))))
         jobs += (0..<4).map { ("settings-\($0)", AnyView(SettingsView(model: model, onShowWelcome: {}, tab: $0))) }
         let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("october", .october), ("chat", .agents), ("assistant", .assistant),
                                                 ("starting", .inbox), ("starting-failed", .inbox),

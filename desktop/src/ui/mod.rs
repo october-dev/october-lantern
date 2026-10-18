@@ -16,7 +16,7 @@ mod point_ask;
 mod sessions;
 mod settings;
 pub mod theme;
-mod welcome;
+pub mod welcome;
 
 use crate::model::{AgentId, AgentKind, AppContext, Edge, Inputs, Model, PanelMode};
 use eframe::egui;
