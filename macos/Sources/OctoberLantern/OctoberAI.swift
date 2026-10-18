@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// One question to October's AI, for Point & Ask's Ask.
 ///
@@ -46,20 +47,27 @@ enum OctoberAI {
     wrong and how to fix it. If you can't see enough to answer, say what you'd need.
     """
 
+    /// Modes this server turned down (it answered the plain way): asked plainly from then on, until
+    /// Lantern restarts, so later questions don't pay for a refused request first.
+    private static let unsupportedModes = OSAllocatedUnfairLock(initialState: Set<String>())
+
     static func stream(_ request: Request) -> AsyncThrowingStream<Piece, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
+                    var request = request
+                    if let mode = request.mode, unsupportedModes.withLock({ $0.contains(mode) }) { request.mode = nil }
                     do {
                         do {
                             try await ask(request, token: token, into: continuation)
                         } catch Failure.invalid where request.mode != nil {
                             // A server without the mode refuses the request as invalid: ask the
-                            // plain way instead.
+                            // plain way instead (and from now on, once that works).
                             var plain = request
                             plain.mode = nil
                             try await ask(plain, token: token, into: continuation)
+                            if let mode = request.mode { _ = unsupportedModes.withLock { $0.insert(mode) } }
                         }
                         continuation.finish()
                         return
