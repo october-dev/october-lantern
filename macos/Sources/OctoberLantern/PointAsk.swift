@@ -224,17 +224,22 @@ final class PointAsk: ObservableObject {
         let turnID = turns[index].id
         let request = OctoberAI.Request(
             turns: turns.dropLast().map { ($0.question, $0.answer) }, question: question,
-            image: shot.flatMap(Self.jpeg), context: context.lines.joined(separator: "\n")
+            image: shot.flatMap(Self.jpeg), context: context.lines.joined(separator: "\n"), mode: "point_task"
         )
         askTask = Task {
             do {
+                var work: (prompt: String, agent: String?, project: String?)?
                 for try await piece in OctoberAI.stream(request) {
                     guard !Task.isCancelled, index < turns.count, turns[index].id == turnID else { return }
                     switch piece {
                     case .text(let text): turns[index].answer += text
                     case .note(let note): turns[index].note = note
-                    case .task: break
+                    case .task(let prompt, let agent, let project): work = (prompt, agent, project)
                     }
+                }
+                if let work, !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
+                    startTask(work, question: question, answer: turns[index].answer)
+                    return
                 }
                 if !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID, turns[index].answer.isEmpty {
                     turns[index].answer = "No answer came back. Try again."
@@ -251,6 +256,21 @@ final class PointAsk: ObservableObject {
             asking = false
             Analytics.shared.capture("point_ask_asked", ["follow_up": index > 0, "had_url": context.url != nil])
         }
+    }
+
+    /// The answer is work ("make a folder and move these into it"): Ask Lantern starts an agent on
+    /// it, with this selection's screenshot, where the countdown, Cancel and the agent's progress
+    /// are. Point & Ask closes.
+    private func startTask(_ work: (prompt: String, agent: String?, project: String?), question: String, answer: String) {
+        let screenshot = shot.flatMap(ScreenCapture.save)
+        Assistant.shared.adopt(
+            question: question, answer: answer, prompt: work.prompt, agent: work.agent, project: work.project,
+            screenshot: screenshot, context: context.lines.isEmpty ? nil : context.lines.joined(separator: "\n")
+        )
+        asking = false
+        cancel()
+        model?.panel = .assistant
+        Analytics.shared.capture("point_ask_task", [:])
     }
 
     func copyAnswer() {

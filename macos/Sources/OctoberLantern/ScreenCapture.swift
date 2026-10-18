@@ -75,6 +75,12 @@ final class ScreenCapture: ObservableObject {
     /// Screenshots older than a week are removed at the same time.
     func save() -> URL? {
         guard let image else { return nil }
+        return Self.save(image)
+    }
+
+    /// Writes `image` to the screenshots folder (0600), the one place the engine takes a launch's
+    /// screenshot from.
+    static func save(_ image: CGImage) -> URL? {
         let fm = FileManager.default
         try? fm.createDirectory(at: Self.folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         removeOld()
@@ -86,7 +92,7 @@ final class ScreenCapture: ObservableObject {
         return url
     }
 
-    private func removeOld() {
+    private static func removeOld() {
         let fm = FileManager.default
         let cutoff = Date().addingTimeInterval(-7 * 24 * 3600)
         let files = (try? fm.contentsOfDirectory(at: Self.folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []

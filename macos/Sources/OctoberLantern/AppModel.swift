@@ -583,10 +583,11 @@ final class AppModel: ObservableObject {
     /// `report`: for a launch that stays out of the panel (Ask Lantern's), told how it went.
     @discardableResult
     func launchTask(
-        prompt: String, agent: AgentKind?, folder: String, background: Bool, report: ((LaunchOutcome) -> Void)? = nil
+        prompt: String, agent: AgentKind?, folder: String, background: Bool, screenshot: URL? = nil, context: String? = nil,
+        report: ((LaunchOutcome) -> Void)? = nil
     ) -> Bool {
         guard let kind = agent ?? defaultAgentKind, !launching else { return false }
-        launch(kind: kind, folder: folder, prompt: prompt, toolkit: true, background: background, report: report)
+        launch(kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, context: context, toolkit: true, background: background, report: report)
         return true
     }
 
