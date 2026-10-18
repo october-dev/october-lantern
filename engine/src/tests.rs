@@ -1094,6 +1094,8 @@ fn launch_guidance_fits_each_platform() {
     let windows = guidance_for("windows", "hi".into(), std::path::Path::new(r"C:\Users\me"));
     assert!(windows.contains("on Windows.") && windows.contains(r"C:\Users\name\Documents") && windows.contains("Get-ChildItem"));
     assert!(!windows.contains("Mac"));
+    // Administrator steps go through the system's own prompt, for the person to allow.
+    assert!(windows.contains("-Verb RunAs") && mac.contains("with administrator privileges") && linux.contains("pkexec"));
     for note in [mac, linux, windows] {
         assert!(note.starts_with("hi\n\n(Started from October Lantern"));
     }

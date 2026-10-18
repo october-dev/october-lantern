@@ -222,17 +222,32 @@ pub(crate) fn with_guidance(message: String, cwd: &Path) -> String {
 /// The note added to every first message, for the computer the agent runs on. It always starts
 /// with "\n\n(Started from October Lantern", which the apps hide in the conversation.
 pub(crate) fn guidance_for(os: &str, message: String, cwd: &Path) -> String {
-    let (system, example, search) = match os {
-        "windows" => {
-            ("Windows", r"C:\Users\name\Documents\file.pdf", "the computer (for example with Get-ChildItem -Recurse under the user folder)")
-        }
-        "linux" => ("Linux", "/home/name/Documents/file.pdf", "the computer (for example with locate, or find under the home folder)"),
-        _ => ("macOS", "/Users/name/Documents/file.pdf", "the Mac (for example with mdfind or find under the home folder)"),
+    let (system, example, search, admin) = match os {
+        "windows" => (
+            "Windows",
+            r"C:\Users\name\Documents\file.pdf",
+            "the computer (for example with Get-ChildItem -Recurse under the user folder)",
+            "PowerShell's Start-Process with -Verb RunAs (Windows asks them to allow it)",
+        ),
+        "linux" => (
+            "Linux",
+            "/home/name/Documents/file.pdf",
+            "the computer (for example with locate, or find under the home folder)",
+            "pkexec (the system asks for their password)",
+        ),
+        _ => (
+            "macOS",
+            "/Users/name/Documents/file.pdf",
+            "the Mac (for example with mdfind or find under the home folder)",
+            "osascript's do shell script ... with administrator privileges (macOS asks for their password)",
+        ),
     };
     format!(
         "{message}\n\n(Started from October Lantern on {system}. You're in {}. When you mention a file or folder, give its full \
          absolute path (like {example}), not a relative one, so it can be opened directly. If the task is about something outside \
-         this folder, look for it across {search}. End with a short summary of what you did or found.)",
+         this folder, look for it across {search}. You don't run as administrator: when a step needs it (installing or removing \
+         a program, a system setting), run just that step with {admin}, and tell them to look for that prompt. End with a short \
+         summary of what you did or found.)",
         cwd.display()
     )
 }
