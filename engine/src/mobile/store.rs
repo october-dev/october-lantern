@@ -3,7 +3,8 @@
 //! Kept in `~/Library/Application Support/October Lantern/phone/` (folder 0700, files 0600):
 //! - `host.json`: hostId, Ed25519 signing seed, X25519 static key pair, the synthetic canvas id.
 //!   October's servers pin these per hostId, so they must stay stable.
-//! - `devices.json`: paired phones, with only a SHA-256 hash of each phone's credential.
+//! - `devices.json`: paired phones, with only a SHA-256 hash of each phone's credential, and
+//!   each phone's Expo push token and mute switch once it registers for notifications.
 
 use std::fs;
 use std::path::PathBuf;
@@ -96,6 +97,61 @@ pub struct Device {
     pub platform: String,
     credential_hash: String,
     pub paired_at: u64,
+    /// The phone's Expo push token, set by `remote.push.register`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub push_token: Option<String>,
+    /// The phone turned agent notifications off (`remote.push.mute`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+}
+
+/// Serializes read-modify-write of `devices.json` (the host thread and push senders both write).
+static DEVICES_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn edit_devices(change: impl FnOnce(&mut Vec<Device>) -> Result<()>) -> Result<()> {
+    let _guard = DEVICES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut devices = load_devices();
+    change(&mut devices)?;
+    save_devices(&devices)
+}
+
+/// Changes a paired phone's push settings; refused for a phone that isn't paired (or was revoked).
+fn edit_push(bind: &str, change: impl FnOnce(&mut Device)) -> Result<()> {
+    edit_devices(|devices| match devices.iter_mut().find(|d| d.bind == bind) {
+        Some(d) => {
+            change(d);
+            Ok(())
+        }
+        None => bail!("this phone isn't paired"),
+    })
+}
+
+pub fn register_push(bind: &str, token: &str) -> Result<()> {
+    let token = token.to_string();
+    edit_push(bind, |d| d.push_token = Some(token))
+}
+
+pub fn unregister_push(bind: &str) -> Result<()> {
+    edit_push(bind, |d| d.push_token = None)
+}
+
+pub fn mute_push(bind: &str, muted: bool) -> Result<()> {
+    edit_push(bind, |d| d.muted = muted)
+}
+
+/// Clears a token Expo said is no longer registered, unless the phone has since registered another.
+pub fn forget_push_token(bind: &str, token: &str) -> Result<()> {
+    edit_devices(|devices| {
+        if let Some(d) = devices.iter_mut().find(|d| d.bind == bind && d.push_token.as_deref() == Some(token)) {
+            d.push_token = None;
+        }
+        Ok(())
+    })
+}
+
+/// (bind, Expo token) for every paired phone that wants notifications.
+pub fn push_targets() -> Vec<(String, String)> {
+    load_devices().into_iter().filter(|d| !d.muted).filter_map(|d| Some((d.bind, d.push_token?))).collect()
 }
 
 pub fn hash_credential(credential: &str) -> String {
@@ -119,23 +175,28 @@ pub fn add_device(bind: &str, label: &str, platform: &str) -> Result<String> {
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).map_err(|e| anyhow::anyhow!("{e}"))?;
     let credential = B64.encode(raw);
-    let mut devices = load_devices();
-    devices.retain(|d| d.bind != bind);
-    devices.push(Device {
-        bind: bind.into(),
-        label: label.into(),
-        platform: platform.into(),
-        credential_hash: hash_credential(&credential),
-        paired_at: crate::hooks::now_ms(),
-    });
-    save_devices(&devices)?;
+    edit_devices(|devices| {
+        devices.retain(|d| d.bind != bind);
+        devices.push(Device {
+            bind: bind.into(),
+            label: label.into(),
+            platform: platform.into(),
+            credential_hash: hash_credential(&credential),
+            paired_at: crate::hooks::now_ms(),
+            push_token: None,
+            muted: false,
+        });
+        Ok(())
+    })?;
     Ok(credential)
 }
 
+/// Forgets a phone, and with it its push token: a revoked phone gets no more notifications.
 pub fn remove_device(bind: &str) -> Result<()> {
-    let mut devices = load_devices();
-    devices.retain(|d| d.bind != bind);
-    save_devices(&devices)
+    edit_devices(|devices| {
+        devices.retain(|d| d.bind != bind);
+        Ok(())
+    })
 }
 
 /// Constant-time check of a phone's credential against the stored hash.
@@ -147,4 +208,20 @@ pub fn credential_ok(bind: &str, credential: &str) -> bool {
 pub fn decode_key(value: &str) -> Option<[u8; 32]> {
     let bytes = B64.decode(value.trim_end_matches('=')).ok()?;
     <[u8; 32]>::try_from(bytes).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn devices_from_older_lanterns_load_without_push_settings() {
+        let old = r#"{"bind":"b","label":"Phone","platform":"ios","credentialHash":"h","pairedAt":1}"#;
+        let d: Device = serde_json::from_str(old).unwrap();
+        assert_eq!((d.push_token.as_deref(), d.muted), (None, false));
+        assert_eq!(serde_json::to_value(&d).unwrap(), serde_json::from_str::<serde_json::Value>(old).unwrap());
+        let d = Device { push_token: Some("ExponentPushToken[x]".into()), muted: true, ..d };
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!((v["pushToken"].as_str(), v["muted"].as_bool()), (Some("ExponentPushToken[x]"), Some(true)));
+    }
 }

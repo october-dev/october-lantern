@@ -196,6 +196,7 @@ On the phone, Lantern appears as one canvas whose nodes are Lantern's agents. La
 - `bus.query` `listCanvases` / `currentSnapshot`
 - `facts.query` `listNotifications` / `listNodeWorkflows` / `listPrObservations`
 - `ui.list`, `terminal.list`, `agent.list`, `devServer.list`, `chat.history` (empty lists)
+- `remote.push.register` (`{"token":"<Expo push token>"}` → `{"registered":true}`), `remote.push.unregister` (`{}` → `{"unregistered":true}`) and `remote.push.mute` (`{"muted":bool}` → `{"muted":bool}`), which store the asking phone's push settings (a phone that isn't paired gets `UNAUTHENTICATED`)
 - `bus.mutate userSend`, which types the reply into the agent's terminal through the same path as a reply from the app. It answers:
   - `{"accepted":true,"delivery":"delivered"}` only after the reply was typed;
   - `{"accepted":false,"reason":"…"}` when nothing was typed (including a reply that couldn't start in time, which is canceled and never typed later);
@@ -210,9 +211,13 @@ The answer to a request with an `idempotencyKey` is remembered per phone (the la
 
 It emits the `bus.changed`, `facts.changed`, `core.lifecycle`, `cursor.reset` and `cursor.heartbeat` events. Anything else returns `PERMISSION_DENIED`.
 
+`core.handshake` and `core.status` include `"capabilities":{"push":true,"chatHistory":false,"historyRoles":false,"permissionReplies":false}`. A Lantern without `capabilities.push` doesn't send notifications, so the phone keeps them off for it.
+
+Push notifications: when an agent starts waiting for the person (finished its turn, or asking a question) and stays that way for 2 seconds, the engine posts one notification per phone that registered a token and isn't muted to Expo's push service (`https://exp.host/--/api/v2/push/send`), whether or not the relay is connected. It's sent once per attention episode: not again until the agent has been seen doing something else (a question after a finished turn is new attention), and never for attention that began before the engine started. The title names only the agent's handle (`@claude-1 needs you` / `@claude-1 finished`) with generic body text; no agent output is sent. `data` is `{"hostId","canvasId","nodeId","kind":"needs_input"|"done","notificationId"}`, which the phone opens as that agent; `notificationId` is the same id `listNotifications` gives that episode. A token Expo reports as `DeviceNotRegistered` is forgotten; revoking a phone forgets its token.
+
 Identity and paired phones are stored in `~/Library/Application Support/October Lantern/phone/`, with the folder at 0700 and the files at 0600:
 - `host.json` holds the hostId, the Ed25519 seed, the X25519 static key and the canvas id. A file with invalid keys is refused rather than replaced (October's servers pin the keys per host).
-- `devices.json` holds only a SHA-256 hash of each phone's credential.
+- `devices.json` holds only a SHA-256 hash of each phone's credential, plus the phone's Expo push token and mute switch once it turns notifications on.
 
 Phone deliveries are polled on the host loop rather than waited on there (maximum 16 pending deliveries). Requests for other phones, pings and local stop/revoke commands remain available during a slow delivery. Cancel frames cancel the matching request on the current phone connection if typing has not begun. Disconnect/revoke/stop cancel outstanding unstarted operations. Retries sharing an in-flight idempotency key share the original operation and its eventual result, with up to eight response waiters; changing the request under that key is refused.
 

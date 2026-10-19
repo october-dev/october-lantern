@@ -27,6 +27,7 @@ use super::api;
 use super::control::{self, Binding, ControlError};
 use super::frames::{self, Assembler, Kind};
 use super::noise::{self, Channel, Responder, Step};
+use super::push::{self, Attention};
 use super::store::{self, HostIdentity};
 use crate::actions::{Outcome, Ticket};
 use crate::model::Agent;
@@ -139,6 +140,8 @@ struct Host {
     /// Answers already given to mutations, by (phone, idempotency key).
     answered: api::Answers,
     pending: Vec<PendingReply>,
+    /// Which agents' attention has been pushed to phones.
+    attention: Attention,
 }
 
 impl Host {
@@ -177,6 +180,7 @@ impl Host {
             last_heartbeat: Instant::now(),
             answered: api::Answers::new(REMEMBERED_ANSWERS),
             pending: Vec::new(),
+            attention: Attention::new(crate::hooks::now_ms()),
         }
     }
 
@@ -215,6 +219,7 @@ impl Host {
             }
             self.finish_deliveries();
             self.expire_pairing();
+            self.push_attention();
             // Connect while there is a phone to serve or one being paired.
             let wanted = !self.parked && ((self.id.registered && self.has_devices()) || self.pairing.is_some());
             if self.ws.is_none() && wanted && Instant::now() >= self.next_attempt {
@@ -237,6 +242,18 @@ impl Host {
             self.devices_seen = (modified, !store::load_devices().is_empty());
         }
         self.devices_seen.1
+    }
+
+    /// Pushes agents that started wanting the person to paired phones (connected to the relay
+    /// or not: the push goes through Expo).
+    fn push_attention(&mut self) {
+        if !self.has_devices() {
+            return;
+        }
+        let agents = self.agents.lock().map(|a| a.clone()).unwrap_or_default();
+        for episode in self.attention.due(&agents, Instant::now(), crate::hooks::now_ms()) {
+            push::send(episode, self.id.host_id.clone(), self.id.canvas_id.clone());
+        }
     }
 
     // MARK: Commands from the app
@@ -642,6 +659,11 @@ impl Host {
                     bail!("request id already in flight");
                 }
                 let agents = self.agents.lock().map(|a| a.clone()).unwrap_or_default();
+                let push = |change: api::PushChange| match change {
+                    api::PushChange::Register(token) => store::register_push(bind, &token),
+                    api::PushChange::Unregister => store::unregister_push(bind),
+                    api::PushChange::Mute(muted) => store::mute_push(bind, muted),
+                };
                 let ctx = api::Context {
                     agents: &agents,
                     canvas_id: &self.id.canvas_id,
@@ -649,6 +671,7 @@ impl Host {
                     instance_id: &self.instance_id,
                     process_start: &self.process_start,
                     credential: &credential,
+                    push: &push,
                 };
                 let mut to_deliver = None;
                 let mut typed = |a: &Agent, text: &str, deadline_ms: Option<u64>| {

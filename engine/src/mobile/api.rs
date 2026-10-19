@@ -2,7 +2,8 @@
 //!
 //! The phone speaks October core's API (`coreProtocol.ts`, api version 2). Lantern presents
 //! one canvas ("Lantern") whose nodes are the agents it sees, and supports what the phone
-//! needs to list them and reply; everything else is refused with PERMISSION_DENIED.
+//! needs to list them, reply and get push notifications; everything else is refused with
+//! PERMISSION_DENIED.
 
 use hmac::{KeyInit, Mac};
 use serde_json::{Value, json};
@@ -12,6 +13,20 @@ use crate::actions::Outcome;
 use crate::hooks::now_ms;
 use crate::model::{Agent, State, iso};
 
+/// What the phone asked of its push settings (`remote.push.*`), applied to the asking phone.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PushChange {
+    Register(String),
+    Unregister,
+    Mute(bool),
+}
+
+/// Optional features this Lantern supports, in the handshake and status (absent means false), so
+/// the phone keys features on them rather than on version numbers.
+pub fn capabilities() -> Value {
+    json!({"push": true, "chatHistory": false, "historyRoles": false, "permissionReplies": false})
+}
+
 pub struct Context<'a> {
     pub agents: &'a [Agent],
     pub canvas_id: &'a str,
@@ -19,6 +34,8 @@ pub struct Context<'a> {
     pub instance_id: &'a str,
     pub process_start: &'a str,
     pub credential: &'a str,
+    /// Stores a push setting for the phone that sent the request.
+    pub push: &'a dyn Fn(PushChange) -> anyhow::Result<()>,
 }
 
 /// Types a reply into an agent, if typing can start before the deadline (epoch ms).
@@ -41,7 +58,7 @@ fn harness(agent: &Agent) -> &'static str {
 }
 
 /// Waiting on the person: finished its turn, or blocked on a question.
-fn wants(agent: &Agent) -> bool {
+pub(super) fn wants(agent: &Agent) -> bool {
     matches!(agent.state, State::Waiting | State::NeedsInput)
 }
 
@@ -72,6 +89,11 @@ pub fn node(agent: &Agent, host_id: &str) -> Value {
     n
 }
 
+/// One attention episode's id: the same in `listNotifications` and in its push.
+pub(super) fn notification_id(agent: &Agent) -> String {
+    format!("{}-{}", node_id(&agent.id), agent.state_since.unwrap_or(0))
+}
+
 fn notifications(ctx: &Context) -> Value {
     ctx.agents
         .iter()
@@ -80,7 +102,7 @@ fn notifications(ctx: &Context) -> Value {
             let at = a.state_since.unwrap_or(0);
             let title = if a.state == State::NeedsInput { format!("@{} needs you", a.handle) } else { format!("@{} finished", a.handle) };
             json!({
-                "id": format!("{}-{at}", node_id(&a.id)), "type": "needs_input", "title": title,
+                "id": notification_id(a), "type": "needs_input", "title": title,
                 "body": a.question.clone().or_else(|| a.last_message.clone()).unwrap_or_default(),
                 "createdAt": iso(at), "canvasId": ctx.canvas_id, "nodeId": node_id(&a.id), "sessionKind": "terminal"
             })
@@ -191,7 +213,7 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
                 json!({
                     "instanceId": ctx.instance_id, "processStart": ctx.process_start,
                     "coreVersion": format!("lantern-{}", env!("CARGO_PKG_VERSION")), "apiVersion": 2,
-                    "generation": 1, "schemaVersion": 8,
+                    "generation": 1, "schemaVersion": 8, "capabilities": capabilities(),
                     "challengeProof": proof(ctx.credential, challenge, ctx.instance_id, ctx.process_start),
                 }),
             )
@@ -204,6 +226,7 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
                     "coreVersion": format!("lantern-{}", env!("CARGO_PKG_VERSION")), "apiVersion": 2, "ready": true,
                     "agentCount": ctx.agents.len(), "attentionCount": attention, "terminalCount": 0,
                     "remote": {"desktopVisible": true, "openCanvasId": ctx.canvas_id},
+                    "capabilities": capabilities(),
                 }),
             )
         }
@@ -219,6 +242,24 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
             _ => err(id, "PERMISSION_DENIED", "not available in Lantern"),
         },
         "facts.mutate" if op == "markNotificationSeen" => ok(id, json!({"ok": true})),
+        "remote.push.register" => match payload["token"].as_str().map(str::trim) {
+            Some(token) if !token.is_empty() && token.len() <= 4096 => match (ctx.push)(PushChange::Register(token.into())) {
+                Ok(()) => ok(id, json!({"registered": true})),
+                Err(e) => err(id, "UNAUTHENTICATED", &format!("{e:#}")),
+            },
+            _ => err(id, "INVALID_ARGUMENT", "token must be an Expo push token"),
+        },
+        "remote.push.unregister" => match (ctx.push)(PushChange::Unregister) {
+            Ok(()) => ok(id, json!({"unregistered": true})),
+            Err(e) => err(id, "UNAUTHENTICATED", &format!("{e:#}")),
+        },
+        "remote.push.mute" => match payload["muted"].as_bool() {
+            Some(muted) => match (ctx.push)(PushChange::Mute(muted)) {
+                Ok(()) => ok(id, json!({"muted": muted})),
+                Err(e) => err(id, "UNAUTHENTICATED", &format!("{e:#}")),
+            },
+            None => err(id, "INVALID_ARGUMENT", "muted must be boolean"),
+        },
         "ui.list" | "terminal.list" | "agent.list" | "devServer.list" | "chat.history" => ok(id, json!([])),
         "bus.mutate" if op == "userSend" => {
             if payload["args"][0] != ctx.canvas_id {
@@ -298,7 +339,15 @@ mod tests {
     #[test]
     fn serves_the_phone_surface() {
         let agents = vec![agent(State::Waiting)];
-        let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
+        let ctx = Context {
+            agents: &agents,
+            canvas_id: "c",
+            host_id: "h",
+            instance_id: "i",
+            process_start: "p",
+            credential: "cred",
+            push: &|_| Ok(()),
+        };
         let typed: std::cell::RefCell<Vec<(String, String)>> = Default::default();
         let mut deliver = |a: &Agent, t: &str, _: Option<u64>| {
             typed.borrow_mut().push((a.id.clone(), t.to_string()));
@@ -333,9 +382,64 @@ mod tests {
     }
 
     #[test]
+    fn push_settings_reach_the_asking_phone_and_push_is_advertised() {
+        let agents = vec![agent(State::Waiting)];
+        let changes: std::cell::RefCell<Vec<PushChange>> = Default::default();
+        let push = |c: PushChange| {
+            if c == PushChange::Mute(true) {
+                anyhow::bail!("this phone isn't paired");
+            }
+            changes.borrow_mut().push(c);
+            Ok(())
+        };
+        let ctx = Context {
+            agents: &agents,
+            canvas_id: "c",
+            host_id: "h",
+            instance_id: "i",
+            process_start: "p",
+            credential: "cred",
+            push: &push,
+        };
+        let mut deliver = |_: &Agent, _: &str, _: Option<u64>| Outcome::Done;
+        let (_, v) = handle(&ctx, &req("core.handshake", json!({"challenge": "x", "apiMin": 2, "apiMax": 2})), &mut deliver);
+        assert_eq!(v["result"]["capabilities"]["push"], true);
+        let (_, v) = handle(&ctx, &req("core.status", json!({})), &mut deliver);
+        assert_eq!(v["result"]["capabilities"]["push"], true);
+        let (_, v) = handle(&ctx, &req("remote.push.register", json!({"token": "ExponentPushToken[abc]"})), &mut deliver);
+        assert_eq!(v["result"], json!({"registered": true}));
+        let (_, v) = handle(&ctx, &req("remote.push.mute", json!({"muted": false})), &mut deliver);
+        assert_eq!(v["result"], json!({"muted": false}));
+        let (_, v) = handle(&ctx, &req("remote.push.unregister", json!({})), &mut deliver);
+        assert_eq!(v["result"], json!({"unregistered": true}));
+        assert_eq!(
+            *changes.borrow(),
+            [PushChange::Register("ExponentPushToken[abc]".into()), PushChange::Mute(false), PushChange::Unregister]
+        );
+        for bad in [json!({}), json!({"token": ""}), json!({"token": "x".repeat(4097)})] {
+            assert_eq!(handle(&ctx, &req("remote.push.register", bad), &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
+        }
+        assert_eq!(handle(&ctx, &req("remote.push.mute", json!({"muted": "yes"})), &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
+        // A phone that isn't paired any more can't change settings.
+        assert_eq!(handle(&ctx, &req("remote.push.mute", json!({"muted": true})), &mut deliver).1["error"]["code"], "UNAUTHENTICATED");
+        assert_eq!(changes.borrow().len(), 3);
+        // The in-app notification and the push share one id per attention episode.
+        let (_, v) = handle(&ctx, &req("facts.query", json!({"operation": "listNotifications", "args": [{}]})), &mut deliver);
+        assert_eq!(v["result"][0]["id"].as_str(), Some(notification_id(&agents[0]).as_str()));
+    }
+
+    #[test]
     fn expired_requests_and_failed_delivery_are_reported() {
         let agents = vec![agent(State::Waiting)];
-        let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
+        let ctx = Context {
+            agents: &agents,
+            canvas_id: "c",
+            host_id: "h",
+            instance_id: "i",
+            process_start: "p",
+            credential: "cred",
+            push: &|_| Ok(()),
+        };
         let mut failing = |_: &Agent, _: &str, _: Option<u64>| Outcome::failed("send_failed", "the agent has exited");
         let mut expired = req("core.status", json!({}));
         expired["deadlineAt"] = json!(now_ms() - 1);
@@ -350,7 +454,15 @@ mod tests {
     #[test]
     fn malformed_mutations_are_refused_and_deadlines_reach_delivery() {
         let agents = vec![agent(State::Waiting)];
-        let ctx = Context { agents: &agents, canvas_id: "c", host_id: "h", instance_id: "i", process_start: "p", credential: "cred" };
+        let ctx = Context {
+            agents: &agents,
+            canvas_id: "c",
+            host_id: "h",
+            instance_id: "i",
+            process_start: "p",
+            credential: "cred",
+            push: &|_| Ok(()),
+        };
         let calls: std::cell::RefCell<Vec<Option<u64>>> = Default::default();
         let mut deliver = |_: &Agent, _: &str, d: Option<u64>| {
             calls.borrow_mut().push(d);
