@@ -196,7 +196,7 @@ On the phone, Lantern appears as one canvas whose nodes are Lantern's agents. La
 - `bus.query` `listCanvases` / `currentSnapshot`
 - `facts.query` `listNotifications` / `listNodeWorkflows` / `listPrObservations`
 - `ui.list`, `terminal.list`, `agent.list`, `devServer.list`, `chat.history` (empty lists)
-- `remote.push.register` (`{"token":"<Expo push token>"}` → `{"registered":true}`), `remote.push.unregister` (`{}` → `{"unregistered":true}`) and `remote.push.mute` (`{"muted":bool}` → `{"muted":bool}`), which store the asking phone's push settings (a phone that isn't paired gets `UNAUTHENTICATED`)
+- `remote.push.register` (`{"token":"ExponentPushToken[…]"}` → `{"registered":true}`; anything that isn't an Expo push token gets `INVALID_ARGUMENT`), `remote.push.unregister` (`{}` → `{"unregistered":true}`) and `remote.push.mute` (`{"muted":bool}` → `{"muted":bool}`), which store the asking phone's push settings (a phone that isn't paired gets `UNAUTHENTICATED`)
 - `bus.mutate userSend`, which types the reply into the agent's terminal through the same path as a reply from the app. It answers:
   - `{"accepted":true,"delivery":"delivered"}` only after the reply was typed;
   - `{"accepted":false,"reason":"…"}` when nothing was typed (including a reply that couldn't start in time, which is canceled and never typed later);

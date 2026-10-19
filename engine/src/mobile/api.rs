@@ -27,6 +27,14 @@ pub fn capabilities() -> Value {
     json!({"push": true, "chatHistory": false, "historyRoles": false, "permissionReplies": false})
 }
 
+/// An Expo push token (`ExponentPushToken[…]` or `ExpoPushToken[…]`), the only kind Lantern posts.
+fn is_expo_token(token: &str) -> bool {
+    token.len() <= 4096
+        && ["ExponentPushToken[", "ExpoPushToken["]
+            .iter()
+            .any(|prefix| token.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(']')).is_some_and(|id| !id.is_empty()))
+}
+
 pub struct Context<'a> {
     pub agents: &'a [Agent],
     pub canvas_id: &'a str,
@@ -243,7 +251,7 @@ pub fn handle(ctx: &Context, request: &Value, deliver: Deliver) -> (u16, Value) 
         },
         "facts.mutate" if op == "markNotificationSeen" => ok(id, json!({"ok": true})),
         "remote.push.register" => match payload["token"].as_str().map(str::trim) {
-            Some(token) if !token.is_empty() && token.len() <= 4096 => match (ctx.push)(PushChange::Register(token.into())) {
+            Some(token) if is_expo_token(token) => match (ctx.push)(PushChange::Register(token.into())) {
                 Ok(()) => ok(id, json!({"registered": true})),
                 Err(e) => err(id, "UNAUTHENTICATED", &format!("{e:#}")),
             },
@@ -416,7 +424,14 @@ mod tests {
             *changes.borrow(),
             [PushChange::Register("ExponentPushToken[abc]".into()), PushChange::Mute(false), PushChange::Unregister]
         );
-        for bad in [json!({}), json!({"token": ""}), json!({"token": "x".repeat(4097)})] {
+        for bad in [
+            json!({}),
+            json!({"token": ""}),
+            json!({"token": "x".repeat(4097)}),
+            json!({"token": "https://example.com/hook"}),
+            json!({"token": "ExponentPushToken[]"}),
+            json!({"token": format!("ExponentPushToken[{}]", "x".repeat(4096))}),
+        ] {
             assert_eq!(handle(&ctx, &req("remote.push.register", bad), &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
         }
         assert_eq!(handle(&ctx, &req("remote.push.mute", json!({"muted": "yes"})), &mut deliver).1["error"]["code"], "INVALID_ARGUMENT");
