@@ -433,14 +433,14 @@ struct AssistantThread: View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Starting \(p.kind.displayName) in \(URL(fileURLWithPath: p.folder).lastPathComponent)… \(p.secondsLeft)")
+                Text("Starting in \(p.secondsLeft)…")
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
                 Text(p.prompt).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(2)
             }
             Spacer()
             Button("Cancel") { Assistant.shared.cancelTask() }.buttonStyle(.plain)
                 .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted)
-            Button("Start") { Assistant.shared.startNow() }.buttonStyle(.plain)
+            Button("Start now") { Assistant.shared.startNow() }.buttonStyle(.plain)
                 .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.amber)
         }
         .padding(10)
@@ -449,8 +449,9 @@ struct AssistantThread: View {
     }
 }
 
-/// An agent Ask Lantern started, inside the conversation: who and where, its state, and what it
-/// has said (live for the latest task, as last seen for earlier ones).
+/// An agent Ask Lantern started, inside the conversation: what it has said (live for the latest
+/// task, as last seen for earlier ones) and how it's going in plain words. Which agent it is, and
+/// where, stays in a small footer with Open agent for anyone who wants the full session.
 private struct TaskCard: View {
     let link: Assistant.TaskLink
     let latest: Bool
@@ -471,7 +472,6 @@ private struct TaskCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            header
             if let agent, agent.isPermissionPrompt {
                 Text(agent.question ?? "").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
                     .fixedSize(horizontal: false, vertical: true)
@@ -479,6 +479,7 @@ private struct TaskCard: View {
             }
             ForEach(ChatView.keyed(messages), id: \.key) { item in Bubble(message: item.message) }
             status
+            footer
             Color.clear.frame(height: 1).id(latest ? "task-bottom" : "task-\(link.prompt.hashValue)")
         }
         .padding(10)
@@ -490,22 +491,28 @@ private struct TaskCard: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            if let agent { AgentBadge(agent: agent, size: 20) } else if let img = Assets.harness(kind) {
-                Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).frame(width: 20, height: 20)
-                    .clipShape(RoundedRectangle(cornerRadius: 4.4, style: .continuous))
+    /// Which agent and Open agent, small, under the conversation; the folder is in the tooltip.
+    private var footer: some View {
+        HStack(spacing: 5) {
+            if let img = Assets.harness(kind) {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).frame(width: 12, height: 12)
+                    .clipShape(RoundedRectangle(cornerRadius: 2.6, style: .continuous))
             }
-            VStack(alignment: .leading, spacing: 0) {
-                Text(agent.map { "@\($0.handle)" } ?? kind.displayName).font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text(folderName).font(.system(size: 10.5)).foregroundStyle(Theme.muted).lineLimit(1)
-            }
-            Spacer(minLength: 6)
+            Text(kind.displayName)
             if let agent {
-                AgentStateChip(agent: agent)
-                SmallButton(title: "Open", symbol: "arrow.up.forward.app") { model.open(agent) }
+                Text("·")
+                Button { model.open(agent) } label: {
+                    HStack(spacing: 2) {
+                        Text("Open agent")
+                        Image(systemName: "arrow.up.forward").font(.system(size: 8.5, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.plain).help("Open @\(agent.handle)'s full session")
             }
+            Spacer(minLength: 0)
         }
+        .font(.system(size: 10.5)).foregroundStyle(Theme.muted)
+        .help("\(kind.displayName) in \(folderName)")
     }
 
     @ViewBuilder private var status: some View {
@@ -513,22 +520,35 @@ private struct TaskCard: View {
             Text("Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
                 .fixedSize(horizontal: false, vertical: true)
         } else if let agent {
-            if agent.state == .working {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.mini)
-                    Text("Working…").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                }
+            switch agent.state {
+            case .working, .unknown: busy
+            case .needsInput where !agent.isPermissionPrompt: note("Needs your answer. Reply below.", color: Theme.amber)
+            case .needsInput: EmptyView()
+            case .waiting: done("Done. Reply below to ask for more.")
+            case .idle: done("Done.")
             }
         } else if link.inTerminal {
-            Text("Running in a Terminal window.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            note("Running in a Terminal window.", color: Theme.muted)
         } else if link.agentId != nil || !link.transcript.isEmpty {
-            Text("Finished. It isn't running anymore.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            done("Done.")
         } else if latest {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("Starting \(kind.displayName)…").font(.system(size: 11)).foregroundStyle(Theme.muted)
-            }
+            busy
         }
+    }
+
+    private var busy: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text("Working on it…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func done(_ text: String) -> some View {
+        Label(text, systemImage: "checkmark.circle.fill").font(.system(size: 11)).foregroundStyle(Theme.muted)
+    }
+
+    private func note(_ text: String, color: Color) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
     }
 
     private var folderName: String {
@@ -538,11 +558,25 @@ private struct TaskCard: View {
 
 private struct TurnView: View {
     let turn: Assistant.Turn
+    @State private var expanded = false
+
+    /// A long message (a pasted prompt) shows its first lines in normal weight, with Show more.
+    private var long: Bool { turn.question.count > 180 || turn.question.split(separator: "\n").count > 3 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(turn.question).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.ink)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if long {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(turn.question).font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.85))
+                        .lineLimit(expanded ? nil : 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
+                }
+            } else {
+                Text(turn.question).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             if turn.answer.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

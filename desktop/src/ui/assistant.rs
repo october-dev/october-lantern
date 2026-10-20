@@ -209,7 +209,7 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
 fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        c::label(ui, &turn.question, 12.5, Weight::Semibold, t::INK);
+        question(ui, turn);
         if turn.answer.is_empty() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -242,6 +242,30 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
     });
 }
 
+/// A long message (a pasted prompt) shows its first lines in normal weight, with Show more
+/// (Swift `TurnView.long`).
+fn question(ui: &mut Ui, turn: &AssistantTurn) {
+    let long = turn.question.chars().count() > 180 || turn.question.split('\n').count() > 3;
+    if !long {
+        c::label(ui, &turn.question, 12.5, Weight::Semibold, t::INK);
+        return;
+    }
+    let id = ui.make_persistent_id(("question-expanded", turn.id));
+    let expanded = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    let mut job = egui::text::LayoutJob::single_section(
+        turn.question.clone(),
+        egui::TextFormat { font_id: t::font(12.5, Weight::Regular), color: t::white(0.85), ..Default::default() },
+    );
+    job.wrap.max_width = ui.available_width();
+    if !expanded {
+        job.wrap.max_rows = 4;
+    }
+    ui.add(egui::Label::new(job));
+    if c::plain_button(ui, if expanded { "Show less" } else { "Show more" }, 11.0, Weight::Semibold, t::MUTED).clicked() {
+        ui.data_mut(|data| data.insert_temp(id, !expanded));
+    }
+}
+
 /// The conversation a task card shows: the agent's live one for the latest task, else what it
 /// last said, without your first message when it's the question above (Swift `TaskCard.messages`).
 fn task_messages<'a>(link: &'a TaskLink, live: Option<&'a [ChatMessage]>) -> &'a [ChatMessage] {
@@ -252,9 +276,9 @@ fn task_messages<'a>(link: &'a TaskLink, live: Option<&'a [ChatMessage]>) -> &'a
     }
 }
 
-/// An agent Ask Lantern started, inside the conversation (Swift `TaskCard`): who and where, its
-/// state, Allow/Deny when it asks, and what it has said (live for the latest task, as last seen
-/// for earlier ones).
+/// An agent Ask Lantern started, inside the conversation (Swift `TaskCard`): Allow/Deny when it
+/// asks, what it has said (live for the latest task, as last seen for earlier ones) and how it's
+/// going in plain words. Which agent it is, and where, stays in a small footer with Open agent.
 fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool) {
     let model = cx.model;
     let agent = model.task_agent(link);
@@ -270,30 +294,6 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
         |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                match agent {
-                    Some(agent) => c::agent_badge(ui, cx.assets, agent, 20.0),
-                    None => c::harness_logo(ui, cx.assets, &link.kind, 20.0),
-                };
-                let open_width = ui.painter().layout_no_wrap("Open".into(), t::font(11.0, Weight::Medium), t::MUTED).size().x + 31.0;
-                let trailing = agent.map_or(0.0, |agent| c::state_chip_width(ui, agent) + open_width + 16.0);
-                let width = (ui.available_width() - trailing).max(30.0);
-                ui.allocate_ui_with_layout(egui::vec2(width, 28.0), Layout::top_down(Align::Min), |ui| {
-                    ui.set_min_width(width);
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let name = agent.map_or_else(|| link.kind.display_name(), |agent| format!("@{}", agent.handle));
-                    ui.add(egui::Label::new(c::text(name, 12.0, Weight::Semibold, t::INK)).truncate());
-                    let folder = chat::folder_name(&link.folder, &cx.env.home);
-                    ui.add(egui::Label::new(c::text(folder, 10.5, Weight::Regular, t::MUTED)).truncate());
-                });
-                if let Some(agent) = agent {
-                    c::state_chip(ui, agent);
-                    if c::small_button(ui, "Open", Icon::Open).clicked() {
-                        cx.emit(UiAction::OpenAgent { agent_id: agent.id.clone() });
-                    }
-                }
-            });
             if let Some(agent) = agent.filter(|agent| agent.is_permission_prompt()) {
                 ui.add(egui::Label::new(c::text(agent.question.as_deref().unwrap_or(""), 12.0, Weight::Medium, t::AMBER)).wrap());
                 feed::permission_buttons(ui, cx, agent);
@@ -304,18 +304,55 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
             if let Some(error) = &link.error {
                 c::label(ui, format!("Couldn't start it: {error}"), 11.5, Weight::Regular, t::RED);
             } else if let Some(agent) = agent {
-                if agent.state == AgentState::Working {
-                    busy(ui, cx.env, "Working…");
+                match agent.state {
+                    AgentState::Working | AgentState::Unknown => busy(ui, cx.env, "Working on it…"),
+                    AgentState::NeedsInput if !agent.is_permission_prompt() => {
+                        c::label(ui, "Needs your answer. Reply below.", 11.0, Weight::Regular, t::AMBER);
+                    }
+                    AgentState::NeedsInput => {}
+                    AgentState::Waiting => done(ui, "Done. Reply below to ask for more."),
+                    AgentState::Idle => done(ui, "Done."),
                 }
             } else if link.in_terminal {
                 c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
             } else if link.agent_id.is_some() || !link.transcript.is_empty() {
-                c::label(ui, "Finished. It isn't running anymore.", 11.0, Weight::Regular, t::MUTED);
+                done(ui, "Done.");
             } else if latest {
-                busy(ui, cx.env, format!("Starting {}…", link.kind.display_name()));
+                busy(ui, cx.env, "Working on it…");
             }
+            footer(ui, cx, link, agent);
         },
     );
+}
+
+/// Which agent and Open agent, small, under the conversation; the folder is in the tooltip.
+fn footer(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate::model::Agent>) {
+    let folder = chat::folder_name(&link.folder, &cx.env.home);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        c::harness_logo(ui, cx.assets, &link.kind, 12.0);
+        c::label(ui, link.kind.display_name(), 10.5, Weight::Regular, t::MUTED)
+            .on_hover_text(format!("{} in {folder}", link.kind.display_name()));
+        if let Some(agent) = agent {
+            c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
+            if c::plain_button(ui, "Open agent ↗", 10.5, Weight::Regular, t::MUTED)
+                .on_hover_text(format!("Open @{}'s full session", agent.handle))
+                .clicked()
+            {
+                cx.emit(UiAction::OpenAgent { agent_id: agent.id.clone() });
+            }
+        }
+    });
+}
+
+/// A finished task, quietly.
+fn done(ui: &mut Ui, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 5.0;
+        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(11.0), Sense::hover());
+        c::paint_icon(ui.painter(), rect, Icon::CheckCircle, t::MUTED);
+        c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
+    });
 }
 
 /// A spinner and what's going on.
@@ -334,13 +371,12 @@ fn pending_card(ui: &mut Ui, cx: &mut Ctx, pending: &PendingTask) {
         .corner_radius(10)
         .inner_margin(Margin::same(9))
         .show(ui, |ui| {
-            let controls = ["Cancel", "Start"]
+            let controls = ["Cancel", "Start now"]
                 .iter()
                 .map(|title| ui.painter().layout_no_wrap((*title).into(), t::font(11.5, Weight::Semibold), t::INK).size().x)
                 .sum::<f32>();
             let text_width = (ui.available_width() - 12.0 - controls - 30.0).max(1.0);
-            let folder = pending.folder.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or("");
-            let title = format!("Starting {} in {folder}… {}", pending.kind.display_name(), pending.seconds_left);
+            let title = format!("Starting in {}…", pending.seconds_left);
             let mut prompt = egui::text::LayoutJob::single_section(
                 pending.prompt.clone(),
                 egui::TextFormat { font_id: t::font(11.0, Weight::Regular), color: t::MUTED, ..Default::default() },
@@ -361,7 +397,7 @@ fn pending_card(ui: &mut Ui, cx: &mut Ctx, pending: &PendingTask) {
                 if c::plain_button(ui, "Cancel", 11.5, Weight::Semibold, t::MUTED).clicked() {
                     cx.emit(UiAction::CancelAssistantTask);
                 }
-                if c::plain_button(ui, "Start", 11.5, Weight::Semibold, t::AMBER).clicked() {
+                if c::plain_button(ui, "Start now", 11.5, Weight::Semibold, t::AMBER).clicked() {
                     cx.emit(UiAction::StartAssistantTaskNow);
                 }
             });
@@ -620,12 +656,12 @@ mod tests {
         let (height, actions, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
         let has = |value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(actions.is_empty() && height < 900.0);
-        assert!(has("Claude Code") && has("Home folder") && has("Finished. It isn't running anymore."));
+        assert!(has("Claude Code") && has("Done.") && !has("Home folder"), "the agent's name stays small; the folder is in the tooltip");
         assert_eq!(texts.iter().filter(|(text, _)| text == "Find me my thesis document").count(), 1, "the question shows once");
         assert!(texts.iter().any(|(text, _)| text.contains("Thesis-final.pdf")));
         assert!(!has("Started Claude Code in me"), "the card replaces the green line");
         assert!(!has("Ask Lantern instead") && has("Ask a follow-up"));
-        assert!(!has("Open"), "nothing to open once it has ended");
+        assert!(!has("Open agent ↗"), "nothing to open once it has ended");
     }
 
     #[test]
@@ -644,8 +680,8 @@ mod tests {
         let mut view = UiState::default();
         let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
         let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
-        assert!(has(&texts, "@claude-1") && has(&texts, "Working…") && has(&texts, "Open"));
-        assert!(!has(&texts, "Finished. It isn't running anymore."));
+        assert!(has(&texts, "Claude Code") && has(&texts, "Working on it…") && has(&texts, "Open agent ↗"));
+        assert!(!has(&texts, "@claude-1") && !has(&texts, "Done."), "no agent header; it's still working");
         assert!(has(&texts, "Ask Lantern instead"));
         let (_, actions, _) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, vec![enter()]);
         assert_eq!(actions, vec![UiAction::SubmitAssistant], "a reply goes while Lantern is answering");
@@ -728,7 +764,10 @@ mod tests {
             serde_json::from_str(include_str!("../../fixtures/panel-assistant-thread.json")).unwrap();
         let mut view = UiState::default();
         assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Cancel"), vec![UiAction::CancelAssistantTask]);
-        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Start"), vec![UiAction::StartAssistantTaskNow]);
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Start now"),
+            vec![UiAction::StartAssistantTaskNow]
+        );
         assert_eq!(fixture.model.assistant.pending_task.as_ref().unwrap().seconds_left, 3);
         assert_eq!(fixture.model.assistant.turns[1].started, None);
         assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "New chat"), vec![UiAction::ClearAssistant]);
