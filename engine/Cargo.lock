@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "lantern-engine"
-version = "0.6.9"
+version = "0.6.10"
 dependencies = [
  "anyhow",
  "base64",
