@@ -657,7 +657,10 @@ mod tests {
         let has = |value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(actions.is_empty() && height < 900.0);
         assert!(has("Claude Code") && !has("Home folder"), "the agent's name stays small; the folder is in the tooltip");
-        assert!(has("Closed. It isn't running anymore.") && !texts.iter().any(|(text, _)| text.starts_with("Done")), "a closed agent isn't claimed done");
+        assert!(
+            has("Closed. It isn't running anymore.") && !texts.iter().any(|(text, _)| text.starts_with("Done")),
+            "a closed agent isn't claimed done"
+        );
         assert_eq!(texts.iter().filter(|(text, _)| text == "Find me my thesis document").count(), 1, "the question shows once");
         assert!(texts.iter().any(|(text, _)| text.contains("Thesis-final.pdf")));
         assert!(!has("Started Claude Code in me"), "the card replaces the green line");
