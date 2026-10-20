@@ -190,8 +190,12 @@ pub fn note(has_tools: bool) -> Option<String> {
     ))
 }
 
+/// The driver this engine started. Holding `_owner` (an OS lock on `cua-driver.lock`) is what makes
+/// it this engine's: one engine on the computer owns the driver at a time, and the lock goes with
+/// the process, even if it crashes.
 struct Daemon {
     child: Child,
+    _owner: std::fs::File,
 }
 
 static DAEMON: Mutex<Option<Daemon>> = Mutex::new(None);
@@ -202,9 +206,21 @@ fn running(bin: &PathBuf) -> bool {
     crate::run::output(&mut cmd, Duration::from_secs(5)).is_ok_and(|o| o.status.success())
 }
 
-/// Lantern's driver is running and reachable.
+/// This engine's driver is running and reachable. A driver another engine owns doesn't count: its
+/// agents aren't given it, and this engine can't turn it off or restart it.
 pub fn ready() -> bool {
-    binary().is_some_and(|b| running(&b))
+    let ours = DAEMON.lock().unwrap().as_mut().is_some_and(|d| d.child.try_wait().ok().flatten().is_none());
+    ours && binary().is_some_and(|b| running(&b))
+}
+
+/// Takes the computer-wide driver lock at `path`; `None` while another process holds it.
+fn claim(path: &std::path::Path) -> Result<Option<std::fs::File>> {
+    let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path).context("opening Cua Driver's lock")?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(e)) => Err(e).context("locking Cua Driver"),
+    }
 }
 
 /// Downloads the driver if needed and starts Lantern's daemon if it isn't running.
@@ -222,17 +238,26 @@ pub fn start() -> Result<()> {
         }
         *daemon = None;
     }
-    // Another running engine's daemon (a second copy of Lantern, or a development preview) is
-    // shared, not replaced: replacing it would cut off that engine's agents mid-task.
-    if running(&bin) && owner().is_some_and(|pid| pid != std::process::id() && crate::platform::alive(pid)) {
-        return Ok(());
-    }
+    // Only the engine holding the lock may stop, replace or start the driver. Another copy of
+    // Lantern (or a development preview) keeps it: replacing it would cut off its agents mid-task.
+    // A Lantern that is quitting (an update relaunching) lets go within a few seconds.
+    std::fs::create_dir_all(support_dir())?;
+    let lock = support_dir().join("cua-driver.lock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let owner = loop {
+        if let Some(file) = claim(&lock)? {
+            break file;
+        }
+        if Instant::now() >= deadline {
+            bail!("another copy of October Lantern is using Cua Driver. Quit it, then turn this back on");
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    };
     // A daemon left by an earlier engine (Lantern quit without stopping it): ours to replace.
     let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(5));
     if !cfg!(windows) {
         let _ = std::fs::remove_file(socket());
     }
-    std::fs::create_dir_all(support_dir())?;
     let log = std::fs::File::create(support_dir().join("cua-driver.log")).ok();
     let mut cmd = driver(&bin);
     cmd.args(["serve", "--socket", &socket(), "--grant", "existing-profile"]);
@@ -247,7 +272,7 @@ pub fn start() -> Result<()> {
         None => cmd.stdout(Stdio::null()).stderr(Stdio::null()),
     };
     let child = cmd.spawn().context("starting Cua Driver")?;
-    *DAEMON.lock().unwrap() = Some(Daemon { child });
+    *DAEMON.lock().unwrap() = Some(Daemon { child, _owner: owner });
     let deadline = Instant::now() + Duration::from_secs(15);
     while !running(&bin) {
         if DAEMON.lock().unwrap().as_mut().is_some_and(|d| d.child.try_wait().ok().flatten().is_some()) {
@@ -258,25 +283,12 @@ pub fn start() -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    let _ = std::fs::write(owner_file(), std::process::id().to_string());
     Ok(())
-}
-
-/// Which engine started the running daemon (its pid), so another engine doesn't replace it.
-fn owner_file() -> PathBuf {
-    support_dir().join("cua-driver.owner")
-}
-
-fn owner() -> Option<u32> {
-    std::fs::read_to_string(owner_file()).ok()?.trim().parse().ok()
 }
 
 /// Stops Lantern's daemon (turned off in Settings, or the engine is exiting).
 pub fn stop() {
     let Some(mut d) = DAEMON.lock().unwrap().take() else { return };
-    if owner() == Some(std::process::id()) {
-        let _ = std::fs::remove_file(owner_file());
-    }
     if let Some(bin) = binary() {
         let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(3));
     }
@@ -305,6 +317,18 @@ pub fn status_json(status: &str, message: Option<String>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_holder_of_the_driver_lock_at_a_time() {
+        let dir = std::env::temp_dir().join(format!("lantern-cua-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cua-driver.lock");
+        let first = claim(&path).unwrap().expect("a free lock is taken");
+        assert!(claim(&path).unwrap().is_none(), "a second claim waits while the first holds it");
+        drop(first);
+        assert!(claim(&path).unwrap().is_some(), "it's free again once the holder lets go");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn every_system_has_a_pinned_build_with_a_checksum() {

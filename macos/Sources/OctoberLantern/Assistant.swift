@@ -520,31 +520,30 @@ private struct TaskCard: View {
             Text("Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
                 .fixedSize(horizontal: false, vertical: true)
         } else if let agent {
+            // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
+            // was done, so nothing here claims it.
             switch agent.state {
-            case .working, .unknown: busy
+            case .working: busy("Working on it…")
             case .needsInput where !agent.isPermissionPrompt: note("Needs your answer. Reply below.", color: Theme.amber)
             case .needsInput: EmptyView()
-            case .waiting: done("Done. Reply below to ask for more.")
-            case .idle: done("Done.")
+            case .waiting: note("Finished its turn. Reply below if there's more.", color: Theme.muted)
+            case .idle: note("Open, but not working on anything.", color: Theme.muted)
+            case .unknown: note("Running.", color: Theme.muted)
             }
         } else if link.inTerminal {
             note("Running in a Terminal window.", color: Theme.muted)
         } else if link.agentId != nil || !link.transcript.isEmpty {
-            done("Done.")
+            note("Closed. It isn't running anymore.", color: Theme.muted)
         } else if latest {
-            busy
+            busy("Getting started…")
         }
     }
 
-    private var busy: some View {
+    private func busy(_ text: String) -> some View {
         HStack(spacing: 6) {
             ProgressView().controlSize(.mini)
-            Text("Working on it…").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            Text(text).font(.system(size: 11)).foregroundStyle(Theme.muted)
         }
-    }
-
-    private func done(_ text: String) -> some View {
-        Label(text, systemImage: "checkmark.circle.fill").font(.system(size: 11)).foregroundStyle(Theme.muted)
     }
 
     private func note(_ text: String, color: Color) -> some View {

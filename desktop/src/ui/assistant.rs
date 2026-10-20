@@ -304,21 +304,31 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
             if let Some(error) = &link.error {
                 c::label(ui, format!("Couldn't start it: {error}"), 11.5, Weight::Regular, t::RED);
             } else if let Some(agent) = agent {
+                // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
+                // was done, so nothing here claims it.
+                let quiet = |ui: &mut Ui, text: &str| c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
                 match agent.state {
-                    AgentState::Working | AgentState::Unknown => busy(ui, cx.env, "Working on it…"),
+                    AgentState::Working => busy(ui, cx.env, "Working on it…"),
                     AgentState::NeedsInput if !agent.is_permission_prompt() => {
                         c::label(ui, "Needs your answer. Reply below.", 11.0, Weight::Regular, t::AMBER);
                     }
                     AgentState::NeedsInput => {}
-                    AgentState::Waiting => done(ui, "Done. Reply below to ask for more."),
-                    AgentState::Idle => done(ui, "Done."),
+                    AgentState::Waiting => {
+                        quiet(ui, "Finished its turn. Reply below if there's more.");
+                    }
+                    AgentState::Idle => {
+                        quiet(ui, "Open, but not working on anything.");
+                    }
+                    AgentState::Unknown => {
+                        quiet(ui, "Running.");
+                    }
                 }
             } else if link.in_terminal {
                 c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
             } else if link.agent_id.is_some() || !link.transcript.is_empty() {
-                done(ui, "Done.");
+                c::label(ui, "Closed. It isn't running anymore.", 11.0, Weight::Regular, t::MUTED);
             } else if latest {
-                busy(ui, cx.env, "Working on it…");
+                busy(ui, cx.env, "Getting started…");
             }
             footer(ui, cx, link, agent);
         },
@@ -342,16 +352,6 @@ fn footer(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate::mode
                 cx.emit(UiAction::OpenAgent { agent_id: agent.id.clone() });
             }
         }
-    });
-}
-
-/// A finished task, quietly.
-fn done(ui: &mut Ui, text: &str) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 5.0;
-        let (rect, _) = ui.allocate_exact_size(egui::Vec2::splat(11.0), Sense::hover());
-        c::paint_icon(ui.painter(), rect, Icon::CheckCircle, t::MUTED);
-        c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
     });
 }
 
@@ -656,12 +656,38 @@ mod tests {
         let (height, actions, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
         let has = |value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(actions.is_empty() && height < 900.0);
-        assert!(has("Claude Code") && has("Done.") && !has("Home folder"), "the agent's name stays small; the folder is in the tooltip");
+        assert!(has("Claude Code") && !has("Home folder"), "the agent's name stays small; the folder is in the tooltip");
+        assert!(has("Closed. It isn't running anymore.") && !texts.iter().any(|(text, _)| text.starts_with("Done")), "a closed agent isn't claimed done");
         assert_eq!(texts.iter().filter(|(text, _)| text == "Find me my thesis document").count(), 1, "the question shows once");
         assert!(texts.iter().any(|(text, _)| text.contains("Thesis-final.pdf")));
         assert!(!has("Started Claude Code in me"), "the card replaces the green line");
         assert!(!has("Ask Lantern instead") && has("Ask a follow-up"));
         assert!(!has("Open agent ↗"), "nothing to open once it has ended");
+    }
+
+    #[test]
+    fn a_task_card_says_only_what_lantern_can_see() {
+        let (ctx, assets, mut fixture) = setup("task");
+        let cases = [
+            (AgentState::Working, "Working on it…"),
+            (AgentState::Waiting, "Finished its turn. Reply below if there's more."),
+            (AgentState::Idle, "Open, but not working on anything."),
+            (AgentState::Unknown, "Running."),
+            (AgentState::NeedsInput, "Needs your answer. Reply below."),
+        ];
+        for (state, expected) in cases {
+            fixture.model.agents = vec![crate::model::Agent {
+                id: "demo".into(),
+                kind: crate::model::AgentKind::new("claude"),
+                handle: "claude-1".into(),
+                state,
+                ..Default::default()
+            }];
+            let mut view = UiState::default();
+            let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+            assert!(texts.iter().any(|(text, _)| text == expected), "{state:?} shows {expected:?}");
+            assert!(!texts.iter().any(|(text, _)| text.starts_with("Done")), "{state:?} never claims the task is done");
+        }
     }
 
     #[test]
@@ -681,7 +707,7 @@ mod tests {
         let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
         let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(has(&texts, "Claude Code") && has(&texts, "Working on it…") && has(&texts, "Open agent ↗"));
-        assert!(!has(&texts, "@claude-1") && !has(&texts, "Done."), "no agent header; it's still working");
+        assert!(!has(&texts, "@claude-1") && !has(&texts, "Closed. It isn't running anymore."), "no agent header; it's still working");
         assert!(has(&texts, "Ask Lantern instead"));
         let (_, actions, _) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, vec![enter()]);
         assert_eq!(actions, vec![UiAction::SubmitAssistant], "a reply goes while Lantern is answering");
