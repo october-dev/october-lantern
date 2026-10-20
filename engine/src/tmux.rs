@@ -34,8 +34,34 @@ pub fn tmux_bin() -> &'static str {
     })
 }
 
-fn base_command(socket: &Option<String>) -> Command {
+/// A tmux command that works in a UTF-8 locale. Apps on macOS start with no locale at all, and
+/// tmux without a UTF-8 one prints tabs and other characters as `_`: Lantern then can't read
+/// `list-panes` (so no agent is matched to its session) and typed text loses non-ASCII letters.
+/// A UTF-8 locale already set is kept.
+pub fn command() -> Command {
     let mut cmd = Command::new(tmux_bin());
+    if let Some((name, value)) = utf8_locale(|name| std::env::var(name).ok()) {
+        cmd.env(name, value);
+    }
+    cmd
+}
+
+/// The locale variable to set for tmux, if the environment (`get`) has no UTF-8 one.
+fn utf8_locale(get: impl Fn(&str) -> Option<String>) -> Option<(&'static str, &'static str)> {
+    let utf8 = |value: &str| value.to_ascii_uppercase().replace('-', "").contains("UTF8");
+    // The first of LC_ALL, LC_CTYPE and LANG that is set decides, as for tmux itself.
+    let current = ["LC_ALL", "LC_CTYPE", "LANG"].into_iter().find_map(|name| get(name).filter(|v| !v.is_empty()).map(|v| (name, v)));
+    let value = if cfg!(target_os = "macos") { "en_US.UTF-8" } else { "C.UTF-8" };
+    match current {
+        Some((_, v)) if utf8(&v) => None,
+        // LC_ALL overrides LC_CTYPE, so a non-UTF-8 LC_ALL is the one to replace.
+        Some(("LC_ALL", _)) => Some(("LC_ALL", value)),
+        _ => Some(("LC_CTYPE", value)),
+    }
+}
+
+fn base_command(socket: &Option<String>) -> Command {
+    let mut cmd = command();
     match socket {
         Some(s) if s.starts_with('/') => {
             cmd.args(["-S", s]);
@@ -160,4 +186,21 @@ fn typing(pane: &TmuxPane, args: &[&str]) -> Result<()> {
         bail!("tmux send-keys failed for {}: {}", pane.pane_id, String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod locale_tests {
+    #[test]
+    fn tmux_gets_a_utf8_locale_only_when_it_has_none() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| pairs.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
+        };
+        let set = super::utf8_locale(env(&[])).expect("an app with no locale gets one");
+        assert_eq!(set.0, "LC_CTYPE");
+        assert!(set.1.ends_with("UTF-8"));
+        assert_eq!(super::utf8_locale(env(&[("LANG", "en_GB.UTF-8")])), None, "a UTF-8 locale is kept");
+        assert_eq!(super::utf8_locale(env(&[("LC_CTYPE", "en_US.utf8")])), None);
+        assert_eq!(super::utf8_locale(env(&[("LC_ALL", "C")])).map(|(name, _)| name), Some("LC_ALL"), "LC_ALL wins, so it's replaced");
+        assert_eq!(super::utf8_locale(env(&[("LANG", "C")])).map(|(name, _)| name), Some("LC_CTYPE"));
+    }
 }

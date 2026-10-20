@@ -21,7 +21,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// Seconds a proposed task waits before it starts.
-const CANCEL_WINDOW: u32 = 3;
 /// Saved conversations kept, newest first.
 const KEPT_CONVERSATIONS: usize = 50;
 /// A task's messages kept with the conversation.
@@ -32,8 +31,6 @@ pub(super) struct Asking {
     /// The question being answered; a newer one (or New chat) makes older answers stale.
     generation: Arc<AtomicU64>,
     next_id: u64,
-    /// When the pending task's countdown started.
-    countdown: Option<Instant>,
     /// The conversation being had: its id in the saved list.
     conversation: String,
     /// The turns as last seen, and when they last changed: saved a second after changes settle.
@@ -215,20 +212,14 @@ impl Lantern {
             _ => prompt,
         };
         self.asking.next_id += 1;
-        self.model.assistant.pending_task =
-            Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, seconds_left: CANCEL_WINDOW, screenshot, context });
-        self.asking.countdown = Some(Instant::now());
+        self.model.assistant.pending_task = Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, screenshot, context });
     }
 
-    /// Counts the pending task down (and starts it at zero), reads the task's agent, and saves
-    /// the conversation once changes settle.
+    /// Starts a task the answer asked for (on the next tick, so it never waits), reads the task's
+    /// agent, and saves the conversation once changes settle.
     pub(super) fn assistant_tick(&mut self) {
-        if let (Some(started), Some(pending)) = (self.asking.countdown, self.model.assistant.pending_task.as_mut()) {
-            let left = CANCEL_WINDOW.saturating_sub(started.elapsed().as_secs() as u32);
-            pending.seconds_left = left.max(1);
-            if left == 0 {
-                self.start_pending_task();
-            }
+        if self.model.assistant.pending_task.is_some() {
+            self.start_pending_task();
         }
         self.watch_tick();
         if self.model.assistant.turns != self.asking.seen {
@@ -241,7 +232,6 @@ impl Lantern {
     }
 
     pub(super) fn cancel_assistant_task(&mut self) {
-        self.asking.countdown = None;
         self.model.assistant.pending_task = None;
     }
 
@@ -249,7 +239,6 @@ impl Lantern {
     /// when possible, shown right here in the conversation; Open shows its terminal. Otherwise a
     /// Terminal window. October waits for October Harness to finish installing.
     pub(super) fn start_pending_task(&mut self) {
-        self.asking.countdown = None;
         let Some(task) = self.model.assistant.pending_task.take() else { return };
         let background = self.model.new_session.in_lantern_available;
         let Some(turn) = self.model.assistant.turns.iter_mut().find(|t| t.id == task.turn) else { return };
@@ -629,16 +618,16 @@ mod tests {
     }
 
     #[test]
-    fn a_task_waits_three_seconds_then_starts_and_says_so_only_when_it_launched() {
+    fn a_task_starts_on_the_next_tick_and_says_so_only_when_it_launched() {
         let mut lantern = lantern(&["claude"]);
         lantern.model.new_session.folders = vec!["/work/october-lantern".into()];
         let (generation, turn) = with_turn(&mut lantern);
         let task = Piece::Task { prompt: "fix the tests".into(), agent: None, project: Some("October-Lantern".into()) };
         lantern.assistant_piece(generation, turn, task);
         let pending = lantern.model.assistant.pending_task.clone().unwrap();
-        assert_eq!((pending.kind.as_str(), pending.folder.as_str(), pending.seconds_left), ("claude", "/work/october-lantern", 3));
-        lantern.start_pending_task();
-        assert!(lantern.model.assistant.pending_task.is_none());
+        assert_eq!((pending.kind.as_str(), pending.folder.as_str()), ("claude", "/work/october-lantern"));
+        lantern.assistant_tick();
+        assert!(lantern.model.assistant.pending_task.is_none(), "no countdown: the next tick starts it");
         assert_eq!(lantern.model.assistant.turns[0].started, None, "not before the launch succeeded");
         let id = lantern.pending.iter().find(|(_, p)| matches!(p, super::super::Pending::Launch)).map(|(id, _)| id.clone()).unwrap();
         lantern.engine_event(serde_json::json!({"type": "launchResult", "requestId": id, "ok": true, "session": "claude-x-1"}));

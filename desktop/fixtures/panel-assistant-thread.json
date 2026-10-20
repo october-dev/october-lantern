@@ -6,7 +6,7 @@
     "assistant": {"turns": [
       {"id": 1, "question": "Find my passport scan.", "answer": "I'll ask an agent to find it in your documents and downloads.", "started": "Started October Harness in me"},
       {"id": 2, "question": "Fix the failing tests in october-lantern.", "answer": "I'll start **Claude Code** in `october-lantern` to investigate and fix the failures.", "note": "Your agent will ask before making changes that need approval."}
-    ], "pending_task": {"id": 3, "turn": 2, "prompt": "Find and fix the failing tests in october-lantern. Run the relevant tests to verify the fix.", "kind": "claude", "folder": "/home/me/Projects/october-lantern", "seconds_left": 3}}
+    ], "pending_task": {"id": 3, "turn": 2, "prompt": "Find and fix the failing tests in october-lantern. Run the relevant tests to verify the fix.", "kind": "claude", "folder": "/home/me/Projects/october-lantern"}}
   },
   "inputs": {"assistant": "Keep the changes focused."}
 }

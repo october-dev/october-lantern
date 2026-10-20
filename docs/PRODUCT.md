@@ -63,7 +63,7 @@ The result is either wasted agent time (an agent sat idle for 20 minutes waiting
 5. **Answer without switching windows.** Type or dictate a reply and Lantern types it into the agent's own terminal tab: in **cmux**, **Terminal**, **iTerm2** and **tmux**. Right before typing, it checks that the terminal still belongs to the agent: the same process, still running the agent (not a shell it left behind), on that terminal, in the foreground. When it can't tell, it doesn't type. For permission prompts, **Allow** and **Deny** buttons answer right from Lantern; they only press a key if that prompt is still the one on screen.
 6. **Notifies you.** An optional macOS notification when an agent finishes or needs you, even when the lantern is out of sight. Clicking it opens that agent's conversation.
 7. **Starts new sessions.** Pick any installed agent, a folder and an optional first message, and Lantern runs it in Lantern (in the background, with its chat in the panel) or opens it in a new Terminal window.
-8. **Answers questions and starts work.** Click the lantern for **Ask Lantern**: ask anything ("which agent needs me first?") and October's AI answers, knowing what your agents are doing. Ask it to do something ("add a dark mode toggle in october-lantern") and it answers in a line, then starts an agent on it after a 3-second "Starting… Cancel" card.
+8. **Answers questions and starts work.** Click the lantern for **Ask Lantern**: ask anything ("which agent needs me first?") and October's AI answers, knowing what your agents are doing. Ask it to do something ("add a dark mode toggle in october-lantern") and it answers in a line, then starts an agent on it right away, in the conversation.
 9. **Stays out of your way.** Collapsed, Lantern is one small lantern on the edge of the screen. It never takes keyboard focus from the app you're using, and it appears on every desktop Space and over full-screen apps.
 
 Lantern does **not** replace your terminals. Your agents keep running exactly where you started them, and you can keep using them there as usual. Lantern is an extra view and remote control on top.
@@ -174,7 +174,7 @@ Lantern is in **beta (v0.6.11)**.
 | Automatic routing ("send this to whichever agent it's for") | ❌ Not yet. You choose the agent. |
 | Screenshot as context for a new session | ✅ Optional (New Session › Context, or Settings › General). Needs Screen Recording permission. |
 | Point & Ask (drag a box, then Ask October's AI or send to an agent) | ✅ Ask needs October sign-in (free plan: 20 questions a day; Pro and Max: the plan's Assistant credit). Needs Screen Recording permission. |
-| Ask Lantern (answers, and starts agents for requests) | ✅ Needs October sign-in, same allowance as Point & Ask. Tasks start after a 3-second cancel window. |
+| Ask Lantern (answers, and starts agents for requests) | ✅ Needs October sign-in, same allowance as Point & Ask. Tasks start right away. |
 | Memory | ❌ Not yet (planned: kept on your Mac) |
 | Sign in with an October account (Google, GitHub, Apple, email) | ✅ |
 | Connect to October Desktop | ✅ Read-only with any October version that runs october-core (lists October's terminals). Full connection (October's agent names and questions, replies through October's safe delivery, Open on the canvas) needs October 1.0.52 or later, after the user clicks Connect and allows Lantern in October. |

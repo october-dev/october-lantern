@@ -111,8 +111,6 @@ impl Lantern {
             }
             UiAction::OpenConversation { id } => self.open_conversation(&id),
             UiAction::DeleteConversation { id } => self.delete_conversation(&id),
-            UiAction::CancelAssistantTask => self.cancel_assistant_task(),
-            UiAction::StartAssistantTaskNow => self.start_pending_task(),
             UiAction::CloseLaunchPreview => self.close_preview(),
             UiAction::RetryPreviewInTerminal => self.retry_preview_in_terminal(),
             UiAction::OpenUrl(url) => self.open_url(&url),

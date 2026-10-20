@@ -7,7 +7,7 @@ use super::{
     icons::Icon,
     theme::{self as t, Weight},
 };
-use crate::model::{AgentState, AssistantTurn, ChatMessage, Conversation, PendingTask, Role, TaskLink};
+use crate::model::{AgentState, AssistantTurn, ChatMessage, Conversation, Role, TaskLink};
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
@@ -198,9 +198,6 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
                             ui.scroll_to_cursor(Some(Align::BOTTOM));
                         }
                     }
-                    if let Some(pending) = &cx.model.assistant.pending_task {
-                        pending_card(ui, cx, pending);
-                    }
                 });
             });
     });
@@ -362,46 +359,6 @@ fn busy(ui: &mut Ui, env: &super::Env, text: impl Into<String>) {
         c::spinner(ui, 10.0, t::MUTED, env);
         c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
     });
-}
-
-fn pending_card(ui: &mut Ui, cx: &mut Ctx, pending: &PendingTask) {
-    egui::Frame::new()
-        .fill(t::opacity(t::AMBER, 0.1))
-        .stroke(Stroke::new(1.0, t::opacity(t::AMBER, 0.3)))
-        .corner_radius(10)
-        .inner_margin(Margin::same(9))
-        .show(ui, |ui| {
-            let controls = ["Cancel", "Start now"]
-                .iter()
-                .map(|title| ui.painter().layout_no_wrap((*title).into(), t::font(11.5, Weight::Semibold), t::INK).size().x)
-                .sum::<f32>();
-            let text_width = (ui.available_width() - 12.0 - controls - 30.0).max(1.0);
-            let title = format!("Starting in {}…", pending.seconds_left);
-            let mut prompt = egui::text::LayoutJob::single_section(
-                pending.prompt.clone(),
-                egui::TextFormat { font_id: t::font(11.0, Weight::Regular), color: t::MUTED, ..Default::default() },
-            );
-            prompt.wrap.max_width = text_width;
-            prompt.wrap.max_rows = 2;
-            let prompt = ui.painter().layout_job(prompt);
-            let height =
-                ui.painter().layout(title.clone(), t::font(12.0, Weight::Semibold), t::INK, text_width).size().y + 2.0 + prompt.size().y;
-            c::centered_row(ui, height, |ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                c::spinner(ui, 12.0, t::MUTED, cx.env);
-                ui.allocate_ui_with_layout(egui::vec2(text_width, height), Layout::top_down(Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    c::label(ui, title, 12.0, Weight::Semibold, t::INK);
-                    ui.add(egui::Label::new(prompt));
-                });
-                if c::plain_button(ui, "Cancel", 11.5, Weight::Semibold, t::MUTED).clicked() {
-                    cx.emit(UiAction::CancelAssistantTask);
-                }
-                if c::plain_button(ui, "Start now", 11.5, Weight::Semibold, t::AMBER).clicked() {
-                    cx.emit(UiAction::StartAssistantTaskNow);
-                }
-            });
-        });
 }
 
 fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
@@ -785,20 +742,16 @@ mod tests {
     }
 
     #[test]
-    fn pending_task_buttons_are_intents_not_countdowns_or_launches() {
+    fn a_task_about_to_start_shows_no_countdown() {
         let ctx = egui::Context::default();
         t::install(&ctx);
         let assets = Assets::load(&ctx);
         let mut fixture: crate::app::fixture::Fixture =
             serde_json::from_str(include_str!("../../fixtures/panel-assistant-thread.json")).unwrap();
         let mut view = UiState::default();
-        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Cancel"), vec![UiAction::CancelAssistantTask]);
-        assert_eq!(
-            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Start now"),
-            vec![UiAction::StartAssistantTaskNow]
-        );
-        assert_eq!(fixture.model.assistant.pending_task.as_ref().unwrap().seconds_left, 3);
-        assert_eq!(fixture.model.assistant.turns[1].started, None);
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(fixture.model.assistant.pending_task.is_some(), "the fixture has a task about to start");
+        assert!(!texts.iter().any(|(text, _)| text.starts_with("Starting in") || text == "Cancel" || text == "Start now"));
         assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "New chat"), vec![UiAction::ClearAssistant]);
     }
 }

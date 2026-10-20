@@ -328,8 +328,8 @@ impl Lantern {
     }
 
     /// The answer is work ("make a folder and move these into it"): Ask Lantern starts an agent on
-    /// it with this selection's screenshot, where the countdown, Cancel and the agent's progress
-    /// are (Swift `PointAsk.startTask`). Point & Ask closes.
+    /// it with this selection's screenshot, where the agent's progress is (Swift
+    /// `PointAsk.startTask`). Point & Ask closes.
     fn start_point_task(&mut self, question: String, answer: String, work: (String, Option<String>, Option<String>)) {
         let screenshot = match &self.model.point_ask.screenshot {
             Capture::Ready { path } => Some(path.clone()),
@@ -660,7 +660,7 @@ mod tests {
         assert_eq!(lantern.model.panel, Some(PanelMode::Assistant));
         let turn = &lantern.model.assistant.turns[0];
         assert_eq!((turn.question.as_str(), turn.answer.as_str()), ("move these into a folder", "Starting an agent to make the folder."));
-        let pending = lantern.model.assistant.pending_task.clone().expect("a task waiting out its cancel window");
+        let pending = lantern.model.assistant.pending_task.clone().expect("the task, started on the next tick");
         assert_eq!(pending.prompt, prompt, "October's prompt, which says what the screenshot shows");
         assert_eq!(pending.screenshot, Some("/shots/point-1.png".into()));
     }

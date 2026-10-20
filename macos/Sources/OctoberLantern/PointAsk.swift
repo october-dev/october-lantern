@@ -259,8 +259,8 @@ final class PointAsk: ObservableObject {
     }
 
     /// The answer is work ("make a folder and move these into it"): Ask Lantern starts an agent on
-    /// it, with this selection's screenshot, where the countdown, Cancel and the agent's progress
-    /// are. Point & Ask closes.
+    /// it right away, with this selection's screenshot, where the agent's progress is. Point & Ask
+    /// closes.
     private func startTask(_ work: (prompt: String, agent: String?, project: String?), question: String, answer: String) {
         let screenshot = shot.flatMap(ScreenCapture.save)
         Assistant.shared.adopt(

@@ -227,8 +227,6 @@ pub enum UiAction {
     DeleteConversation {
         id: String,
     },
-    CancelAssistantTask,
-    StartAssistantTaskNow,
     // Account and October Desktop
     SignInProvider(Provider),
     SignInEmail {

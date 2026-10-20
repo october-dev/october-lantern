@@ -10,13 +10,12 @@ final class Assistant: ObservableObject {
     static let shared = Assistant()
     weak var model: AppModel?
 
-    /// A task the answer asked Lantern to start, waiting out its cancel window.
+    /// A task the answer asked Lantern to start: it starts right away.
     struct PendingTask: Identifiable, Equatable {
         let id = UUID()
         let prompt: String
         let kind: AgentKind
         let folder: String
-        var secondsLeft: Int
         /// From Point & Ask: the selection, which the agent gets, and where the user was.
         var screenshot: URL?
         var context: String?
@@ -57,7 +56,6 @@ final class Assistant: ObservableObject {
 
     @Published var text = ""
     @Published private(set) var pending: PendingTask?
-    private var countdown: Task<Void, Never>?
     @Published private(set) var turns: [Turn] = [] { didSet { if !restoring { saveSoon() } } }
     @Published private(set) var asking = false
     /// Earlier conversations, newest first (the current one included once it has a question).
@@ -280,7 +278,7 @@ final class Assistant: ObservableObject {
         propose(prompt: prompt, agent: agent, project: project, turn: turn.id, screenshot: screenshot, context: context)
     }
 
-    /// The answer asked for work to be done: start it after a short window to cancel.
+    /// The answer asked for work to be done: start it now.
     private func propose(
         prompt: String, agent: String?, project: String?, turn: UUID, screenshot: URL? = nil, context: String? = nil
     ) {
@@ -293,24 +291,11 @@ final class Assistant: ObservableObject {
         let own = screenshot != nil ? prompt
             : index.map { Self.taskPrompt(question: turns[$0].question, suggested: prompt, followUp: $0 > 0) } ?? prompt
         cancelTask()
-        pending = PendingTask(prompt: own, kind: kind, folder: folder, secondsLeft: 3, screenshot: screenshot, context: context)
-        countdown = Task { [weak self] in
-            for left in stride(from: 2, through: 0, by: -1) {
-                try? await Task.sleep(for: .seconds(1))
-                guard let self, !Task.isCancelled, self.pending != nil else { return }
-                if left > 0 { self.pending?.secondsLeft = left } else { self.startPending(turn: turn) }
-            }
-        }
-    }
-
-    func startNow() {
-        guard let turn = turns.last?.id else { return }
-        countdown?.cancel()
+        pending = PendingTask(prompt: own, kind: kind, folder: folder, screenshot: screenshot, context: context)
         startPending(turn: turn)
     }
 
     func cancelTask() {
-        countdown?.cancel()
         pending = nil
     }
 
@@ -411,7 +396,6 @@ struct AssistantThread: View {
                                 TaskCard(link: link, latest: turn.id == assistant.turns.last(where: { $0.task != nil })?.id, model: model)
                             }
                         }
-                        if let p = assistant.pending { pendingCard(p) }
                     }
                     .padding(.vertical, 4)
                 }
@@ -429,24 +413,6 @@ struct AssistantThread: View {
         .onDisappear { model.watch(nil) }
     }
 
-    private func pendingCard(_ p: Assistant.PendingTask) -> some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Starting in \(p.secondsLeft)…")
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text(p.prompt).font(.system(size: 11)).foregroundStyle(Theme.muted).lineLimit(2)
-            }
-            Spacer()
-            Button("Cancel") { Assistant.shared.cancelTask() }.buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.muted)
-            Button("Start now") { Assistant.shared.startNow() }.buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .semibold)).foregroundStyle(Theme.amber)
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.amber.opacity(0.1)))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Theme.amber.opacity(0.3)))
-    }
 }
 
 /// An agent Ask Lantern started, inside the conversation: what it has said (live for the latest
