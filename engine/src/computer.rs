@@ -222,6 +222,11 @@ pub fn start() -> Result<()> {
         }
         *daemon = None;
     }
+    // Another running engine's daemon (a second copy of Lantern, or a development preview) is
+    // shared, not replaced: replacing it would cut off that engine's agents mid-task.
+    if running(&bin) && owner().is_some_and(|pid| pid != std::process::id() && crate::platform::alive(pid)) {
+        return Ok(());
+    }
     // A daemon left by an earlier engine (Lantern quit without stopping it): ours to replace.
     let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(5));
     if !cfg!(windows) {
@@ -253,12 +258,25 @@ pub fn start() -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    let _ = std::fs::write(owner_file(), std::process::id().to_string());
     Ok(())
+}
+
+/// Which engine started the running daemon (its pid), so another engine doesn't replace it.
+fn owner_file() -> PathBuf {
+    support_dir().join("cua-driver.owner")
+}
+
+fn owner() -> Option<u32> {
+    std::fs::read_to_string(owner_file()).ok()?.trim().parse().ok()
 }
 
 /// Stops Lantern's daemon (turned off in Settings, or the engine is exiting).
 pub fn stop() {
     let Some(mut d) = DAEMON.lock().unwrap().take() else { return };
+    if owner() == Some(std::process::id()) {
+        let _ = std::fs::remove_file(owner_file());
+    }
     if let Some(bin) = binary() {
         let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(3));
     }
