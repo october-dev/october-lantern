@@ -33,6 +33,8 @@ final class Assistant: ObservableObject {
         var task: TaskLink?
         /// Why no agent could be started for this answer's task.
         var taskProblem: String?
+        /// Out of free questions or credit: where to upgrade.
+        var upgrade: URL?
     }
 
     /// An agent Ask Lantern started: found by its tmux session, then by its id. Its last messages
@@ -254,6 +256,7 @@ final class Assistant: ObservableObject {
                 if let i = turns.firstIndex(where: { $0.id == id }) {
                     turns[i].answer = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                     turns[i].failed = true
+                    turns[i].upgrade = (error as? OctoberAI.Failure)?.upgradeURL
                 }
             }
             guard !Task.isCancelled else { return }
@@ -602,10 +605,11 @@ private struct TurnView: View {
             } else {
                 Text((try? AttributedString(markdown: turn.answer, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(turn.answer))
                     .font(.system(size: 12.5)).lineSpacing(2)
-                    .foregroundStyle(turn.failed ? Theme.red : Theme.ink.opacity(0.92))
+                    .foregroundStyle(turn.upgrade != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let url = turn.upgrade { UpgradeButton(url: url, from: "assistant") }
             if let started = turn.started, turn.task == nil {
                 Label(started, systemImage: "play.circle.fill").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.green)
             }
@@ -614,6 +618,26 @@ private struct TurnView: View {
                 Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+/// Opens October's pricing page, under an answer that hit a plan limit.
+struct UpgradeButton: View {
+    let url: URL
+    let from: String
+
+    var body: some View {
+        Button {
+            Analytics.shared.capture("upgrade_opened", ["from": from])
+            NSWorkspace.shared.open(url)
+        } label: {
+            HStack(spacing: 3) {
+                Text("Upgrade to October Pro")
+                Image(systemName: "arrow.up.forward").font(.system(size: 9, weight: .semibold))
+            }
+        }
+        .buttonStyle(SecondaryButtonStyle())
+        .help("Opens October's plans in your browser")
     }
 }
 

@@ -27,7 +27,9 @@ enum OctoberAI {
     }
 
     enum Failure: LocalizedError {
-        case signedOut, plan(String), limited(String), unavailable(String), notDeployed
+        case signedOut, limited(String), unavailable(String), notDeployed
+        /// Out of free questions or credit, or the plan doesn't include it: `URL` is where to upgrade.
+        case plan(String, URL)
         /// 400: the server couldn't read the request.
         case invalid(String)
 
@@ -35,9 +37,23 @@ enum OctoberAI {
             switch self {
             case .signedOut: "Sign in to October to ask."
             case .notDeployed: "October's AI isn't available right now."
-            case .plan(let m), .limited(let m), .unavailable(let m), .invalid(let m): m
+            case .plan(let m, _), .limited(let m), .unavailable(let m), .invalid(let m): m
             }
         }
+
+        /// Where to upgrade, when a plan would help.
+        var upgradeURL: URL? {
+            if case .plan(_, let url) = self { url } else { nil }
+        }
+    }
+
+    static let pricing = URL(string: "https://www.october.dev/pricing")!
+
+    /// The server's upgrade link when it's October's own, else the pricing page.
+    static func upgradeURL(_ value: Any?) -> URL {
+        guard let s = value as? String, let url = URL(string: s), url.scheme == "https",
+              url.host == "www.october.dev" || url.host == "october.dev" else { return pricing }
+        return url
     }
 
     static let system = """
@@ -247,11 +263,12 @@ enum OctoberAI {
         let error = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any]
         let code = error?["code"] as? String ?? ""
         let message = error?["message"] as? String
+        let upgrade = upgradeURL(error?["upgradeUrl"])
         switch (status, code) {
         case (401, _): return .signedOut
-        case (_, "plan_required"): return .plan(message ?? "This needs an October Pro or Max plan.")
-        case (402, _), (_, "credit_exhausted"): return .plan(message ?? "You've used this period's October AI credit.")
-        case (_, "free_limit"): return .limited(message ?? "That's today's free questions. Upgrade to October Pro for more.")
+        case (_, "plan_required"): return .plan(message ?? "This needs an October Pro or Max plan.", upgrade)
+        case (402, _), (_, "credit_exhausted"): return .plan(message ?? "You've used this period's October AI credit.", upgrade)
+        case (_, "free_limit"): return .plan(message ?? "That's today's free questions. Upgrade to October Pro for more.", upgrade)
         case (429, _): return .limited(message ?? "Too many questions for now. Try again in a minute.")
         case (400, _): return .invalid(message ?? "October's AI couldn't read the request.")
         default: return .unavailable(message ?? "October's AI isn't available right now (\(status)). Try again soon.")

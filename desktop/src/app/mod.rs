@@ -225,8 +225,10 @@ impl Lantern {
                         let plan = session.plan["plan"].as_str().or(session.plan["tier"].as_str()).map(str::to_string);
                         self.model.account.signed_in = Some(crate::model::Account { email: session.email.clone(), plan });
                         self.model.account.error = None;
+                        crate::analytics::identify(&session.access, &session.email);
                         self.session = Some(session);
                         if welcome {
+                            crate::analytics::capture("october_signed_in", serde_json::json!({}));
                             self.signed_in();
                         }
                     }
@@ -297,6 +299,8 @@ impl Lantern {
     /// and ends Ask Lantern's conversation.
     fn sign_out(&mut self) {
         let generation = self.auth.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        crate::analytics::capture("october_signed_out", serde_json::json!({}));
+        crate::analytics::forget_user();
         if let Some(session) = self.session.take() {
             std::thread::spawn(move || crate::account::logout(session.access));
         }
@@ -383,6 +387,18 @@ impl Lantern {
         self.point_ask_tick();
         self.upkeep_tick();
         self.publish_tray_menu();
+        if self.connected {
+            // How many agents of each harness are running, once a day (DAU).
+            let mut kinds: Vec<(String, usize)> = Vec::new();
+            for agent in &self.model.agents {
+                match kinds.iter_mut().find(|(kind, _)| kind == agent.kind.as_str()) {
+                    Some((_, n)) => *n += 1,
+                    None => kinds.push((agent.kind.as_str().to_string(), 1)),
+                }
+            }
+            crate::analytics::daily_active(&kinds);
+        }
+        crate::analytics::tick();
     }
 }
 

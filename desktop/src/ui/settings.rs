@@ -159,6 +159,9 @@ fn caption(ui: &mut Ui, text: &str) {
     ui.add_space(10.0);
 }
 
+/// What "Share anonymous usage counts" sends (Swift SettingsView).
+pub(super) const USAGE_DETAIL: &str = "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your account.";
+
 fn toggle(ui: &mut Ui, cx: &mut Ctx, title: &str, current: bool, change: impl FnOnce(bool) -> SettingChange) {
     if let Some(on) = setting_switch(ui, title, current, None) {
         cx.emit(UiAction::ChangeSetting(change(on)));
@@ -502,7 +505,14 @@ fn about(ui: &mut Ui, cx: &mut Ctx) {
             caption(ui, &if update.newer { format!("Version {} is available.", update.version) } else { "You're up to date.".into() });
         }
     });
-    // No analytics transport exists: equivalent to Swift Analytics.available == false.
+    if crate::analytics::available() {
+        group(ui, None, |ui| {
+            if let Some(on) = setting_switch(ui, "Share anonymous usage counts", crate::analytics::enabled(), None) {
+                cx.emit(UiAction::SetShareUsage(on));
+            }
+            caption(ui, USAGE_DETAIL);
+        });
+    }
     group(ui, Some("Help"), |ui| {
         if button_row(ui, "Report a Problem…") {
             cx.emit(UiAction::ReportProblem);

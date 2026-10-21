@@ -48,7 +48,12 @@ pub enum Piece {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Failure {
     SignedOut,
-    Plan(String),
+    /// Out of free questions or credit, or the plan doesn't include it: `upgrade` is where to
+    /// upgrade.
+    Plan {
+        message: String,
+        upgrade: String,
+    },
     Limited(String),
     Unavailable(String),
     NotDeployed,
@@ -64,9 +69,32 @@ impl std::fmt::Display for Failure {
             Self::SignedOut => "Sign in to October to ask.",
             Self::NotDeployed => "October's AI isn't available right now.",
             Self::Cancelled => "Cancelled.",
-            Self::Plan(m) | Self::Limited(m) | Self::Unavailable(m) | Self::Invalid(m) => m,
+            Self::Plan { message: m, .. } | Self::Limited(m) | Self::Unavailable(m) | Self::Invalid(m) => m,
         })
     }
+}
+
+/// October's pricing page.
+pub const PRICING: &str = "https://www.october.dev/pricing";
+
+impl Failure {
+    /// Where to upgrade, when a plan would help.
+    pub fn upgrade(&self) -> Option<&str> {
+        match self {
+            Self::Plan { upgrade, .. } => Some(upgrade),
+            _ => None,
+        }
+    }
+}
+
+/// The server's upgrade link when it's October's own, else the pricing page.
+fn upgrade_url(value: &Value) -> String {
+    value
+        .as_str()
+        .and_then(|s| url::Url::parse(s).ok())
+        .filter(|url| url.scheme() == "https" && matches!(url.host_str(), Some("www.october.dev" | "october.dev")))
+        .map(|url| url.to_string())
+        .unwrap_or_else(|| PRICING.into())
 }
 
 /// Point & Ask's instructions for the gateway (Lantern's endpoint has its own), naming this computer.
@@ -251,15 +279,15 @@ pub fn failure(status: u16, body: &[u8]) -> Failure {
     let error = serde_json::from_slice::<Value>(body).ok().map(|value| value["error"].clone()).unwrap_or_default();
     let code = error["code"].as_str().unwrap_or("");
     let message = error["message"].as_str().map(str::to_string);
+    let plan = |default: &str| Failure::Plan {
+        message: message.clone().unwrap_or_else(|| default.into()),
+        upgrade: upgrade_url(&error["upgradeUrl"]),
+    };
     match (status, code) {
         (401, _) => Failure::SignedOut,
-        (_, "plan_required") => Failure::Plan(message.unwrap_or_else(|| "This needs an October Pro or Max plan.".into())),
-        (402, _) | (_, "credit_exhausted") => {
-            Failure::Plan(message.unwrap_or_else(|| "You've used this period's October AI credit.".into()))
-        }
-        (_, "free_limit") => {
-            Failure::Limited(message.unwrap_or_else(|| "That's today's free questions. Upgrade to October Pro for more.".into()))
-        }
+        (_, "plan_required") => plan("This needs an October Pro or Max plan."),
+        (402, _) | (_, "credit_exhausted") => plan("You've used this period's October AI credit."),
+        (_, "free_limit") => plan("That's today's free questions. Upgrade to October Pro for more."),
         (429, _) => Failure::Limited(message.unwrap_or_else(|| "Too many questions for now. Try again in a minute.".into())),
         (400, _) => Failure::Invalid(message.unwrap_or_else(|| "October's AI couldn't read the request.".into())),
         _ => Failure::Unavailable(message.unwrap_or_else(|| format!("October's AI isn't available right now ({status}). Try again soon."))),
@@ -446,9 +474,15 @@ mod tests {
     fn failures_map_like_the_mac() {
         let body = |code: &str, message: &str| json!({"error": {"code": code, "message": message}}).to_string().into_bytes();
         assert_eq!(failure(401, b""), Failure::SignedOut);
-        assert_eq!(failure(403, &body("plan_required", "")), Failure::Plan("".into()));
-        assert_eq!(failure(402, b"{}"), Failure::Plan("You've used this period's October AI credit.".into()));
-        assert_eq!(failure(429, &body("free_limit", "Out of free questions")), Failure::Limited("Out of free questions".into()));
+        let plan = |message: &str| Failure::Plan { message: message.into(), upgrade: PRICING.into() };
+        assert_eq!(failure(403, &body("plan_required", "")), plan(""));
+        assert_eq!(failure(402, b"{}"), plan("You've used this period's October AI credit."));
+        assert_eq!(failure(429, &body("free_limit", "Out of free questions")), plan("Out of free questions"));
+        assert_eq!(failure(429, &body("rate_limited", "Slow down")), Failure::Limited("Slow down".into()), "not a plan problem");
+        let ours = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://www.october.dev/pricing?from=lantern"}});
+        assert_eq!(failure(402, ours.to_string().as_bytes()).upgrade(), Some("https://www.october.dev/pricing?from=lantern"));
+        let theirs = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://evil.example/pay"}});
+        assert_eq!(failure(402, theirs.to_string().as_bytes()).upgrade(), Some(PRICING), "only October's own links");
         assert_eq!(failure(400, b"not json"), Failure::Invalid("October's AI couldn't read the request.".into()));
         assert_eq!(failure(503, b""), Failure::Unavailable("October's AI isn't available right now (503). Try again soon.".into()));
     }

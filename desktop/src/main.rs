@@ -3,6 +3,7 @@
 // Release builds on Windows are windowed apps: no console window behind Lantern.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod account;
+mod analytics;
 mod app;
 mod model;
 mod october_ai;

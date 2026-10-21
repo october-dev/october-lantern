@@ -3,6 +3,21 @@ import XCTest
 
 /// Ask Lantern's request stays within what `/api/lantern/ask` accepts.
 final class AskRequestTests: XCTestCase {
+    func testPlanLimitsOfferAnUpgradeAndOnlyToOctober() {
+        func failure(_ status: Int, _ error: [String: Any]) -> OctoberAI.Failure {
+            OctoberAI.failure(status: status, data: try! JSONSerialization.data(withJSONObject: ["error": error]))
+        }
+        let pricing = URL(string: "https://www.october.dev/pricing")!
+        XCTAssertEqual(failure(429, ["code": "free_limit", "message": "Out"]).upgradeURL, pricing)
+        XCTAssertEqual(failure(402, ["code": "credit_exhausted", "upgradeUrl": "https://www.october.dev/pricing?from=lantern"]).upgradeURL,
+                       URL(string: "https://www.october.dev/pricing?from=lantern"))
+        XCTAssertEqual(failure(402, ["code": "credit_exhausted", "upgradeUrl": "https://evil.example/pricing"]).upgradeURL, pricing)
+        XCTAssertEqual(failure(403, ["code": "plan_required"]).upgradeURL, pricing)
+        XCTAssertNil(failure(429, ["code": "rate_limited"]).upgradeURL, "slow down isn't a plan problem")
+        XCTAssertNil(failure(401, [:]).upgradeURL)
+        XCTAssertEqual(failure(429, ["code": "free_limit", "message": "Out"]).errorDescription, "Out")
+    }
+
     func testHistoryIsTheLastFiveWholeTurns() {
         var turns = (1...7).map { (question: "q\($0)", answer: "a\($0)") }
         turns.insert((question: "cancelled", answer: ""), at: 6)

@@ -228,7 +228,10 @@ fn conversation(ui: &mut Ui, cx: &mut Ctx) {
                                 } else if let Some(url) = c::markdown_linked(
                                     ui,
                                     &turn.answer,
-                                    MarkdownStyle { color: if turn.failed { t::RED } else { t::white(0.92) }, ..Default::default() },
+                                    MarkdownStyle {
+                                        color: super::assistant::answer_color(turn.failed, turn.upgrade.is_some()),
+                                        ..Default::default()
+                                    },
                                     2.0,
                                 )
                                 .1
@@ -237,6 +240,9 @@ fn conversation(ui: &mut Ui, cx: &mut Ctx) {
                                 }
                                 if let Some(note) = &turn.note {
                                     c::label(ui, note, 11.0, Weight::Regular, t::MUTED);
+                                }
+                                if let Some(url) = &turn.upgrade {
+                                    super::assistant::upgrade_button(ui, cx, url, "point_ask");
                                 }
                             });
                         });

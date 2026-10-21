@@ -41,6 +41,7 @@ impl Lantern {
         if self.model.panel == Some(PanelMode::NewSession) {
             return self.set_panel(None);
         }
+        self.refresh_installed();
         let task_app = crate::os::foreground_app().filter(|app| !app.is_terminal);
         let prefs = &self.model.prefs;
         let installed = self.model.new_session.installed.clone().unwrap_or_default();
@@ -241,6 +242,10 @@ impl Lantern {
     /// The engine's answer to a launch.
     pub(super) fn launch_result(&mut self, ok: bool, message: Option<String>, session: Option<String>) {
         self.model.new_session.launching = false;
+        crate::analytics::capture(
+            if ok { "session_started" } else { "session_start_failed" },
+            serde_json::json!({"task": self.launching.report.is_some()}),
+        );
         if !ok {
             return self.launch_failed(message.unwrap_or_else(|| "unknown error".into()));
         }

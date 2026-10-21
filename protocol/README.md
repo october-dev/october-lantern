@@ -49,9 +49,9 @@ Sent when anything changes, and at least every 10 seconds.
 | `stateSource` | `"hook" \| "transcript" \| "none"` | Where the state came from ("transcript" covers every session reader) |
 
 ### `installed`
-Sent shortly after `hello`, and again when October Harness finishes installing. Lists the agents that can be started: those installed on this machine, as found by the user's login shell, plus `october` when Lantern's own October Harness is installed. `harness` is October Harness's status (as in the `harness` event below).
+Sent shortly after `hello`, again when October Harness finishes installing, and in answer to `installed.refresh` (`{"type":"installed.refresh"}`: look again, so an agent installed since the engine started shows up). Lists the agents that can be started: those installed on this machine, as found by the user's login shell (when the shell takes over 10 seconds, the folders installers use instead, asked again a minute later), plus `october` when Lantern's own October Harness is installed. `tmux` is whether there's a tmux to run sessions in: the user's own, or the one bundled in the Mac app. `signedIn` lists the installed agents signed in to the user's own plan, best first; `neverSetUp` lists an installed Claude Code or Codex that has never been signed in (no saved sign-in and no API key in the environment). `harness` is October Harness's status (as in the `harness` event below).
 ```json
-{"type":"installed","installed":{"kinds":["claude","codex","opencode","october"],"tmux":true},"harness":{"status":"ready","source":"bundled","version":"0.87.1-october.3"}}
+{"type":"installed","installed":{"kinds":["claude","codex","opencode","october"],"tmux":true,"signedIn":["claude"],"neverSetUp":["codex"]},"harness":{"status":"ready","source":"bundled","version":"0.87.1-october.3"}}
 ```
 
 ### `harness`
@@ -113,6 +113,7 @@ The connection to October Desktop, sent whenever it changes.
 {"type":"launch","requestId":"l2","kind":"claude","cwd":"/Users/me/Movies/video-3","prompt":"normalize the voice","context":"I'm working in DaVinci Resolve on this Mac. Its front window is \"video-3\".","toolkit":true,"background":false}
 {"type":"models","kind":"codex"}
 {"type":"toolkit.refresh"}
+{"type":"installed.refresh"}
 {"type":"harness.prepare","requestId":"p1"}
 {"type":"october.session","accessToken":"<October Supabase access token>","expiresAt":1791234567}
 {"type":"october.session"}

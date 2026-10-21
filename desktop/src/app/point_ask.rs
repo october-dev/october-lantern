@@ -277,6 +277,7 @@ impl Lantern {
             platform: self.model.caps.platform,
         };
         self.pointing.work = None;
+        crate::analytics::capture("point_ask_asked", serde_json::json!({"follow_up": turn > 0}));
         let generation = self.pointing.conversation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.pointing.conversation.clone();
         let tx = self.tx.clone();
@@ -285,7 +286,7 @@ impl Lantern {
             let result = october_ai::stream(&request, &token, &mut |piece| {
                 current.load(Ordering::SeqCst) == generation && pieces.send(Event::PointAsk { generation, turn, piece }).is_ok()
             });
-            let error = result.err().filter(|failure| *failure != Failure::Cancelled).map(|failure| failure.to_string());
+            let error = result.err().filter(|failure| *failure != Failure::Cancelled);
             let _ = tx.send(Event::PointAskDone { generation, turn, error });
         });
     }
@@ -302,15 +303,16 @@ impl Lantern {
         }
     }
 
-    pub(super) fn point_ask_done(&mut self, generation: u64, turn: usize, error: Option<String>) {
+    pub(super) fn point_ask_done(&mut self, generation: u64, turn: usize, error: Option<Failure>) {
         if generation != self.pointing.conversation.load(Ordering::SeqCst) {
             return;
         }
         if let Some(t) = self.model.point_ask.turns.get_mut(turn) {
             match error {
                 Some(error) => {
-                    t.answer = error;
+                    t.answer = error.to_string();
                     t.failed = true;
+                    t.upgrade = error.upgrade().map(str::to_string);
                 }
                 None if t.answer.is_empty() => {
                     t.answer = "No answer came back. Try again.".into();

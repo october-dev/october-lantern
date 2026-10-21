@@ -14,6 +14,8 @@ jobs:
     env:
       # Where the in-app updater looks for new versions: the public releases repository.
       LANTERN_RELEASES_REPO: ${{ vars.LANTERN_RELEASES_REPO || 'harshsaver/october-lantern-releases' }}
+      # PostHog project key for anonymous usage counts (desktop/src/analytics.rs); unset sends nothing.
+      LANTERN_POSTHOG_KEY: ${{ secrets.LANTERN_POSTHOG_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

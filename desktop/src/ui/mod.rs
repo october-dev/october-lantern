@@ -219,6 +219,20 @@ pub enum UiAction {
     SubmitAssistant,
     /// "New chat": the current one stays in Recent.
     ClearAssistant,
+    /// Opens October's plans from an answer that hit a plan limit; `from` is "assistant" or
+    /// "point_ask" (counted).
+    OpenUpgrade {
+        url: String,
+        from: &'static str,
+    },
+    /// "Share anonymous usage counts".
+    SetShareUsage(bool),
+    /// Download October Harness again after a failed install (Welcome's Try again).
+    PrepareHarness,
+    /// Try again: starts the task that couldn't start for this turn.
+    RetryAssistantTask {
+        turn: u64,
+    },
     /// "Ask Lantern instead" ⇄ "Reply to @handle instead".
     ToggleAskLanternInstead,
     OpenConversation {

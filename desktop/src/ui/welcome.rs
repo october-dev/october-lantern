@@ -282,6 +282,7 @@ fn setup(ui: &mut Ui, cx: &mut Ctx) {
     ui.spacing_mut().item_spacing.y = 14.0;
     c::label(ui, "A few choices", 22.0, Weight::Bold, t::INK);
     c::label(ui, "All optional. You can change them later in Settings.", 13.5, Weight::Regular, t::MUTED);
+    setup_row(ui, Icon::Terminal, "Agent for your tasks", &agent_detail(cx), |ui| agent_control(ui, cx));
     let prefs = &cx.model.prefs;
     let mut open_at_login = prefs.open_at_login;
     setup_row(ui, Icon::Power, "Open at login", "Keep the lantern there whenever you're using your computer.", |ui| {
@@ -299,8 +300,19 @@ fn setup(ui: &mut Ui, cx: &mut Ctx) {
         |ui| notifications_control(ui, cx),
     );
     setup_row(ui, Icon::Bolt, "Exact status (recommended)", &hooks_detail(cx.model.caps.platform), |ui| hooks_control(ui, cx));
-    // Swift shows "Share anonymous usage counts" only when analytics is built in (`Analytics.available`).
-    // These builds have no analytics backend, so, like an unavailable Mac build, the row isn't shown.
+    // Only when analytics is built in, like the Mac's `Analytics.available`.
+    if crate::analytics::available() {
+        let mut share = crate::analytics::enabled();
+        setup_row(ui, Icon::Layers, "Share anonymous usage counts", super::settings::USAGE_DETAIL, |ui| {
+            let response = sessions::switch(ui, "", &mut share);
+            response.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), share, "Share anonymous usage counts")
+            });
+            if response.changed() {
+                cx.emit(UiAction::SetShareUsage(share));
+            }
+        });
+    }
     let hotkey = crate::model::hotkey_label(&cx.model.prefs.message_hotkey);
     setup_row(ui, Icon::Keyboard, "Shortcut", "Opens the message box from anywhere.", |ui| {
         let galley = ui.painter().layout_no_wrap(hotkey, t::font(12.5, Weight::Rounded), t::INK);
@@ -321,6 +333,44 @@ fn hooks_detail(platform: Platform) -> String {
 }
 
 /// Swift `SetupRow`: icon, title and wrapping detail, then the control top-aligned at the trailing edge.
+/// Which agent Ask Lantern and Point & Ask start, in plain words (Swift `WelcomeView.agentDetail`).
+fn agent_detail(cx: &Ctx) -> String {
+    use crate::model::HarnessState;
+    if cx.model.new_session.installed.is_none() {
+        return "Checking which agents this computer has…".into();
+    }
+    if needs_october(cx) {
+        return match cx.model.harness.as_ref().map(|h| h.status) {
+            Some(HarnessState::Failed) => "Lantern couldn't download October, the agent it uses when there's no Claude Code or Codex. Check your internet connection and try again.".into(),
+            Some(HarnessState::Ready) => "Tasks use October. Install Claude Code or Codex anytime and Lantern finds it.".into(),
+            _ => "No Claude Code or Codex here, so Lantern is downloading October for your tasks (once, a few minutes). Nothing to do.".into(),
+        };
+    }
+    "Tasks use your Claude Code or Codex. You can change it in Settings.".into()
+}
+
+/// No Claude Code or Codex that's been set up: tasks use October (`Lantern::needs_harness`).
+fn needs_october(cx: &Ctx) -> bool {
+    let session = &cx.model.new_session;
+    let installed = session.installed.as_deref().unwrap_or_default();
+    let set_up = |kind: &str| installed.iter().any(|k| k.as_str() == kind) && !session.never_set_up.iter().any(|k| k.as_str() == kind);
+    !set_up(crate::model::AgentKind::CLAUDE) && !set_up(crate::model::AgentKind::CODEX)
+}
+
+fn agent_control(ui: &mut Ui, cx: &mut Ctx) {
+    use crate::model::HarnessState;
+    let status = cx.model.harness.as_ref().map(|h| h.status).filter(|_| needs_october(cx));
+    if cx.model.new_session.installed.is_none() || status == Some(HarnessState::Installing) {
+        c::spinner(ui, 14.0, t::MUTED, cx.env);
+    } else if status == Some(HarnessState::Failed) {
+        if c::secondary_button(ui, "Try again").clicked() {
+            cx.emit(UiAction::PrepareHarness);
+        }
+    } else {
+        c::label(ui, "✓ Ready", 12.0, Weight::Semibold, t::GREEN);
+    }
+}
+
 fn setup_row(ui: &mut Ui, icon: Icon, title: &str, detail: &str, control: impl FnOnce(&mut Ui)) {
     egui::Frame::new().fill(t::FAINT).corner_radius(12).inner_margin(12).show(ui, |ui| {
         ui.set_width(ui.available_width());

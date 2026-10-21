@@ -404,6 +404,8 @@ pub struct NewSessionModel {
     pub installed: Option<Vec<AgentKind>>,
     /// Installed agents signed in to the user's own plan, best first (engine `subscriptions`).
     pub signed_in: Vec<AgentKind>,
+    /// Installed Claude Code or Codex never signed in: started, it would only ask you to sign in.
+    pub never_set_up: Vec<AgentKind>,
     /// "In Lantern" sessions are possible (tmux on Linux, ConPTY sessions on Windows).
     pub in_lantern_available: bool,
     /// Models by kind, once listed.
@@ -429,6 +431,10 @@ pub struct AssistantTurn {
     pub started: Option<String>,
     /// The agent this answer started, shown in the conversation.
     pub task: Option<TaskLink>,
+    /// Why no agent could be started for this answer's task.
+    pub task_problem: Option<String>,
+    /// Out of free questions or credit: where to upgrade.
+    pub upgrade: Option<String>,
 }
 
 /// An agent Ask Lantern started (Swift `Assistant.TaskLink`): found by its Lantern session (tmux
@@ -445,6 +451,8 @@ pub struct TaskLink {
     pub error: Option<String>,
     /// Started without a Lantern session (a Terminal window): nothing to show here.
     pub in_terminal: bool,
+    /// Started in a terminal window because the agent has never been signed in.
+    pub sign_in: bool,
     /// Its last 60 messages, as last seen.
     pub transcript: Vec<ChatMessage>,
 }
@@ -565,6 +573,8 @@ pub struct AskTurn {
     pub answer: String,
     pub failed: bool,
     pub note: Option<String>,
+    /// Out of free questions or credit: where to upgrade.
+    pub upgrade: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -45,6 +45,8 @@ final class PointAsk: ObservableObject {
         let question: String
         var answer: String
         var failed = false
+        /// Out of free questions or credit: where to upgrade.
+        var upgrade: URL?
         /// About the account, e.g. free questions left today.
         var note: String?
     }
@@ -250,6 +252,7 @@ final class PointAsk: ObservableObject {
                 if !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
                     turns[index].answer = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                     turns[index].failed = true
+                    turns[index].upgrade = (error as? OctoberAI.Failure)?.upgradeURL
                 }
             }
             guard !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID else { return }
@@ -626,10 +629,11 @@ struct PointAskCard: View {
                                 }
                             } else {
                                 Text(Self.markdown(turn.answer)).font(.system(size: 12.5)).lineSpacing(2)
-                                    .foregroundStyle(turn.failed ? Theme.red : Theme.ink.opacity(0.92))
+                                    .foregroundStyle(turn.upgrade != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            if let url = turn.upgrade { UpgradeButton(url: url, from: "point_ask") }
                             if let note = turn.note {
                                 Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted)
                             }

@@ -7,7 +7,7 @@ use super::{
     icons::Icon,
     theme::{self as t, Weight},
 };
-use crate::model::{AgentState, AssistantTurn, ChatMessage, Conversation, Role, TaskLink};
+use crate::model::{AgentKind, AgentState, AssistantTurn, ChatMessage, Conversation, HarnessState, Role, TaskLink};
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
@@ -217,13 +217,16 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
             if let Some(link) = c::markdown_linked(
                 ui,
                 &turn.answer,
-                MarkdownStyle { size: 12.5, color: if turn.failed { t::RED } else { t::white(0.92) }, ..Default::default() },
+                MarkdownStyle { size: 12.5, color: answer_color(turn.failed, turn.upgrade.is_some()), ..Default::default() },
                 2.0,
             )
             .1
             {
                 cx.emit(UiAction::OpenUrl(link));
             }
+        }
+        if let Some(url) = &turn.upgrade {
+            upgrade_button(ui, cx, url, "assistant");
         }
         if let Some(started) = turn.started.as_ref().filter(|_| turn.task.is_none()) {
             ui.horizontal(|ui| {
@@ -236,7 +239,28 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
         if let Some(note) = &turn.note {
             c::label(ui, note, 11.0, Weight::Regular, t::MUTED);
         }
+        if let Some(problem) = &turn.task_problem {
+            c::label(ui, problem, 11.5, Weight::Regular, t::AMBER);
+        }
     });
+}
+
+/// An answer's color: amber for a plan limit (not an error), red for a failure.
+pub(super) fn answer_color(failed: bool, upgrade: bool) -> egui::Color32 {
+    if upgrade {
+        t::AMBER
+    } else if failed {
+        t::RED
+    } else {
+        t::white(0.92)
+    }
+}
+
+/// Opens October's plans, under an answer that hit a plan limit (Swift `UpgradeButton`).
+pub(super) fn upgrade_button(ui: &mut Ui, cx: &mut Ctx, url: &str, from: &'static str) {
+    if c::secondary_button(ui, "Upgrade to October Pro ↗").on_hover_text("Opens October's plans in your browser").clicked() {
+        cx.emit(UiAction::OpenUpgrade { url: url.to_string(), from });
+    }
 }
 
 /// A long message (a pasted prompt) shows its first lines in normal weight, with Show more
@@ -300,6 +324,15 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
             }
             if let Some(error) = &link.error {
                 c::label(ui, format!("Couldn't start it: {error}"), 11.5, Weight::Regular, t::RED);
+                if latest && c::plain_button(ui, "Try again", 11.0, Weight::Semibold, t::INK).clicked() {
+                    cx.emit(UiAction::RetryAssistantTask { turn });
+                }
+            } else if link.sign_in && agent.is_none_or(|agent| agent.state != AgentState::Working) {
+                let text = format!(
+                    "{} needs you to sign in first. It's open in a terminal window: sign in there and it starts on this.",
+                    link.kind.display_name()
+                );
+                c::label(ui, text, 11.0, Weight::Regular, t::AMBER);
             } else if let Some(agent) = agent {
                 // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
                 // was done, so nothing here claims it.
@@ -324,6 +357,11 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
                 c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
             } else if link.agent_id.is_some() || !link.transcript.is_empty() {
                 c::label(ui, "Closed. It isn't running anymore.", 11.0, Weight::Regular, t::MUTED);
+            } else if latest
+                && link.kind.as_str() == AgentKind::OCTOBER
+                && model.harness.as_ref().is_some_and(|h| h.status == HarnessState::Installing)
+            {
+                busy(ui, cx.env, "Setting up October. The first time takes a few minutes…");
             } else if latest {
                 busy(ui, cx.env, "Getting started…");
             }

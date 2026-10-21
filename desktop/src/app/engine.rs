@@ -47,6 +47,12 @@ impl Lantern {
                     .flatten()
                     .filter_map(|k| k.as_str().map(crate::model::AgentKind::new))
                     .collect();
+                self.model.new_session.never_set_up = event["installed"]["neverSetUp"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|k| k.as_str().map(crate::model::AgentKind::new))
+                    .collect();
                 // Windows runs Lantern's own sessions without tmux.
                 self.model.new_session.in_lantern_available = event["installed"]["tmux"] == true || cfg!(windows);
                 if let Ok(harness) = serde_json::from_value::<HarnessStatus>(event["harness"].clone()) {

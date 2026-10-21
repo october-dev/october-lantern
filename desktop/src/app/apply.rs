@@ -105,6 +105,15 @@ impl Lantern {
             UiAction::CopyPointAskAnswer => self.copy_point_ask_answer(),
             UiAction::SubmitAssistant => self.submit_assistant(),
             UiAction::ClearAssistant => self.clear_assistant(),
+            UiAction::RetryAssistantTask { turn } => self.retry_assistant_task(turn),
+            UiAction::OpenUpgrade { url, from } => {
+                crate::analytics::capture("upgrade_opened", serde_json::json!({"from": from}));
+                self.open_url(&url);
+            }
+            UiAction::SetShareUsage(on) => crate::analytics::set_enabled(on),
+            UiAction::PrepareHarness => {
+                self.request(serde_json::json!({"type": "harness.prepare"}));
+            }
             UiAction::ToggleAskLanternInstead => {
                 self.model.assistant.ask_lantern_instead = !self.model.assistant.ask_lantern_instead;
                 self.model.compose_focus += 1;

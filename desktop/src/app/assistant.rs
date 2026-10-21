@@ -41,6 +41,20 @@ pub(super) struct Asking {
     /// The history request for the watched agent; older answers are stale.
     pub watch_request: Option<String>,
     watch_at: Option<Instant>,
+    /// A task waiting for the engine to say which agents are installed (just after it starts),
+    /// and since when: given up after 20 seconds.
+    awaiting_agents: Option<(Instant, AwaitingTask)>,
+}
+
+/// What `propose_with` was asked to start, kept until the installed agents are known.
+#[derive(Debug)]
+struct AwaitingTask {
+    prompt: String,
+    agent: Option<String>,
+    project: Option<String>,
+    turn: u64,
+    screenshot: Option<std::path::PathBuf>,
+    context: Option<AppContext>,
 }
 
 impl Asking {
@@ -122,6 +136,7 @@ impl Lantern {
             platform: self.model.caps.platform,
             ..Default::default()
         };
+        crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));
         let generation = self.asking.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.asking.generation.clone();
         let tx = self.tx.clone();
@@ -130,7 +145,7 @@ impl Lantern {
             let result = october_ai::stream(&request, &token, &mut |piece| {
                 current.load(Ordering::SeqCst) == generation && pieces.send(Event::Assistant { generation, turn, piece }).is_ok()
             });
-            let error = result.err().filter(|failure| *failure != Failure::Cancelled).map(|failure| failure.to_string());
+            let error = result.err().filter(|failure| *failure != Failure::Cancelled);
             let _ = tx.send(Event::AssistantDone { generation, turn, error });
         });
     }
@@ -147,15 +162,16 @@ impl Lantern {
         }
     }
 
-    pub(super) fn assistant_done(&mut self, generation: u64, turn: u64, error: Option<String>) {
+    pub(super) fn assistant_done(&mut self, generation: u64, turn: u64, error: Option<Failure>) {
         if generation != self.asking.generation.load(Ordering::SeqCst) {
             return;
         }
         if let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) {
             match error {
                 Some(error) => {
-                    t.answer = error;
+                    t.answer = error.to_string();
                     t.failed = true;
+                    t.upgrade = error.upgrade().map(str::to_string);
                 }
                 None if t.answer.is_empty() => {
                     t.answer = "No answer came back. Try again.".into();
@@ -202,9 +218,18 @@ impl Lantern {
         screenshot: Option<std::path::PathBuf>,
         context: Option<AppContext>,
     ) {
-        let installed = self.model.new_session.installed.clone().unwrap_or_default();
+        let Some(installed) = self.model.new_session.installed.clone() else {
+            // The engine hasn't said which agents are installed yet: start once it has.
+            self.refresh_installed();
+            let task = AwaitingTask { prompt, agent, project, turn, screenshot, context };
+            self.asking.awaiting_agents = Some((Instant::now(), task));
+            return;
+        };
         let named = agent.map(AgentKind).filter(|kind| installed.contains(kind));
-        let Some(kind) = named.or_else(|| self.default_agent_kind()) else { return };
+        let Some(kind) = named.or_else(|| self.default_agent_kind()) else {
+            self.refresh_installed();
+            return self.set_task_problem(turn, "Lantern has no agent to do this with. Set one up in New Session, then try again.");
+        };
         let folder = self.task_folder(project.as_deref());
         let turns = &self.model.assistant.turns;
         let prompt = match turns.iter().position(|t| t.id == turn) {
@@ -218,6 +243,18 @@ impl Lantern {
     /// Starts a task the answer asked for (on the next tick, so it never waits), reads the task's
     /// agent, and saves the conversation once changes settle.
     pub(super) fn assistant_tick(&mut self) {
+        if let Some((since, _)) = &self.asking.awaiting_agents {
+            if self.model.new_session.installed.is_some() {
+                let (_, t) = self.asking.awaiting_agents.take().expect("checked");
+                self.propose_with(t.prompt, t.agent, t.project, t.turn, t.screenshot, t.context);
+            } else if since.elapsed() >= Duration::from_secs(20) {
+                let (_, t) = self.asking.awaiting_agents.take().expect("checked");
+                self.set_task_problem(
+                    t.turn,
+                    "Lantern couldn't check which agents this computer has, so nothing was started. Try again in a moment.",
+                );
+            }
+        }
         if self.model.assistant.pending_task.is_some() {
             self.start_pending_task();
         }
@@ -235,18 +272,53 @@ impl Lantern {
         self.model.assistant.pending_task = None;
     }
 
+    fn set_task_problem(&mut self, turn: u64, problem: &str) {
+        if let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) {
+            t.task_problem = Some(problem.into());
+        }
+    }
+
+    /// Looks for installed agents again, so one installed since Lantern started shows up.
+    pub(super) fn refresh_installed(&mut self) {
+        self.request(serde_json::json!({"type": "installed.refresh"}));
+    }
+
+    /// Starts a task that couldn't start again, with the same agent, folder and message (Swift
+    /// `Assistant.retry`).
+    pub(super) fn retry_assistant_task(&mut self, turn: u64) {
+        let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) else { return };
+        let Some(link) = t.task.take() else { return };
+        self.asking.next_id += 1;
+        self.model.assistant.pending_task = Some(PendingTask {
+            id: self.asking.next_id,
+            turn,
+            prompt: link.prompt,
+            kind: link.kind,
+            folder: link.folder,
+            screenshot: None,
+            context: None,
+        });
+        self.start_pending_task();
+    }
+
     /// Starts the task in the background (a Lantern session: tmux on Linux, ConPTY on Windows)
     /// when possible, shown right here in the conversation; Open shows its terminal. Otherwise a
     /// Terminal window. October waits for October Harness to finish installing.
     pub(super) fn start_pending_task(&mut self) {
         let Some(task) = self.model.assistant.pending_task.take() else { return };
-        let background = self.model.new_session.in_lantern_available;
+        crate::analytics::capture("assistant_task", json!({"kind": task.kind.as_str()}));
+        // An agent never signed in gets a window, where it asks you to sign in.
+        let sign_in = self.model.new_session.never_set_up.contains(&task.kind);
+        let in_lantern = self.model.new_session.in_lantern_available;
+        let background = in_lantern && !sign_in;
         let Some(turn) = self.model.assistant.turns.iter_mut().find(|t| t.id == task.turn) else { return };
+        turn.task_problem = None;
         turn.task = Some(TaskLink {
             kind: task.kind.clone(),
             folder: task.folder.clone(),
             prompt: task.prompt.clone(),
-            in_terminal: !background,
+            in_terminal: !in_lantern,
+            sign_in,
             ..Default::default()
         });
         let request = SessionRequest {
@@ -439,32 +511,44 @@ impl Lantern {
     /// The agent new tasks start with (Swift `defaultAgentKind`): the preference if it's set and
     /// can start; else an agent signed in to a plan the user already pays for, so their own
     /// subscription is used before October's; else October (counted once October Harness is ready,
-    /// or will be installed because there's no Claude Code or Codex), Claude Code, Codex, then the
-    /// first installed agent.
+    /// or will be installed because there's no Claude Code or Codex set up; after a failed
+    /// install, only when nothing else can start), Claude Code, Codex, then the first installed agent. A Claude Code or
+    /// Codex never signed in comes last. `None` until the engine has said what's installed.
     pub(super) fn default_agent_kind(&self) -> Option<AgentKind> {
-        let installed = self.model.new_session.installed.clone().unwrap_or_default();
+        let installed = self.model.new_session.installed.clone()?;
+        let never = &self.model.new_session.never_set_up;
         let harness = self.model.harness.as_ref().map(|h| h.status);
+        // After a failed install, October is tried again only when there's nothing else to start.
+        let other = installed.iter().any(|kind| !never.contains(kind));
         let usable = |kind: &AgentKind| {
             installed.contains(kind)
                 || kind.as_str() == AgentKind::OCTOBER
-                    && (harness == Some(HarnessState::Ready) || self.needs_harness() && harness != Some(HarnessState::Failed))
+                    && (harness == Some(HarnessState::Ready) || self.needs_harness() && (harness != Some(HarnessState::Failed) || !other))
         };
         let chosen = Some(AgentKind(self.model.prefs.task_agent.clone())).filter(|k| !k.as_str().is_empty());
         chosen
-            .into_iter()
-            .chain(self.model.new_session.signed_in.iter().cloned())
-            .chain([AgentKind::OCTOBER, AgentKind::CLAUDE, AgentKind::CODEX].map(AgentKind::new))
-            .find(usable)
+            .filter(usable)
+            .or_else(|| {
+                self.model
+                    .new_session
+                    .signed_in
+                    .iter()
+                    .cloned()
+                    .chain([AgentKind::OCTOBER, AgentKind::CLAUDE, AgentKind::CODEX].map(AgentKind::new))
+                    .find(|kind| usable(kind) && !never.contains(kind))
+            })
+            .or_else(|| installed.iter().find(|kind| !never.contains(kind)).cloned())
             .or_else(|| installed.first().cloned())
     }
 
-    /// Neither Claude Code nor Codex is installed: October Harness is what this computer can run.
+    /// No Claude Code or Codex that's been set up: October Harness is what this computer can run.
     pub(super) fn needs_harness(&self) -> bool {
+        let never = &self.model.new_session.never_set_up;
         self.model
             .new_session
             .installed
             .as_ref()
-            .is_some_and(|kinds| !kinds.iter().any(|k| [AgentKind::CLAUDE, AgentKind::CODEX].contains(&k.as_str())))
+            .is_some_and(|kinds| !kinds.iter().any(|k| [AgentKind::CLAUDE, AgentKind::CODEX].contains(&k.as_str()) && !never.contains(k)))
     }
 
     /// The project the person named (matched against recent folders, then agents' folders, newest
@@ -579,6 +663,44 @@ mod tests {
         assert_eq!(only_gemini.default_agent_kind(), Some(AgentKind::new("october")), "no Claude or Codex: the harness will install");
         only_gemini.model.harness = Some(HarnessStatus { status: HarnessState::Failed, ..Default::default() });
         assert_eq!(only_gemini.default_agent_kind(), Some(AgentKind::new("gemini")), "a failed harness install falls back");
+
+        let mut nothing = lantern(&[]);
+        nothing.model.harness = Some(HarnessStatus { status: HarnessState::Failed, ..Default::default() });
+        assert_eq!(nothing.default_agent_kind(), Some(AgentKind::new("october")), "with nothing else, October is tried again");
+        assert_eq!(lantern(&[]).default_agent_kind(), Some(AgentKind::new("october")));
+        let mut unknown = lantern(&[]);
+        unknown.model.new_session.installed = None;
+        assert_eq!(unknown.default_agent_kind(), None, "not known yet");
+    }
+
+    #[test]
+    fn agents_never_signed_in_come_last_and_start_where_you_can_sign_in() {
+        let mut fresh = lantern(&["claude", "gemini"]);
+        fresh.model.new_session.never_set_up = vec![AgentKind::new("claude")];
+        assert!(fresh.needs_harness(), "a Claude Code never signed in doesn't count");
+        assert_eq!(fresh.default_agent_kind(), Some(AgentKind::new("october")));
+        fresh.model.prefs.task_agent = "claude".into();
+        assert_eq!(fresh.default_agent_kind(), Some(AgentKind::new("claude")), "chosen anyway");
+
+        let (_, turn) = with_turn(&mut fresh);
+        fresh.propose(String::from("fix it"), Some("claude".into()), None, turn);
+        fresh.start_pending_task();
+        let link = fresh.model.assistant.turns.iter().find(|t| t.id == turn).and_then(|t| t.task.clone()).expect("started");
+        assert!(link.sign_in && !link.in_terminal, "a window to sign in, still in a Lantern session");
+    }
+
+    #[test]
+    fn a_task_waits_for_the_installed_agents_then_starts() {
+        let mut lantern = lantern(&["claude"]);
+        lantern.model.new_session.installed = None;
+        let (_, turn) = with_turn(&mut lantern);
+        lantern.propose(String::from("fix it"), None, None, turn);
+        assert!(lantern.model.assistant.pending_task.is_none());
+        lantern.model.new_session.installed = Some(vec![AgentKind::new("claude")]);
+        lantern.assistant_tick();
+        let t = lantern.model.assistant.turns.iter().find(|t| t.id == turn).expect("turn");
+        assert_eq!(t.task.as_ref().map(|link| link.kind.as_str()), Some("claude"));
+        assert_eq!(t.task_problem, None);
     }
 
     #[test]
@@ -603,7 +725,7 @@ mod tests {
         lantern.assistant_done(generation, turn, None);
         assert_eq!(lantern.model.assistant.turns[0].answer, "No answer came back. Try again.");
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_done(generation, turn, Some("Sign in to October to ask.".into()));
+        lantern.assistant_done(generation, turn, Some(Failure::SignedOut));
         assert!(lantern.model.assistant.turns.last().unwrap().failed);
     }
 

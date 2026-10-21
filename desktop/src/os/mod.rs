@@ -61,7 +61,7 @@ pub enum Event {
     AssistantDone {
         generation: u64,
         turn: u64,
-        error: Option<String>,
+        error: Option<crate::october_ai::Failure>,
     },
     /// A piece of a Point & Ask answer, for the conversation `generation` and its `turn` (index).
     PointAsk {
@@ -72,7 +72,7 @@ pub enum Event {
     PointAskDone {
         generation: u64,
         turn: usize,
-        error: Option<String>,
+        error: Option<crate::october_ai::Failure>,
     },
     /// `lantern-engine hooks status` (JSON), after reading or changing the agent hooks.
     Hooks(Result<String, String>),

@@ -512,10 +512,12 @@ final class AppModel: ObservableObject {
         guard let installed = installedKinds else { return nil }
         // October Harness counts once it's here (on PATH or installed by Lantern), or when there's
         // no Claude Code or Codex set up: then Lantern installs it in the background (see
-        // `installHarnessIfNoOtherAgent`) and a launch waits for it, trying again after a failed
-        // install.
+        // `installHarnessIfNoOtherAgent`) and a launch waits for it.
+        // After a failed install, October is tried again only when there's nothing else to start.
+        let other = installed.contains { !self.neverSetUpKinds.contains($0) }
         let usable = { (k: AgentKind) in
-            installed.contains(k) || (k == .october && (self.harness?.isReady == true || self.needsHarness))
+            installed.contains(k)
+                || (k == .october && (self.harness?.isReady == true || (self.needsHarness && (self.harness?.status != "failed" || !other))))
         }
         let chosen = prefs.defaultAgent.isEmpty ? [] : [AgentKind(rawValue: prefs.defaultAgent)]
         for kind in chosen where usable(kind) { return kind }
