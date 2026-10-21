@@ -10,6 +10,10 @@ Lantern downloads October Bus (https://github.com/october-dev/october-bus), buil
 when it's first needed. October Bus is licensed under the Apache License, Version 2.0.
 Linux packages may bundle the same pinned October Bus source build.
 
+The Mac app bundles tmux (https://github.com/tmux/tmux, ISC license), built with libevent
+(BSD 3-clause license) and utf8proc (MIT license). Their licenses are in the app's
+Contents/Resources/licenses folder.
+
 Optional local dictation uses whisper.cpp (https://github.com/ggml-org/whisper.cpp)
 under the MIT license, and OpenAI Whisper model weights under the MIT license.
 The installer keeps the whisper.cpp license beside its executable.

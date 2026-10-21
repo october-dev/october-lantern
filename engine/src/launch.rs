@@ -13,7 +13,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -58,6 +57,27 @@ fn display_name(kind: Kind) -> &'static str {
     }
 }
 
+/// How an agent is named in messages, as the apps name it.
+fn agent_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Gemini => "Gemini CLI",
+        Kind::Qwen => "Qwen Code",
+        Kind::Pi => "Pi",
+        Kind::Grok => "Grok",
+        Kind::Cursor => "Cursor",
+        Kind::Goose => "Goose",
+        Kind::Aider => "Aider",
+        Kind::Amp => "Amp",
+        Kind::Copilot => "Copilot",
+        Kind::Kimi => "Kimi",
+        Kind::Droid => "Droid",
+        Kind::Crush => "Crush",
+        Kind::Auggie => "Auggie",
+        Kind::Muse => "Muse",
+        other => display_name(other),
+    }
+}
+
 pub fn program(kind: Kind) -> &'static str {
     match kind {
         Kind::Cursor => "cursor-agent",
@@ -86,11 +106,15 @@ pub struct Installed {
     /// Installed agents signed in to the user's own plan, in the order Ask Lantern prefers them
     /// (see `subscriptions`). Filled in by `installed`.
     pub signed_in: Vec<Kind>,
+    /// Installed agents that have never been set up (signed in), so they're started where the
+    /// user can see them. Filled in by `installed`.
+    pub never_set_up: Vec<Kind>,
 }
 
-/// Which agents are installed, according to the user's login shell. Cached: it takes a moment.
-/// A shell whose startup files take longer than 10 s counts as finding nothing. On Windows,
-/// looked up each time (it's quick), so an agent installed while Lantern runs shows up.
+/// Which agents are installed, according to the user's login shell. Cached: it takes a moment;
+/// `refresh` forgets it, so an agent installed while Lantern runs shows up. A shell whose
+/// startup files take longer than 10 s isn't believed: the usual install folders are looked in
+/// instead, and the shell is asked again a minute later. On Windows, looked up each time (it's quick).
 pub fn on_path() -> std::borrow::Cow<'static, Installed> {
     #[cfg(windows)]
     {
@@ -99,25 +123,71 @@ pub fn on_path() -> std::borrow::Cow<'static, Installed> {
         if kinds.contains(&Kind::Codex) {
             CODEX.call_once(check_codex_early);
         }
-        std::borrow::Cow::Owned(Installed { kinds, tmux: false, signed_in: Vec::new() })
+        std::borrow::Cow::Owned(Installed { kinds, tmux: false, signed_in: Vec::new(), never_set_up: Vec::new() })
     }
     #[cfg(unix)]
     {
-        static CACHE: OnceLock<Installed> = OnceLock::new();
-        std::borrow::Cow::Borrowed(CACHE.get_or_init(|| {
-            let names: Vec<&str> = ALL.iter().map(|k| program(*k)).collect();
-            let script = format!("for c in {}; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c\"; done", names.join(" "));
-            let found: Vec<String> =
-                crate::deliver::output_within(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(10), false)
-                    .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).collect())
-                    .unwrap_or_default();
-            Installed {
-                kinds: ALL.iter().copied().filter(|k| found.iter().any(|f| f == program(*k))).collect(),
-                tmux: Path::new(tmux::tmux_bin()).is_absolute(),
-                signed_in: Vec::new(),
-            }
-        }))
+        let mut cache = ON_PATH.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((i, expires)) = cache.as_ref()
+            && expires.is_none_or(|t| Instant::now() < t)
+        {
+            return std::borrow::Cow::Owned(i.clone());
+        }
+        let names: Vec<&str> = ALL.iter().map(|k| program(*k)).collect();
+        let script = format!("for c in {}; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c\"; done", names.join(" "));
+        let shell_found: Option<Vec<String>> =
+            crate::deliver::output_within(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(10), false)
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).collect());
+        let found = shell_found.clone().unwrap_or_else(|| {
+            in_install_folders(&names, &crate::transcripts::home(), &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"])
+        });
+        let i = Installed {
+            kinds: ALL.iter().copied().filter(|k| found.iter().any(|f| f == program(*k))).collect(),
+            tmux: Path::new(tmux::tmux_bin()).is_absolute(),
+            signed_in: Vec::new(),
+            never_set_up: Vec::new(),
+        };
+        // A guess from the folders is kept for a minute, so starting an agent doesn't wait on the
+        // slow shell again.
+        let expires = shell_found.is_none().then(|| Instant::now() + Duration::from_secs(60));
+        *cache = Some((i.clone(), expires));
+        std::borrow::Cow::Owned(i)
     }
+}
+
+#[cfg(unix)]
+static ON_PATH: std::sync::Mutex<Option<(Installed, Option<Instant>)>> = std::sync::Mutex::new(None);
+
+/// Look for agents again on the next `on_path` (the app asks when it might have missed one: a
+/// panel opened, or nothing to start a task with).
+pub fn refresh() {
+    #[cfg(unix)]
+    {
+        *ON_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// `names` found in the folders their installers use, for when the login shell is too slow to
+/// say what's on PATH.
+#[cfg_attr(windows, allow(dead_code))]
+fn in_install_folders(names: &[&str], home: &Path, system: &[&str]) -> Vec<String> {
+    let mut dirs: Vec<PathBuf> =
+        [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin", ".cargo/bin", ".opencode/bin"]
+            .iter()
+            .map(|d| home.join(d))
+            .collect();
+    dirs.extend(system.iter().map(PathBuf::from));
+    // nvm and fnm keep one bin folder per Node.js version.
+    for root in [".nvm/versions/node", ".local/share/fnm/node-versions", "Library/Application Support/fnm/node-versions"] {
+        if let Ok(entries) = std::fs::read_dir(home.join(root)) {
+            for e in entries.flatten() {
+                dirs.push(e.path().join("bin"));
+                dirs.push(e.path().join("installation/bin"));
+            }
+        }
+    }
+    names.iter().filter(|n| dirs.iter().any(|d| d.join(n).is_file())).map(|n| n.to_string()).collect()
 }
 
 /// Which agents can be started: those on the user's PATH, and October when Lantern's own October
@@ -125,6 +195,7 @@ pub fn on_path() -> std::borrow::Cow<'static, Installed> {
 pub fn installed() -> Installed {
     let mut i = with_bundled(&on_path(), crate::harness::binary().is_some());
     i.signed_in = crate::subscriptions::signed_in().into_iter().filter(|k| i.kinds.contains(k)).collect();
+    i.never_set_up = crate::subscriptions::never_set_up().into_iter().filter(|k| i.kinds.contains(k)).collect();
     i
 }
 
@@ -401,7 +472,8 @@ pub(crate) fn agent_argv(
     let name = program(kind);
     let found = match program_override {
         Some(p) => p.to_path_buf(),
-        None => crate::platform::find_on_path(name).with_context(|| format!("{name} isn't on PATH"))?,
+        None => crate::platform::find_on_path(name)
+            .with_context(|| format!("Lantern can't find {} on this computer. Install it, or pick another agent.", agent_name(kind)))?,
     };
     let ext = found.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     let executable = found.clone();
@@ -412,7 +484,13 @@ pub(crate) fn agent_argv(
             let script = crate::pty::shim_script(&shim)
                 .map(|rel| found.parent().unwrap_or(Path::new(".")).join(rel))
                 .filter(|p| p.is_file())
-                .with_context(|| format!("{} is a batch file Lantern can't run safely; install {name}'s own .exe", found.display()))?;
+                .with_context(|| {
+                    format!(
+                        "Lantern can't start {} the way it's installed ({}). Install it with its own installer, or pick another agent.",
+                        agent_name(kind),
+                        found.display()
+                    )
+                })?;
             let beside = found.with_file_name("node.exe");
             let own = node_dir.map(|dir| dir.join("node.exe")).filter(|node| node.is_file());
             let node = if beside.is_file() {
@@ -420,11 +498,13 @@ pub(crate) fn agent_argv(
             } else if let Some(own) = own {
                 own
             } else {
-                crate::platform::find_on_path("node").context("Node.js isn't on PATH")?
+                crate::platform::find_on_path("node").with_context(|| {
+                    format!("{} needs Node.js, which isn't installed. Install it from nodejs.org, or pick another agent.", agent_name(kind))
+                })?
             };
             (node, vec![script.to_string_lossy().into_owned()])
         }
-        _ => bail!("Lantern can't start {}", found.display()),
+        _ => bail!("Lantern can't start {} from {}.", agent_name(kind), found.display()),
     };
     // Asked before the Bus's arguments are added: whether Codex takes it depends only on Codex.
     let no_daemon = kind == Kind::Codex && codex_has_no_daemon(&executable, &program, &args);
@@ -543,7 +623,7 @@ pub(crate) fn trust_claude_folder_in(file: &Path, folder: &Path) -> Result<()> {
 /// waits for it; one that does waits for the check already running.
 #[cfg(windows)]
 fn codex_has_no_daemon(found: &Path, program: &Path, args: &[String]) -> bool {
-    type Checks = std::collections::HashMap<PathBuf, std::sync::Arc<OnceLock<bool>>>;
+    type Checks = std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::OnceLock<bool>>>;
     static KNOWN: std::sync::Mutex<Option<Checks>> = std::sync::Mutex::new(None);
     let check = KNOWN.lock().unwrap().get_or_insert_with(Default::default).entry(found.to_path_buf()).or_default().clone();
     *check.get_or_init(|| {
@@ -710,7 +790,7 @@ pub fn launch(
         october_env(on_path, bundled.as_ref(), crate::harness::session_env())
     } else {
         if !installed().kinds.contains(&kind) {
-            bail!("{} isn't installed", program(kind));
+            bail!("{} isn't installed on this computer. Install it, or pick another agent.", agent_name(kind));
         }
         LaunchEnv::default()
     };
@@ -794,10 +874,10 @@ fn launch_tmux(
 ) -> Result<Launched> {
     if !installed().tmux {
         if mode == Mode::Background {
-            bail!("background sessions need tmux; install it using your system package manager");
+            bail!("Running agents in the background needs tmux. Install it with your system's package manager, then try again.");
         }
         if prompt.is_some() && !takes_prompt_arg(kind) {
-            bail!("Without tmux, Lantern can't hand {} a first message. Leave the message empty, or install tmux.", program(kind));
+            bail!("Without tmux, Lantern can't give {} its first message. Leave the message empty, or install tmux.", agent_name(kind));
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
         check_launch_deadline(deadline)?;
@@ -1044,5 +1124,35 @@ mod hands_free_tests {
         trust_claude_folder_in(&missing, Path::new("/x")).unwrap();
         assert!(!missing.exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod install_folder_tests {
+    use super::*;
+
+    #[test]
+    fn agents_are_found_in_their_install_folders_when_the_shell_is_too_slow() {
+        let home = std::env::temp_dir().join(format!("lantern-install-folders-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        for dir in [".local/bin", ".nvm/versions/node/v24.1.0/bin"] {
+            std::fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        std::fs::write(home.join(".local/bin/claude"), "").unwrap();
+        std::fs::write(home.join(".nvm/versions/node/v24.1.0/bin/codex"), "").unwrap();
+        // A folder named like an agent isn't one.
+        std::fs::create_dir_all(home.join(".local/bin/gemini")).unwrap();
+        let found = in_install_folders(&["claude", "codex", "gemini", "lantern-test-not-an-agent"], &home, &[]);
+        assert_eq!(found, ["claude", "codex"]);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn messages_name_agents_as_the_apps_do() {
+        assert_eq!(agent_name(Kind::Claude), "Claude Code");
+        assert_eq!(agent_name(Kind::Gemini), "Gemini CLI");
+        assert_eq!(agent_name(Kind::Cursor), "Cursor");
+        // October Bus names are unchanged.
+        assert_eq!(display_name(Kind::Gemini), "gemini");
     }
 }

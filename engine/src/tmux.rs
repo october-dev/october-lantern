@@ -15,7 +15,8 @@ pub struct TmuxInfo {
     pub clients: HashMap<(Option<String>, String), u32>,
 }
 
-/// tmux from Homebrew, MacPorts, Nix or the system; "tmux" (not absolute: not installed) otherwise.
+/// tmux from Homebrew, MacPorts, Nix or the system; else the one bundled next to the engine in the
+/// Mac app (macOS doesn't come with tmux); "tmux" (not absolute: not installed) otherwise.
 pub fn tmux_bin() -> &'static str {
     static BIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BIN.get_or_init(|| {
@@ -30,7 +31,8 @@ pub fn tmux_bin() -> &'static str {
             "/run/current-system/sw/bin/tmux".into(),
             "/usr/bin/tmux".into(),
         ];
-        candidates.into_iter().find(|p| std::path::Path::new(p).exists()).unwrap_or_else(|| "tmux".into())
+        let bundled = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("tmux").to_string_lossy().into_owned()));
+        candidates.into_iter().chain(bundled).find(|p| std::path::Path::new(p).is_file()).unwrap_or_else(|| "tmux".into())
     })
 }
 

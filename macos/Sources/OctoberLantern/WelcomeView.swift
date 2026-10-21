@@ -90,7 +90,10 @@ struct WelcomeView: View {
         .frame(width: 540, height: 640)
         .background(Color(white: 0.09))
         .environment(\.colorScheme, .dark)
-        .task { hooks.refresh() }
+        .task {
+            hooks.refresh()
+            model.refreshInstalled()
+        }
         .onReceive(poll) { _ in
             if page == .permissions, !screenAllowed { screenAllowed = CGPreflightScreenCaptureAccess() }
             if page == .permissions, !accessAllowed, AXIsProcessTrusted() {
@@ -189,6 +192,15 @@ struct WelcomeView: View {
             Text("All optional. You can change them later in Settings.")
                 .font(.system(size: 13.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
 
+            SetupRow(symbol: "terminal", title: "Agent for your tasks", detail: agentDetail) {
+                if model.installedKinds == nil || model.harness?.status == "installing" {
+                    ProgressView().controlSize(.small)
+                } else if model.needsHarness, model.harness?.status == "failed" {
+                    Button("Try again") { model.prepareHarness() }.buttonStyle(SecondaryButtonStyle())
+                } else if model.defaultAgentKind != nil, !model.needsHarness || model.octoberReady {
+                    Label("Ready", systemImage: "checkmark").foregroundStyle(Theme.green).font(.system(size: 12, weight: .semibold))
+                }
+            }
             SetupRow(symbol: "power", title: "Open at login", detail: "Keep the lantern there whenever you're using your Mac.") {
                 Toggle("", isOn: $openAtLogin).toggleStyle(.switch).labelsHidden()
                     .onChange(of: openAtLogin) { _, on in
@@ -245,6 +257,19 @@ struct WelcomeView: View {
                     .padding(.horizontal, 8).padding(.vertical, 3).background(RoundedRectangle(cornerRadius: 6).fill(Theme.faint))
             }
         }
+    }
+
+    /// Which agent Ask Lantern and Point & Ask start, in plain words.
+    private var agentDetail: String {
+        guard model.installedKinds != nil else { return "Checking which agents this Mac has…" }
+        if model.needsHarness {
+            switch model.harness?.status {
+            case "failed": return "Lantern couldn't download October, the agent it uses when there's no Claude Code or Codex. Check your internet connection and try again."
+            case "ready": return "Tasks use October. Install Claude Code or Codex anytime and Lantern finds it."
+            default: return "No Claude Code or Codex here, so Lantern is downloading October for your tasks (once, a few minutes). Nothing to do."
+            }
+        }
+        return "Tasks use \(model.defaultAgentKind?.displayName ?? "your agent"). You can change it in Settings."
     }
 
     /// Opens a new copy of Lantern and quits this one (macOS applies Screen Recording on reopen).

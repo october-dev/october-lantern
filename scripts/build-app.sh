@@ -42,6 +42,9 @@ else
   ENGINE="$ROOT/engine/target/$PROFILE/lantern-engine"
 fi
 
+# tmux for Macs without one: agents run in the background in it (scripts/build-tmux.sh).
+TMUX="$("$ROOT/scripts/build-tmux.sh")"
+
 # October Bus isn't bundled: the engine downloads a pinned, signed build the first time it's
 # needed (scripts/build-bus.sh, scripts/publish-bus.sh, engine/bus.json).
 
@@ -54,6 +57,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN_DIR/OctoberLantern" "$APP/Contents/MacOS/OctoberLantern"
 cp "$ENGINE" "$APP/Contents/MacOS/lantern-engine"
+cp "$TMUX" "$APP/Contents/MacOS/tmux"
+mkdir -p "$APP/Contents/Resources/licenses"
+cp "$(dirname "$TMUX")/licenses/"*.txt "$APP/Contents/Resources/licenses/"
 cp -R "$ROOT/macos/Resources/." "$APP/Contents/Resources/"
 cp "$ROOT/logo.png" "$APP/Contents/Resources/logo.png"
 ditto "$BIN_DIR/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
@@ -100,6 +106,7 @@ if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     codesign --force --options runtime --timestamp --preserve-metadata=entitlements --sign "$SIGN_IDENTITY" "$SPARKLE/$part"
   done
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/tmux"
   codesign --force --options runtime --timestamp --entitlements "$ROOT/macos/Engine.entitlements" \
     --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/lantern-engine"
   codesign --force --options runtime --timestamp --entitlements "$ROOT/macos/OctoberLantern.entitlements" \
@@ -107,6 +114,7 @@ if [[ -n "${SIGN_IDENTITY:-}" ]]; then
 else
   # Ad-hoc signature for local runs.
   codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
+  codesign --force --sign - "$APP/Contents/MacOS/tmux"
   codesign --force --sign - "$APP/Contents/MacOS/lantern-engine"
   codesign --force --sign - "$APP"
 fi

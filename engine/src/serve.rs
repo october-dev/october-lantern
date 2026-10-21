@@ -90,6 +90,9 @@ enum Request {
     /// Rebuild the toolkit list now (answered with `toolkit`).
     #[serde(rename = "toolkit.refresh")]
     ToolkitRefresh,
+    /// Look for installed agents again (answered with `installed`).
+    #[serde(rename = "installed.refresh")]
+    InstalledRefresh,
     /// The models to offer when starting `kind` (answered with `models`).
     Models {
         kind: Kind,
@@ -435,6 +438,10 @@ pub fn run() -> Result<()> {
                 }
                 Ok(Request::OctoberSession { access_token, expires_at }) => {
                     crate::harness::set_session(access_token.zip(expires_at));
+                }
+                Ok(Request::InstalledRefresh) => {
+                    launch::refresh();
+                    std::thread::spawn(emit_installed);
                 }
                 Ok(Request::ToolkitRefresh) => {
                     std::thread::spawn(|| match crate::toolkit::refresh() {

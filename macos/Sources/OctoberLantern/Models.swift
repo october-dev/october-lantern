@@ -201,6 +201,8 @@ enum EngineMessage: Decodable {
         let tmux: Bool
         /// Installed agents signed in to the user's own plan, best first (engine `subscriptions`).
         let signedIn: [AgentKind]?
+        /// Installed Claude Code or Codex that has never been signed in.
+        let neverSetUp: [AgentKind]?
     }
 
     /// Cua Driver, which lets agents use this Mac's apps (engine/src/computer.rs): `ready`,

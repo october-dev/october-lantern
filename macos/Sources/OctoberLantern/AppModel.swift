@@ -52,6 +52,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var computer: EngineMessage.ComputerStatus?
     /// Installed agents signed in to your own plan (Claude, ChatGPT, x.ai, Google), best first.
     @Published private(set) var signedInKinds: [AgentKind] = []
+    /// Installed Claude Code or Codex never signed in: started, it would only ask you to sign in.
+    @Published private(set) var neverSetUpKinds: [AgentKind] = []
     @Published private(set) var tmuxAvailable = false
     /// October Harness (built in, installed on first use); `nil` until the engine has said.
     @Published private(set) var harness: EngineMessage.HarnessStatus?
@@ -167,6 +169,7 @@ final class AppModel: ObservableObject {
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
             self?.signedInKinds = installed.signedIn ?? []
+            self?.neverSetUpKinds = installed.neverSetUp ?? []
             self?.tmuxAvailable = installed.tmux
             self?.installHarnessIfNoOtherAgent()
         }
@@ -493,7 +496,7 @@ final class AppModel: ObservableObject {
     func startNew() {
         if panel == .newSession { return panel = nil }
         AppContext.shared.capture()
-        prepareHarnessIfDefault()
+        refreshInstalled()
         panel = .newSession
     }
 
@@ -503,25 +506,31 @@ final class AppModel: ObservableObject {
     /// can start; else an agent signed in to a plan you already pay for (Claude Code, Codex, Grok,
     /// Gemini), so your own subscription is used before October's; else October (counted when
     /// Lantern can install October Harness), Claude Code, Codex, then the first installed agent.
-    /// `nil` when no agent can start.
+    /// A Claude Code or Codex never signed in comes last. `nil` until Lantern knows what's
+    /// installed.
     var defaultAgentKind: AgentKind? {
-        let installed = installedKinds ?? []
+        guard let installed = installedKinds else { return nil }
         // October Harness counts once it's here (on PATH or installed by Lantern), or when there's
-        // no Claude Code or Codex: then Lantern installs it in the background (see
-        // `installHarnessIfNoOtherAgent`) and a launch waits for it.
+        // no Claude Code or Codex set up: then Lantern installs it in the background (see
+        // `installHarnessIfNoOtherAgent`) and a launch waits for it, trying again after a failed
+        // install.
         let usable = { (k: AgentKind) in
-            installed.contains(k) || (k == .october && (self.harness?.isReady == true || (self.needsHarness && self.harness?.status != "failed")))
+            installed.contains(k) || (k == .october && (self.harness?.isReady == true || self.needsHarness))
         }
         let chosen = prefs.defaultAgent.isEmpty ? [] : [AgentKind(rawValue: prefs.defaultAgent)]
-        for kind in chosen + signedInKinds + [.october, .claude, .codex] where usable(kind) { return kind }
-        return installed.first
+        for kind in chosen where usable(kind) { return kind }
+        for kind in signedInKinds + [.october, .claude, .codex] where usable(kind) && !neverSetUpKinds.contains(kind) { return kind }
+        return installed.first { !neverSetUpKinds.contains($0) } ?? installed.first
     }
 
-    /// Neither Claude Code nor Codex is installed: October Harness is what this Mac can run.
+    /// No Claude Code or Codex that's been set up: October Harness is what this Mac can run.
     var needsHarness: Bool {
         guard let installed = installedKinds else { return false }
-        return !installed.contains(.claude) && !installed.contains(.codex)
+        return ![AgentKind.claude, .codex].contains { installed.contains($0) && !neverSetUpKinds.contains($0) }
     }
+
+    /// Looks for installed agents again, so one installed since Lantern started shows up.
+    func refreshInstalled() { engine.refreshInstalled() }
 
     /// Without Claude Code or Codex, installs October Harness in the background once (about
     /// 170 MB, plus Node.js if this Mac has none) so Ask Lantern's tasks and New Session have an
@@ -554,11 +563,6 @@ final class AppModel: ObservableObject {
         engine.prepareHarness()
     }
 
-    /// Kept for later: October Harness is installed only when someone picks it.
-    private func prepareHarnessIfDefault() {
-        // October Harness is installed only when someone picks it, not by opening New Session.
-    }
-
     private func harnessChanged(_ status: EngineMessage.HarnessStatus) {
         if harness != status { harness = status }
         guard let next = launchAfterHarness else { return }
@@ -569,7 +573,7 @@ final class AppModel: ObservableObject {
         } else if status.status == "failed" {
             launchAfterHarness = nil
             launching = false
-            launchError = "Couldn't install October Harness: \(status.message ?? "unknown error")"
+            launchError = "October couldn't be set up. Check your internet connection, then try again. (\(status.message ?? "unknown error"))"
             launchPreview?.error = launchError
             reportLaunch(.failed(launchError ?? ""))
         }

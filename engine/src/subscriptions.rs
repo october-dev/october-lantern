@@ -32,6 +32,30 @@ pub(crate) fn signed_in_at(home: &Path, env: &dyn Fn(&str) -> Option<PathBuf>) -
     kinds
 }
 
+/// Installed agents that have never been set up: Claude Code that has never signed in or finished
+/// its first run, Codex with no sign-in saved. Started hidden, they'd sit on a sign-in screen
+/// nobody sees, so the app shows them instead. Anything that might be signed in (an API key
+/// from the environment, say) isn't listed.
+pub fn never_set_up() -> Vec<Kind> {
+    never_set_up_at(&crate::platform::home(), &|var| std::env::var_os(var).map(PathBuf::from))
+}
+
+pub(crate) fn never_set_up_at(home: &Path, env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Kind> {
+    let claude = env("CLAUDE_CONFIG_DIR").map(|d| d.join(".claude.json")).unwrap_or_else(|| home.join(".claude.json"));
+    let codex = env("CODEX_HOME").unwrap_or_else(|| home.join(".codex")).join("auth.json");
+    let mut kinds = Vec::new();
+    let claude_ready = read(&claude)
+        .is_some_and(|v| v["hasCompletedOnboarding"] == true || v.get("oauthAccount").is_some() || v.get("primaryApiKey").is_some());
+    let api_key = |var: &str| env(var).is_some_and(|v| !v.as_os_str().is_empty());
+    if !claude_ready && !api_key("ANTHROPIC_API_KEY") && !api_key("CLAUDE_CODE_USE_BEDROCK") && !api_key("CLAUDE_CODE_USE_VERTEX") {
+        kinds.push(Kind::Claude);
+    }
+    if !codex.is_file() && !api_key("OPENAI_API_KEY") && !api_key("CODEX_API_KEY") {
+        kinds.push(Kind::Codex);
+    }
+    kinds
+}
+
 fn read(path: &Path) -> Option<Value> {
     serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
 }
@@ -101,6 +125,26 @@ mod tests {
 
         write(".codex/auth.json", serde_json::json!({"auth_mode": "apikey", "OPENAI_API_KEY": "k"}));
         assert!(signed_in_at(&home, &none).is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn agents_never_set_up_are_found_and_anything_signed_in_is_not() {
+        let home = std::env::temp_dir().join(format!("lantern-setup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        let none = |_: &str| None;
+        assert_eq!(never_set_up_at(&home, &none), vec![Kind::Claude, Kind::Codex], "nothing saved yet");
+
+        let key = |var: &str| (var == "ANTHROPIC_API_KEY" || var == "OPENAI_API_KEY").then(|| PathBuf::from("k"));
+        assert!(never_set_up_at(&home, &key).is_empty(), "an API key in the environment might be enough");
+
+        let write = |p: &str, v: Value| std::fs::write(home.join(p), v.to_string()).unwrap();
+        write(".claude.json", serde_json::json!({"numStartups": 1}));
+        assert_eq!(never_set_up_at(&home, &none), vec![Kind::Claude, Kind::Codex], "started once, never signed in");
+        write(".claude.json", serde_json::json!({"hasCompletedOnboarding": true}));
+        write(".codex/auth.json", serde_json::json!({"auth_mode": "apikey"}));
+        assert!(never_set_up_at(&home, &none).is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 }

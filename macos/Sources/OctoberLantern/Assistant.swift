@@ -31,6 +31,8 @@ final class Assistant: ObservableObject {
         var started: String?
         /// The agent this answer started, shown in the conversation.
         var task: TaskLink?
+        /// Why no agent could be started for this answer's task.
+        var taskProblem: String?
     }
 
     /// An agent Ask Lantern started: found by its tmux session, then by its id. Its last messages
@@ -44,6 +46,8 @@ final class Assistant: ObservableObject {
         var error: String?
         /// Started without a tmux session (a Terminal window): nothing to show here.
         var inTerminal = false
+        /// Started in a Terminal window because the agent has never been signed in.
+        var signIn: Bool?
         var transcript: [ChatMessage] = []
     }
 
@@ -283,9 +287,19 @@ final class Assistant: ObservableObject {
         prompt: String, agent: String?, project: String?, turn: UUID, screenshot: URL? = nil, context: String? = nil
     ) {
         guard let model else { return }
-        let installed = model.installedKinds ?? []
+        guard let installed = model.installedKinds else {
+            // Lantern is still finding out which agents this Mac has (just after it starts).
+            return waitForAgents { [weak self] in
+                self?.propose(prompt: prompt, agent: agent, project: project, turn: turn, screenshot: screenshot, context: context)
+            } failed: { [weak self] in
+                self?.setTaskProblem("Lantern couldn't check which agents this Mac has, so nothing was started. Try again in a moment.", turn: turn)
+            }
+        }
         let named = agent.flatMap { AgentKind(rawValue: $0) }.flatMap { installed.contains($0) ? $0 : nil }
-        guard let kind = named ?? model.defaultAgentKind else { return }
+        guard let kind = named ?? model.defaultAgentKind else {
+            model.refreshInstalled()
+            return setTaskProblem("Lantern has no agent to do this with. Set one up in New Session, then try again.", turn: turn)
+        }
         let folder = Self.folder(for: project, model: model)
         let index = turns.firstIndex { $0.id == turn }
         let own = screenshot != nil ? prompt
@@ -299,16 +313,44 @@ final class Assistant: ObservableObject {
         pending = nil
     }
 
+    /// Runs `then` once Lantern knows which agents are installed (within 20 seconds), else `failed`.
+    private func waitForAgents(then: @escaping () -> Void, failed: @escaping () -> Void) {
+        model?.refreshInstalled()
+        Task { @MainActor [weak self] in
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if self?.model?.installedKinds != nil { return then() }
+            }
+            failed()
+        }
+    }
+
+    private func setTaskProblem(_ problem: String, turn: UUID) {
+        guard let i = turns.firstIndex(where: { $0.id == turn }) else { return }
+        turns[i].taskProblem = problem
+    }
+
+    /// Starts a task that couldn't start again, with the same agent, folder and message.
+    func retry(_ link: TaskLink) {
+        guard let i = turns.firstIndex(where: { $0.task == link }) else { return }
+        turns[i].task = nil
+        pending = PendingTask(prompt: link.prompt, kind: AgentKind(rawValue: link.kind), folder: link.folder, screenshot: nil, context: nil)
+        startPending(turn: turns[i].id)
+    }
+
     private func startPending(turn: UUID) {
         guard let p = pending, let model else { return }
         pending = nil
         guard let i = turns.firstIndex(where: { $0.id == turn }) else { return }
         // In the background (tmux) when possible, shown right here in the conversation; Open
-        // shows its terminal. Without tmux, a Terminal window. Waits for October Harness to
-        // finish installing when that's the agent.
-        turns[i].task = TaskLink(kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable)
+        // shows its terminal. Without tmux, a Terminal window. An agent never signed in also gets
+        // a Terminal window, where it asks you to sign in. Waits for October Harness to finish
+        // installing when that's the agent.
+        let signIn = model.neverSetUpKinds.contains(p.kind)
+        turns[i].taskProblem = nil
+        turns[i].task = TaskLink(kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable, signIn: signIn ? true : nil)
         let started = model.launchTask(
-            prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable, screenshot: p.screenshot, context: p.context
+            prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable && !signIn, screenshot: p.screenshot, context: p.context
         ) { [weak self] outcome in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
             switch outcome {
@@ -483,8 +525,16 @@ private struct TaskCard: View {
 
     @ViewBuilder private var status: some View {
         if let error = link.error {
-            Text("Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                if latest {
+                    Button("Try again") { assistant.retry(link) }
+                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.ink)
+                }
+            }
+        } else if link.signIn == true, agent?.state != .working {
+            note("\(kind.displayName) needs you to sign in first. It's open in a Terminal window: sign in there and it starts on this.", color: Theme.amber)
         } else if let agent {
             // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
             // was done, so nothing here claims it.
@@ -500,6 +550,8 @@ private struct TaskCard: View {
             note("Running in a Terminal window.", color: Theme.muted)
         } else if link.agentId != nil || !link.transcript.isEmpty {
             note("Closed. It isn't running anymore.", color: Theme.muted)
+        } else if latest, kind == .october, model.harness?.status == "installing" {
+            busy("Setting up October. The first time takes a few minutes…")
         } else if latest {
             busy("Getting started…")
         }
@@ -558,6 +610,9 @@ private struct TurnView: View {
                 Label(started, systemImage: "play.circle.fill").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.green)
             }
             if let note = turn.note { Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted) }
+            if let problem = turn.taskProblem {
+                Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

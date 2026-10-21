@@ -223,6 +223,12 @@ final class EngineClient {
         return send(request)
     }
 
+    /// Looks for installed agents again (answered with `installed`).
+    @discardableResult
+    func refreshInstalled() -> Bool {
+        send(["type": "installed.refresh"])
+    }
+
     @discardableResult
     func refreshToolkit() -> Bool {
         send(["type": "toolkit.refresh"])

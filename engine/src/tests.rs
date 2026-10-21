@@ -1047,10 +1047,10 @@ fn bundled_october_runs_with_its_node_and_sign_in() {
 fn the_bundled_harness_counts_as_installed() {
     use crate::harness::bundled_in;
     use crate::launch::{Installed, with_bundled};
-    let shell = Installed { kinds: vec![Kind::Claude], tmux: true, signed_in: vec![] };
+    let shell = Installed { kinds: vec![Kind::Claude], tmux: true, signed_in: vec![], never_set_up: vec![] };
     assert!(with_bundled(&shell, true).kinds.contains(&Kind::October));
     assert!(!with_bundled(&shell, false).kinds.contains(&Kind::October));
-    let both = Installed { kinds: vec![Kind::October], tmux: false, signed_in: vec![] };
+    let both = Installed { kinds: vec![Kind::October], tmux: false, signed_in: vec![], never_set_up: vec![] };
     assert_eq!(with_bundled(&both, true).kinds, vec![Kind::October]);
 
     // An install is complete only with its program and the Node.js it was installed with.
