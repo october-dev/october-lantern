@@ -89,7 +89,19 @@ fi
 echo "==> appcast"
 CHECKOUT="$WORK/releases-repo"
 gh repo clone "$REPO" "$CHECKOUT" -- --depth 1 -q
-cp "$APPCAST" "$CHECKOUT/appcast.xml"
+# The update window shows the notes themselves (a link would show the whole GitHub page).
+NOTES_HTML="$(python3 "$ROOT/scripts/release-notes-html.py" "$NOTES_FILE")"
+[[ "$NOTES_HTML" != *"]]>"* ]] || fail "the release notes can't contain ]]>"
+python3 - "$APPCAST" "$CHECKOUT/appcast.xml" "$NOTES_HTML" <<'PY'
+import re, sys
+source, target, notes = sys.argv[1:]
+xml = open(source, encoding="utf-8").read()
+description = f"<description><![CDATA[\n{notes}\n]]></description>"
+xml, n = re.subn(r"<sparkle:releaseNotesLink>.*?</sparkle:releaseNotesLink>", description, xml)
+if n != 1:
+    sys.exit("appcast.xml has no release notes link to replace")
+open(target, "w", encoding="utf-8").write(xml)
+PY
 git -C "$CHECKOUT" add appcast.xml
 if git -C "$CHECKOUT" diff --cached --quiet; then
   echo "    appcast.xml already published"
