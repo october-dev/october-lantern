@@ -68,8 +68,10 @@ fn build(code: &str, app: &str, app_version: &str, details: &str) -> String {
         let size = entry.metadata().map(|m| if m.is_dir() { "folder".to_string() } else { format!("{} bytes", m.len()) });
         text.push_str(&format!("{}  {}\n", entry.file_name().to_string_lossy(), size.unwrap_or_default()));
     }
-    let mut logs: Vec<PathBuf> =
-        ["logs/app.log", "logs/engine.log", "logs/engine-previous.log", "october-bus.log", "cua-driver.log"].iter().map(|name| dir.join(name)).collect();
+    let mut logs: Vec<PathBuf> = ["logs/app.log", "logs/engine.log", "logs/engine-previous.log", "october-bus.log", "cua-driver.log"]
+        .iter()
+        .map(|name| dir.join(name))
+        .collect();
     logs.extend(crash_reports());
     for log in logs {
         let Ok(bytes) = std::fs::read(&log) else { continue };

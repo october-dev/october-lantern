@@ -943,7 +943,11 @@ mod tests {
         std::fs::write(&file, r#"[{"id":"a","title":"Kept","turns":[]},{"id":"b","title":"Broken","turns":"nope"}]"#).unwrap();
         let read = load_conversations(&file);
         assert_eq!(read.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Kept"]);
-        let copies = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ask-lantern-unreadable-")).count();
+        let copies = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("ask-lantern-unreadable-"))
+            .count();
         assert_eq!(copies, 1);
         std::fs::write(&file, "{ not a list").unwrap();
         assert!(load_conversations(&file).is_empty());
