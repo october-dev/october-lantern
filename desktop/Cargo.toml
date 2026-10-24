@@ -17,6 +17,8 @@ url = "2.5"
 uuid = { version = "1.26", features = ["v4"] }
 sha2 = "0.11"
 base64 = "0.23"
+# Pasting images into Ask Lantern (egui pastes only text).
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 egui_commonmark = { version = "0.25", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 semver = "1"

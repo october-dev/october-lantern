@@ -207,6 +207,16 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
         question(ui, turn);
+        if !turn.images.is_empty() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                for path in &turn.images {
+                    if thumbnail(ui, cx, path, 40.0).on_hover_text("Open this image").clicked() {
+                        cx.emit(UiAction::OpenImage(path.clone()));
+                    }
+                }
+            });
+        }
         if turn.answer.is_empty() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -399,6 +409,52 @@ fn busy(ui: &mut Ui, env: &super::Env, text: impl Into<String>) {
     });
 }
 
+/// Small copies of the images you added, decoded once per path (missing files show a picture
+/// icon).
+#[derive(Default)]
+pub struct Thumbnails(std::collections::HashMap<String, Option<egui::TextureHandle>>);
+
+impl std::fmt::Debug for Thumbnails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Thumbnails").field(&self.0.len()).finish()
+    }
+}
+
+impl Thumbnails {
+    fn get(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+        self.0
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                let image = image::open(path).ok()?.thumbnail(160, 160).to_rgba8();
+                let size = [image.width() as usize, image.height() as usize];
+                Some(ctx.load_texture(
+                    format!("thumbnail-{path}"),
+                    egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
+                    egui::TextureOptions::LINEAR,
+                ))
+            })
+            .clone()
+    }
+}
+
+/// A square preview of an image you added.
+fn thumbnail(ui: &mut Ui, cx: &mut Ctx, path: &str, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), Sense::click());
+    ui.painter().rect_filled(rect, 7.0, t::FAINT);
+    match cx.view.thumbnails.get(ui.ctx(), path) {
+        Some(texture) => {
+            // Fill the square, cropped to its middle.
+            let [w, h] = texture.size().map(|v| v as f32);
+            let side = w.min(h);
+            let uv = Rect::from_min_size(egui::pos2((w - side) / 2.0 / w, (h - side) / 2.0 / h), egui::vec2(side / w, side / h));
+            egui::Image::new(&texture).uv(uv).corner_radius(7).paint_at(ui, rect);
+        }
+        None => c::paint_icon(ui.painter(), rect.shrink(size * 0.3), Icon::Photo, t::MUTED),
+    }
+    ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.0, t::HAIRLINE), egui::StrokeKind::Inside);
+    response
+}
+
 fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
     egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }).show(ui, |ui| {
         if cx.model.account.signed_in.is_none() {
@@ -423,15 +479,47 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
         let replying = agent.filter(|_| !model.assistant.ask_lantern_instead);
         let id = ui.make_persistent_id("assistant-input");
         let focused = ui.memory(|mem| mem.has_focus(id));
+        // Images dropped anywhere on Ask Lantern go with the next message.
+        let (dropping, dropped) = ui.ctx().input(|i| {
+            (
+                !i.raw.hovered_files.is_empty(),
+                i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>(),
+            )
+        });
+        if !dropped.is_empty() {
+            cx.emit(UiAction::AddAssistantImages(dropped));
+        }
+        let stroke = if dropping {
+            Stroke::new(2.0, t::AMBER)
+        } else {
+            Stroke::new(1.0, if focused { t::opacity(t::AMBER, 0.5) } else { t::STROKE })
+        };
         egui::Frame::new()
             .fill(t::black(0.3))
-            .stroke(Stroke::new(1.0, if focused { t::opacity(t::AMBER, 0.5) } else { t::STROKE }))
+            .stroke(stroke)
             .corner_radius(12)
             .inner_margin(Margin { left: 13, right: 7, top: 10, bottom: 10 })
             .show(ui, |ui| {
+                if !cx.model.assistant.attachments.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for path in cx.model.assistant.attachments.clone() {
+                            let image = thumbnail(ui, cx, &path, 46.0);
+                            let remove = Rect::from_center_size(image.rect.right_top() + egui::vec2(-3.0, 3.0), egui::Vec2::splat(16.0));
+                            let response = ui.interact(remove, ui.make_persistent_id(("remove-image", &path)), Sense::click());
+                            ui.painter().circle_filled(remove.center(), 8.0, t::black(0.75));
+                            c::paint_icon(ui.painter(), remove.shrink(4.5), Icon::Close, t::INK);
+                            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Remove this image"));
+                            if response.on_hover_text("Remove this image").clicked() {
+                                cx.emit(UiAction::RemoveAssistantImage(path.clone()));
+                            }
+                        }
+                    });
+                    ui.add_space(8.0);
+                }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let width = ui.available_width() - 56.0;
+                    let width = ui.available_width() - 84.0;
                     let placeholder = if cx.model.dictating {
                         "Listening…".to_string()
                     } else if let Some(agent) = replying {
@@ -465,9 +553,22 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                         cx.view.assistant_focus = Some(cx.model.compose_focus);
                     }
                     let submit = edit.has_focus() && c::consume_plain_key(ui, egui::Key::Enter);
-                    ui.allocate_ui_with_layout(egui::vec2(50.0, edit.rect.height()), Layout::bottom_up(Align::Min), |ui| {
+                    // Ctrl+V with a picture (and no text) on the clipboard: egui pastes only text and
+                    // says nothing, so the keys are read from the system.
+                    let pasting = edit.has_focus() && ui.input(|i| i.modifiers.command) && crate::os::paste_keys_down();
+                    if pasting && !cx.view.paste_held && !ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)))) {
+                        cx.emit(UiAction::PasteAssistantImages);
+                    }
+                    cx.view.paste_held = pasting;
+                    ui.allocate_ui_with_layout(egui::vec2(78.0, edit.rect.height()), Layout::bottom_up(Align::Min), |ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
+                            if c::icon_button(ui, "assistant-images", Icon::Paperclip, 22.0, t::MUTED, false)
+                                .on_hover_text("Add images (you can also paste or drop them here)")
+                                .clicked()
+                            {
+                                cx.emit(UiAction::PickAssistantImages);
+                            }
                             if c::icon_button(
                                 ui,
                                 "assistant-mic",
@@ -482,7 +583,8 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                                 cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
                             }
                             // A reply can go while Lantern is still answering.
-                            let enabled = !cx.inputs.assistant.trim().is_empty() && (replying.is_some() || !cx.model.assistant.asking);
+                            let enabled = (!cx.inputs.assistant.trim().is_empty() || !cx.model.assistant.attachments.is_empty())
+                                && (replying.is_some() || !cx.model.assistant.asking);
                             let response = ui
                                 .add_enabled_ui(enabled, |ui| {
                                     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(22.0), Sense::click());
@@ -500,6 +602,10 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                     });
                 });
             });
+        if let Some(problem) = &cx.model.assistant.attach_problem {
+            ui.add_space(5.0);
+            c::label(ui, problem, 11.0, Weight::Regular, t::AMBER);
+        }
         if let Some(agent) = agent {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -777,6 +883,25 @@ mod tests {
         }
         assert!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Use email and password").is_empty());
         assert!(view.account_use_email, "the email form opens in place");
+    }
+
+    #[test]
+    fn images_can_be_added_and_removed_before_sending() {
+        let ctx = egui::Context::default();
+        t::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let mut fixture: crate::app::fixture::Fixture =
+            serde_json::from_str(include_str!("../../fixtures/panel-assistant-thread.json")).unwrap();
+        let mut view = UiState::default();
+        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Paperclip"), vec![UiAction::PickAssistantImages]);
+        fixture.model.assistant.attachments = vec!["/nowhere/a.png".into()];
+        fixture.inputs.assistant.clear();
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Remove this image"),
+            vec![UiAction::RemoveAssistantImage("/nowhere/a.png".into())]
+        );
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(texts.iter().any(|(text, _)| text == "Ask"), "an image alone can be sent");
     }
 
     #[test]

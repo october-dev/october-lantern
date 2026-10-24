@@ -25,6 +25,7 @@ mod dialogs;
 mod dictation;
 mod engine;
 pub mod fixture;
+mod images;
 mod logs;
 mod menu;
 mod point_ask;
@@ -186,6 +187,10 @@ impl Lantern {
             Event::PointAsk { generation, turn, piece } => self.point_ask_piece(generation, turn, piece),
             Event::PointAskDone { generation, turn, error } => self.point_ask_done(generation, turn, error),
             Event::PointAskSent { generation, agent_id, text } => self.point_ask_sent(generation, agent_id, text),
+            Event::AssistantImages(result) => {
+                self.windows.native_dialog = false;
+                self.attach_images(result);
+            }
             Event::Folder(result) => {
                 self.windows.native_dialog = false;
                 match result {

@@ -123,6 +123,25 @@ impl Lantern {
             UiAction::CloseLaunchPreview => self.close_preview(),
             UiAction::RetryPreviewInTerminal => self.retry_preview_in_terminal(),
             UiAction::OpenUrl(url) => self.open_url(&url),
+            UiAction::PasteAssistantImages => {
+                let dir = super::images::dir();
+                crate::os::task(self.tx.clone(), move || super::images::from_clipboard(&dir), crate::os::Event::AssistantImages);
+            }
+            UiAction::AddAssistantImages(files) => {
+                let dir = super::images::dir();
+                crate::os::task(self.tx.clone(), move || save_images(&files, &dir), crate::os::Event::AssistantImages);
+            }
+            UiAction::PickAssistantImages => {
+                // Losing focus to the picker doesn't close the panel (CONTRACT §6).
+                self.windows.native_dialog = true;
+                let dir = super::images::dir();
+                crate::os::task(self.tx.clone(), move || save_images(&crate::os::images()?, &dir), crate::os::Event::AssistantImages);
+            }
+            UiAction::RemoveAssistantImage(path) => {
+                self.model.assistant.attachments.retain(|p| *p != path);
+                self.model.assistant.attach_problem = None;
+            }
+            UiAction::OpenImage(path) => self.open_url(&path),
             // October Desktop (engine/src/october_link.rs).
             UiAction::DesktopConnect => {
                 self.request(json!({"type": "october.pair"}));
@@ -240,6 +259,15 @@ impl Lantern {
             self.show(format!("Couldn't open {url}: {error:#}"));
         }
     }
+}
+
+/// Saves the images among `files` for Ask Lantern; only other kinds of file: says so.
+fn save_images(files: &[std::path::PathBuf], dir: &std::path::Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let images: Vec<_> = files.iter().filter(|f| super::images::is_image(f)).collect();
+    if images.is_empty() && !files.is_empty() {
+        anyhow::bail!("Only PNG, JPEG, GIF and WebP images can be added.");
+    }
+    images.into_iter().map(|f| super::images::save_file(f, dir)).collect()
 }
 
 /// Where problem reports go (Swift `Support.email`).

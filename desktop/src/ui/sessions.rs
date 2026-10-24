@@ -732,6 +732,7 @@ fn launch_request(cx: &Ctx) -> Option<SessionRequest> {
         } else {
             None
         },
+        images: Vec::new(),
         task_app: context.as_ref().map(|app| if app.id.is_empty() { app.name.clone() } else { app.id.clone() }),
         context,
         toolkit: task(cx) || cx.model.prefs.toolkit_in_sessions,

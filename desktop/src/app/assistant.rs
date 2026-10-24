@@ -129,34 +129,82 @@ impl Lantern {
     /// What you type goes to the agent (Point & Ask's direct send: typed in where Lantern can,
     /// otherwise copied with its terminal brought forward). Works while Lantern is answering.
     fn reply_to_task(&mut self, agent_id: &str) {
-        let message = self.inputs.assistant.trim().to_string();
-        if message.is_empty() {
+        let images = std::mem::take(&mut self.model.assistant.attachments);
+        let mut message = self.inputs.assistant.trim().to_string();
+        if message.is_empty() && images.is_empty() {
             return;
         }
+        if message.is_empty() {
+            message = images_question(images.len());
+        }
         self.inputs.assistant.clear();
-        self.send_direct(agent_id, message);
+        self.model.assistant.attach_problem = None;
+        self.send_direct(agent_id, message + &super::images::image_lines(&images));
+    }
+
+    /// Adds saved images to the next message (up to `images::LIMIT`).
+    pub(super) fn attach_images(&mut self, result: Result<Vec<std::path::PathBuf>, String>) {
+        let assistant = &mut self.model.assistant;
+        assistant.attach_problem = None;
+        match result {
+            Ok(images) => {
+                let room = super::images::LIMIT.saturating_sub(assistant.attachments.len());
+                if images.len() > room {
+                    assistant.attach_problem = Some(format!("Up to {} images on one message.", super::images::LIMIT));
+                }
+                assistant.attachments.extend(images.into_iter().take(room).map(|p| p.to_string_lossy().into_owned()));
+                self.model.compose_focus += 1;
+            }
+            Err(error) if error.contains("cancelled") => {}
+            Err(error) => assistant.attach_problem = Some(error),
+        }
+    }
+
+    /// The images added anywhere in this conversation (still on disk), for a task it starts: the
+    /// request may come in a follow-up ("yes, do that").
+    fn conversation_images(&self) -> Vec<std::path::PathBuf> {
+        let mut seen: Vec<std::path::PathBuf> = Vec::new();
+        for path in self.model.assistant.turns.iter().flat_map(|t| t.images.iter()).map(std::path::PathBuf::from) {
+            if !seen.contains(&path) && path.is_file() {
+                seen.push(path);
+            }
+        }
+        let skip = seen.len().saturating_sub(10);
+        seen.split_off(skip)
     }
 
     fn ask_assistant(&mut self) {
-        let question = self.inputs.assistant.trim().to_string();
+        let mut question = self.inputs.assistant.trim().to_string();
         let Some(token) = self.session.as_ref().map(|session| session.access.clone()) else { return };
-        if question.is_empty() || self.model.assistant.asking {
+        let images = self.model.assistant.attachments.clone();
+        if (question.is_empty() && images.is_empty()) || self.model.assistant.asking {
             return;
         }
+        if question.is_empty() {
+            question = images_question(images.len());
+        }
         self.inputs.assistant.clear();
+        self.model.assistant.attachments.clear();
+        self.model.assistant.attach_problem = None;
         self.asking.next_id += 1;
         let turn = self.asking.next_id;
         let earlier: Vec<(String, String)> =
             self.model.assistant.turns.iter().filter(|t| !t.failed).map(|t| (t.question.clone(), t.answer.clone())).collect();
-        self.model.assistant.turns.push(AssistantTurn { id: turn, question: question.clone(), ..Default::default() });
+        self.model.assistant.turns.push(AssistantTurn {
+            id: turn,
+            question: question.clone(),
+            images: images.clone(),
+            ..Default::default()
+        });
         self.model.assistant.asking = true;
+        // October sees the first image; an agent this starts gets them all.
         let request = october_ai::Request {
             turns: earlier,
             question,
-            context: agent_summary(&self.model.agents, self.model.caps.platform),
+            image: images.first().and_then(|first| super::images::jpeg_for_october(std::path::Path::new(first))),
+            context: with_images(agent_summary(&self.model.agents, self.model.caps.platform), images.len()),
             mode: Some("chat".into()),
             platform: self.model.caps.platform,
-            ..Default::default()
         };
         crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));
         let generation = self.asking.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -259,7 +307,9 @@ impl Lantern {
             _ => prompt,
         };
         self.asking.next_id += 1;
-        self.model.assistant.pending_task = Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, screenshot, context });
+        let images = self.conversation_images();
+        self.model.assistant.pending_task =
+            Some(PendingTask { id: self.asking.next_id, turn, prompt, kind, folder, screenshot, context, images });
     }
 
     /// Starts a task the answer asked for (on the next tick, so it never waits), reads the task's
@@ -319,6 +369,7 @@ impl Lantern {
             folder: link.folder,
             screenshot: None,
             context: None,
+            images: link.images.iter().map(std::path::PathBuf::from).filter(|p| p.is_file()).collect(),
         });
         self.start_pending_task();
     }
@@ -341,6 +392,7 @@ impl Lantern {
             prompt: task.prompt.clone(),
             in_terminal: !in_lantern,
             sign_in,
+            images: task.images.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
             ..Default::default()
         });
         let request = SessionRequest {
@@ -348,6 +400,7 @@ impl Lantern {
             folder: task.folder,
             prompt: task.prompt,
             screenshot: task.screenshot,
+            images: task.images,
             context: task.context,
             toolkit: true,
             bus: self.model.prefs.bus_for_sessions,
@@ -472,6 +525,8 @@ impl Lantern {
 
     fn reset_conversation(&mut self) {
         self.model.assistant.turns.clear();
+        self.model.assistant.attachments.clear();
+        self.model.assistant.attach_problem = None;
         self.model.assistant.asking = false;
         self.model.assistant.ask_lantern_instead = false;
         self.stop_watching();
@@ -596,6 +651,23 @@ impl Lantern {
 }
 
 /// What the agents are doing, for the model: one line each, most urgent first (Swift `agentSummary`).
+/// What's asked when you send only images.
+fn images_question(count: usize) -> String {
+    if count == 1 { "Take a look at this image.".into() } else { "Take a look at these images.".into() }
+}
+
+/// The agent summary, saying images were added (Swift `agentSummary(images:)`).
+fn with_images(summary: String, count: usize) -> String {
+    let chat = match count {
+        0 => return summary,
+        1 => "Lantern's assistant chat. The user added the image attached (an agent started for this gets it too).".to_string(),
+        n => {
+            format!("Lantern's assistant chat. The user added {n} images; the first is attached (an agent started for this gets them all).")
+        }
+    };
+    summary.replacen("Lantern's assistant chat (no screenshot).", &chat, 1)
+}
+
 pub fn agent_summary(agents: &[crate::model::Agent], platform: Platform) -> String {
     let computer = match platform {
         Platform::Windows => "this Windows PC",
@@ -807,6 +879,71 @@ mod tests {
             tmux: Some(crate::model::TmuxPane { target: format!("{session}:0.0"), ..Default::default() }),
             ..Default::default()
         }
+    }
+
+    /// What the app sent the (echo) engine so far.
+    fn sent_to_engine(lantern: &Lantern) -> Vec<Value> {
+        let mut out = Vec::new();
+        while let Ok(Ok(event)) = lantern.engine.events.recv_timeout(Duration::from_millis(300)) {
+            out.push(event);
+        }
+        out
+    }
+
+    #[test]
+    fn added_images_go_with_the_task_and_replies_up_to_six() {
+        let dir = std::env::temp_dir().join(format!("lantern-ask-images-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.png"), dir.join("b.png"));
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let path = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        let mut lantern = lantern(&["claude"]);
+        lantern.attach_images(Ok(vec![a.clone(); 8]));
+        assert_eq!(lantern.model.assistant.attachments.len(), 6);
+        assert!(lantern.model.assistant.attach_problem.is_some(), "says only six fit");
+        lantern.attach_images(Err("cancelled".into()));
+        assert_eq!(lantern.model.assistant.attach_problem, None, "a closed picker says nothing");
+        lantern.attach_images(Err("Only PNG, JPEG, GIF and WebP images can be added.".into()));
+        assert!(lantern.model.assistant.attach_problem.is_some());
+        lantern.clear_assistant();
+        assert!(lantern.model.assistant.attachments.is_empty(), "New chat drops them");
+
+        // A task asked for after images were added (even in a follow-up) gets them all.
+        lantern.set_panel(Some(PanelMode::Assistant));
+        let (_, first) = with_turn(&mut lantern);
+        lantern.model.assistant.turns[0].images = vec![path(&a), path(&b)];
+        lantern.assistant_done(lantern.asking.generation.load(Ordering::SeqCst), first, None);
+        let (generation, turn) = with_turn(&mut lantern);
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "match these".into(), agent: None, project: None });
+        assert_eq!(lantern.model.assistant.pending_task.as_ref().unwrap().images, vec![a.clone(), b.clone()]);
+        lantern.start_pending_task();
+        let link = lantern.model.assistant.turns.iter().find(|t| t.id == turn).unwrap().task.clone().unwrap();
+        assert_eq!(link.images, vec![path(&a), path(&b)], "kept for Try again");
+        let launch = sent_to_engine(&lantern).into_iter().find(|e| e["type"] == "launch").expect("launch sent");
+        assert_eq!(launch["images"], json!([path(&a), path(&b)]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_reply_with_images_tells_the_agent_where_they_are() {
+        let mut lantern = lantern(&["claude"]);
+        with_running_task(&mut lantern);
+        let _ = sent_to_engine(&lantern);
+        lantern.model.assistant.attachments = vec!["/s/a.png".into()];
+        lantern.submit_assistant();
+        assert!(lantern.model.assistant.attachments.is_empty());
+        let texts: Vec<String> = sent_to_engine(&lantern).iter().map(|e| e.to_string()).collect();
+        assert!(texts.iter().any(|t| t.contains("Take a look at this image.") && t.contains("/s/a.png")), "{texts:?}");
+    }
+
+    #[test]
+    fn october_is_told_about_added_images() {
+        let summary = agent_summary(&[], Platform::Windows);
+        assert_eq!(with_images(summary.clone(), 0), summary);
+        assert!(with_images(summary.clone(), 1).starts_with("Lantern's assistant chat. The user added the image attached"));
+        assert!(with_images(summary, 3).contains("added 3 images"));
     }
 
     /// Ask Lantern with a task whose agent is up in session `claude-x-1`.

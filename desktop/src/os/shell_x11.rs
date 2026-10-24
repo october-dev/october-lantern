@@ -226,6 +226,30 @@ fn pick_icon(data: &[u32], want: u32) -> Option<(u32, u32, &[u32])> {
     icons.iter().filter(|icon| icon.0 >= want).min_by_key(|icon| icon.0).or_else(|| icons.iter().max_by_key(|icon| icon.0)).copied()
 }
 
+/// Whether one of `any` keysyms and one of `and` keysyms are both held (X11's keymap). One
+/// connection, kept; the keysym table is read once.
+pub fn keys_down(any: &[u32], and: &[u32]) -> bool {
+    /// The connection, and each keycode's keysyms.
+    type Keyboard = (RustConnection, Vec<(u8, u32)>);
+    static STATE: std::sync::Mutex<Option<Keyboard>> = std::sync::Mutex::new(None);
+    if !x11_available() {
+        return false;
+    }
+    let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    if state.is_none() {
+        let Ok((conn, _)) = x11rb::connect(None) else { return false };
+        let (min, max) = (conn.setup().min_keycode, conn.setup().max_keycode);
+        let Some(map) = conn.get_keyboard_mapping(min, max - min + 1).ok().and_then(|c| c.reply().ok()) else { return false };
+        let per = map.keysyms_per_keycode.max(1) as usize;
+        let table = map.keysyms.chunks(per).enumerate().flat_map(|(i, syms)| syms.iter().map(move |s| (min + i as u8, *s))).collect();
+        *state = Some((conn, table));
+    }
+    let Some((conn, table)) = state.as_ref() else { return false };
+    let Some(keys) = conn.query_keymap().ok().and_then(|c| c.reply().ok()).map(|r| r.keys) else { return false };
+    let held = |sym: &u32| table.iter().any(|(code, s)| s == sym && keys[*code as usize / 8] & (1 << (code % 8)) != 0);
+    any.iter().any(held) && and.iter().any(held)
+}
+
 /// The global pointer isn't reliable under XWayland (stale over Wayland-native windows), so hover
 /// comes from Lantern's own windows (CONTRACT §8).
 pub fn cursor_position() -> Option<eframe::egui::Pos2> {

@@ -225,6 +225,22 @@ pub fn folder() -> Result<PathBuf> {
     rfd::FileDialog::new().set_title("Choose a project folder").pick_folder().context("no folder selected")
 }
 
+/// Images to add to Ask Lantern.
+pub fn images() -> Result<Vec<PathBuf>> {
+    rfd::FileDialog::new()
+        .set_title("Choose images to add")
+        .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
+        .pick_files()
+        .context("cancelled")
+}
+
+/// Ctrl+V is down (egui pastes only text, and says nothing when the clipboard holds a picture).
+pub fn paste_keys_down() -> bool {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VK_CONTROL;
+    let down = |key: i32| unsafe { GetAsyncKeyState(key) } as u16 & 0x8000 != 0;
+    down(VK_CONTROL as i32) && down(b'V' as i32)
+}
+
 /// The login item and the Start menu shortcut. Each failure says what's left.
 pub fn remove_integrations() -> Vec<String> {
     let mut failures = Vec::new();

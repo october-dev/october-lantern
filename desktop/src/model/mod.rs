@@ -435,6 +435,8 @@ pub struct AssistantTurn {
     pub task_problem: Option<String>,
     /// Out of free questions or credit: where to upgrade.
     pub upgrade: Option<String>,
+    /// Images you added to this message (paths in the screenshots folder).
+    pub images: Vec<String>,
 }
 
 /// An agent Ask Lantern started (Swift `Assistant.TaskLink`): found by its Lantern session (tmux
@@ -453,6 +455,8 @@ pub struct TaskLink {
     pub in_terminal: bool,
     /// Started in a terminal window because the agent has never been signed in.
     pub sign_in: bool,
+    /// The images it was given, so Try again gives them again.
+    pub images: Vec<String>,
     /// Its last 60 messages, as last seen.
     pub transcript: Vec<ChatMessage>,
 }
@@ -480,6 +484,8 @@ pub struct PendingTask {
     /// From Point & Ask: the selection, which the agent gets, and where the user was.
     pub screenshot: Option<std::path::PathBuf>,
     pub context: Option<AppContext>,
+    /// Images you added in the conversation (pasted, dropped or picked).
+    pub images: Vec<std::path::PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -495,6 +501,10 @@ pub struct AssistantModel {
     pub ask_lantern_instead: bool,
     /// The latest task's agent, read every two seconds like an open chat.
     pub watched: Option<Chat>,
+    /// Images waiting to go with the next message (paths in the screenshots folder).
+    pub attachments: Vec<String>,
+    /// Why the last image couldn't be added (too many, unreadable).
+    pub attach_problem: Option<String>,
 }
 
 impl AssistantModel {

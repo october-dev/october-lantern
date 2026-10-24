@@ -158,6 +158,23 @@ pub fn folder() -> Result<PathBuf> {
     let uris = Vec::<String>::try_from(result.remove("uris").context("folder URI missing")?)?;
     url::Url::parse(uris.first().context("no folder selected")?)?.to_file_path().map_err(|_| anyhow::anyhow!("Choose a local folder"))
 }
+/// Images to add to Ask Lantern (any files; the app keeps the images).
+pub fn images() -> Result<Vec<PathBuf>> {
+    let connection = connection()?;
+    let proxy = portal(&connection, "org.freedesktop.portal.FileChooser")?;
+    let id = token();
+    let options = Options::from([("handle_token".into(), text(&id)), ("multiple".into(), true.into())]);
+    let mut result = request(&connection, &id, || Ok(proxy.call("OpenFile", &("", "Choose images to add", options))?))?;
+    let uris = Vec::<String>::try_from(result.remove("uris").context("cancelled")?)?;
+    Ok(uris.iter().filter_map(|uri| url::Url::parse(uri).ok()?.to_file_path().ok()).collect())
+}
+
+/// Ctrl+V is down, on X11 (egui pastes only text, and says nothing when the clipboard holds a
+/// picture). Under Wayland alone it can't be told: the paperclip and dropping still work.
+pub fn paste_keys_down() -> bool {
+    super::shell_x11::keys_down(&[0xffe3, 0xffe4], &[0x76, 0x56])
+}
+
 /// The GlobalShortcuts session that holds Lantern's shortcuts now, closed when they change.
 static SHORTCUT_SESSION: std::sync::Mutex<Option<(Connection, OwnedObjectPath)>> = std::sync::Mutex::new(None);
 static SHORTCUT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

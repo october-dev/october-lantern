@@ -29,6 +29,8 @@ pub enum Event {
         result: Result<std::path::PathBuf, String>,
     },
     Folder(Result<std::path::PathBuf, String>),
+    /// Images for Ask Lantern, saved in the screenshots folder (empty: nothing to add).
+    AssistantImages(Result<Vec<std::path::PathBuf>, String>),
     Transcript {
         owner: String,
         generation: u64,

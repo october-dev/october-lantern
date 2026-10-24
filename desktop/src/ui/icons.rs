@@ -59,6 +59,8 @@ pub enum Icon {
     PlayCircle,
     /// SF `bubble.left` (Ask Lantern's Recent).
     Bubble,
+    /// SF `paperclip` (Ask Lantern: add images).
+    Paperclip,
 }
 
 struct Pen<'a> {
@@ -346,6 +348,16 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         PlayCircle => {
             p.circle(12.0, 12.0, 10.0, false);
             p.closed(&[(9.5, 7.5), (16.5, 12.0), (9.5, 16.5)], true);
+        }
+        Paperclip => {
+            let pi = std::f32::consts::PI;
+            p.line(&[(16.5, 7.0), (16.5, 16.0)]);
+            p.arc((12.0, 16.0), 4.5, 0.0, pi);
+            p.line(&[(7.5, 16.0), (7.5, 5.5)]);
+            p.arc((10.75, 5.5), 3.25, pi, 2.0 * pi);
+            p.line(&[(14.0, 5.5), (14.0, 15.5)]);
+            p.arc((12.0, 15.5), 2.0, 0.0, pi);
+            p.line(&[(10.0, 15.5), (10.0, 8.0)]);
         }
         Bubble => {
             p.rect((2.0, 3.0), (22.0, 17.0), 4.0, false);

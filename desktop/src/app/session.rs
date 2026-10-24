@@ -164,7 +164,7 @@ impl Lantern {
         let context = request.context.as_ref().map(|context| context.summary(self.model.caps.platform));
         let sent = self.request(json!({
             "type": "launch", "kind": request.kind.as_str(), "cwd": request.folder, "prompt": request.prompt,
-            "screenshot": request.screenshot, "model": request.model, "context": context,
+            "screenshot": request.screenshot, "images": request.images, "model": request.model, "context": context,
             "toolkit": request.toolkit, "bus": request.bus, "computer": self.model.prefs.computer_use, "askFirst": self.model.prefs.ask_first, "background": request.background,
         }));
         match sent {

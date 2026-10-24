@@ -60,6 +60,11 @@ pub struct UiState {
     pub task_icon: sessions::CaptureTexture,
     #[serde(skip)]
     pub assistant_focus: Option<u64>,
+    /// Ctrl+V is held (so holding it adds the clipboard's image once).
+    #[serde(skip)]
+    pub paste_held: bool,
+    #[serde(skip)]
+    pub thumbnails: assistant::Thumbnails,
     #[serde(skip)]
     pub assistant_scroll_anchor: Option<(u64, u64)>,
     /// Ask Lantern's Recent shows every saved conversation, not just the last three.
@@ -116,6 +121,8 @@ pub struct SessionRequest {
     pub prompt: String,
     pub model: Option<String>,
     pub screenshot: Option<PathBuf>,
+    /// Images added to an Ask Lantern task (in the screenshots folder).
+    pub images: Vec<PathBuf>,
     pub context: Option<AppContext>,
     pub toolkit: bool,
     pub bus: bool,
@@ -275,6 +282,13 @@ pub enum UiAction {
     DismissUninstall,
     Copy(String),
     OpenUrl(String),
+    /// Ask Lantern's images: the clipboard's (Ctrl+V when it holds no text), dropped files, the
+    /// file picker, removing one before sending, and opening one from the conversation.
+    PasteAssistantImages,
+    AddAssistantImages(Vec<PathBuf>),
+    PickAssistantImages,
+    RemoveAssistantImage(String),
+    OpenImage(String),
     Quit,
 }
 
