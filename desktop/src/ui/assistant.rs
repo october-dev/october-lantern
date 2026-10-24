@@ -898,7 +898,7 @@ mod tests {
         let mut tree = None;
         let mut out = Vec::new();
         let run = |events: Vec<egui::Event>, inputs: &mut Inputs, view: &mut UiState, out: &mut Vec<UiAction>| {
-            ctx.run_ui(
+            let mut output = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 900.0))),
                     events,
@@ -908,7 +908,9 @@ mod tests {
                     let env = Env { now_ms: 1_790_000_000_000.0, reduce_motion: true, home: "/home/me".into() };
                     super::super::render_panel(ui, &mut Ctx { model, inputs, view, assets, out, env: &env }, 900.0);
                 },
-            )
+            );
+            output.textures_delta.clear();
+            output
         };
         if let Some(update) = run(Vec::new(), inputs, view, &mut out).platform_output.accesskit_update {
             tree = Some(update);
