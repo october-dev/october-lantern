@@ -177,8 +177,8 @@ final class EngineClient {
 
     @discardableResult
     func launch(
-        requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, model: String?, context: String?, toolkit: Bool,
-        bus: Bool, computer: Bool, askFirst: Bool, background: Bool
+        requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, images: [String] = [], model: String?,
+        context: String?, toolkit: Bool, bus: Bool, computer: Bool, askFirst: Bool, background: Bool
     ) -> Bool {
         var request: [String: Any] = [
             "type": "launch", "requestId": requestId, "kind": kind.rawValue, "cwd": cwd, "prompt": prompt, "background": background,
@@ -187,6 +187,7 @@ final class EngineClient {
         ]
         if let context { request["context"] = context }
         if let screenshot { request["screenshot"] = screenshot }
+        if !images.isEmpty { request["images"] = images }
         if let model { request["model"] = model }
         return send(request)
     }

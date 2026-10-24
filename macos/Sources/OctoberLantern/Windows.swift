@@ -82,11 +82,20 @@ final class WindowController {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.scheduleLayout() }
             .store(in: &subscriptions)
+        // Against what's on screen, not the last value: a panel that went missing comes back the
+        // next time any panel is asked for.
         model.$panel
             .map { $0 != nil }
-            .removeDuplicates()
             .receive(on: RunLoop.main)
-            .sink { [weak self] visible in self?.setPanelVisible(visible) }
+            .sink { [weak self] visible in
+                guard let self, visible != self.panelOnScreen || visible != self.panel.isVisible else { return }
+                self.setPanelVisible(visible)
+            }
+            .store(in: &subscriptions)
+        model.panelOnScreen = { [weak self] in self?.panelOnScreen ?? true }
+        model.reshowPanel
+            .receive(on: RunLoop.main)
+            .sink { [weak self] in self?.setPanelVisible(true) }
             .store(in: &subscriptions)
         // Expand while the mouse is over the pill; tuck back in shortly after it leaves.
         // Polling the mouse position is reliable for non-activating panels, unlike tracking areas.
@@ -163,14 +172,32 @@ final class WindowController {
         if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 
+    /// The panel is showing where it can be seen: ordered in, not see-through, sized and on a
+    /// screen.
+    private var panelOnScreen: Bool {
+        panel.isVisible && panel.alphaValue > 0 && panel.frame.width > 20 && panel.frame.height > 20
+            && NSScreen.screens.contains { $0.frame.intersects(panel.frame) }
+    }
+
     private func setPanelVisible(_ visible: Bool) {
         if visible {
+            // Hidden with the app (Command-H while Settings was in front): nothing shows until it's back.
+            if NSApp.isHidden { NSApp.unhide(nil) }
+            if !pill.isVisible { showPill() }
             panel.alphaValue = 0
             panel.makeKeyAndOrderFront(nil)
+            panel.orderFrontRegardless()
             layoutPanel()
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = 0.12
                 panel.animator().alphaValue = 1
+            } completionHandler: { [weak self] in
+                // An animation cut short can leave the panel see-through.
+                Task { @MainActor in
+                    guard let self, self.model.panel != nil, self.panel.isVisible else { return }
+                    self.panel.alphaValue = 1
+                    if !self.panelOnScreen { AppLog.write("panel: shown but not on screen (frame \(self.panel.frame))") }
+                }
             }
             installOutsideClickMonitor()
         } else {

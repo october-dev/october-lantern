@@ -50,6 +50,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // One Lantern at a time: a second copy would run its own engine and save its own chats
+        // over the first's. Opening Lantern again shows the one that's running instead.
+        if Self.anotherCopyRunning() {
+            DistributedNotificationCenter.default().postNotificationName(Self.showRunning, object: nil, deliverImmediately: true)
+            NSApp.terminate(nil)
+            return
+        }
+        DistributedNotificationCenter.default().addObserver(forName: Self.showRunning, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                AppLog.write("opened again: showing Ask Lantern")
+                if !self.windows.pillVisible { self.windows.showPill() }
+                if self.model.panel == nil { self.model.panel = .assistant } else { self.model.reshowPanel.send() }
+            }
+        }
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+        AppLog.write("Lantern \(version) started (macOS \(ProcessInfo.processInfo.operatingSystemVersionString))")
+
         windows = WindowController(model: model)
         // The lantern's right-click menu ends with Settings…
         windows.onMenu = { [weak self] _ in self?.showSettings() }
@@ -181,6 +199,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.appearance = NSAppearance(named: .darkAqua)
         window.center()
         return window
+    }
+
+    private static let showRunning = Notification.Name("dev.october.lantern.show")
+
+    /// Another October Lantern is running (an update's relaunch gets a few seconds for the old one
+    /// to quit). `--allow-second-copy` is for development.
+    private static func anotherCopyRunning() -> Bool {
+        guard let id = Bundle.main.bundleIdentifier, !CommandLine.arguments.contains("--allow-second-copy") else { return false }
+        let me = ProcessInfo.processInfo.processIdentifier
+        for _ in 0..<15 {
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+                .filter { $0.processIdentifier != me && !$0.isTerminated }
+            if others.isEmpty { return false }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        AppLog.write("another copy of Lantern is already running; showing it instead")
+        return true
     }
 
     private func present(_ window: NSWindow?) {

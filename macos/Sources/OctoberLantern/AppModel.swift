@@ -268,7 +268,19 @@ final class AppModel: ObservableObject {
 
     // MARK: Actions
 
+    /// Set by the window controller: whether the panel is actually on screen.
+    var panelOnScreen: () -> Bool = { true }
+    /// Asks the window controller to put the panel back on screen.
+    let reshowPanel = PassthroughSubject<Void, Never>()
+
+    /// Opens `mode`'s panel, or closes it when it's the one showing. Lantern believing its panel
+    /// is open when it isn't on screen would make every click close or reopen nothing: it's shown
+    /// again instead.
     func toggle(_ mode: PanelMode) {
+        if panel == mode, !panelOnScreen() {
+            AppLog.write("panel: \(mode) was open but not on screen; showing it again")
+            return reshowPanel.send()
+        }
         panel = panel == mode ? nil : mode
     }
 
@@ -589,11 +601,14 @@ final class AppModel: ObservableObject {
     /// `report`: for a launch that stays out of the panel (Ask Lantern's), told how it went.
     @discardableResult
     func launchTask(
-        prompt: String, agent: AgentKind?, folder: String, background: Bool, screenshot: URL? = nil, context: String? = nil,
-        report: ((LaunchOutcome) -> Void)? = nil
+        prompt: String, agent: AgentKind?, folder: String, background: Bool, screenshot: URL? = nil, images: [URL] = [],
+        context: String? = nil, report: ((LaunchOutcome) -> Void)? = nil
     ) -> Bool {
         guard let kind = agent ?? defaultAgentKind, !launching else { return false }
-        launch(kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, context: context, toolkit: true, background: background, report: report)
+        launch(
+            kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, images: images, context: context, toolkit: true,
+            background: background, report: report
+        )
         return true
     }
 
@@ -637,8 +652,8 @@ final class AppModel: ObservableObject {
     }
 
     func launch(
-        kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, model: String? = nil, context: String? = nil,
-        toolkit: Bool = false, taskApp: String? = nil, background: Bool, report: ((LaunchOutcome) -> Void)? = nil
+        kind: AgentKind, folder: String, prompt: String, screenshot: URL? = nil, images: [URL] = [], model: String? = nil,
+        context: String? = nil, toolkit: Bool = false, taskApp: String? = nil, background: Bool, report: ((LaunchOutcome) -> Void)? = nil
     ) {
         guard !launching, !pending.values.contains(where: { if case .launch = $0 { return true }; return false }) else {
             report?(.failed("Another session is still starting."))
@@ -654,8 +669,8 @@ final class AppModel: ObservableObject {
             previewClosed = false
             previewRetry = { [weak self] in
                 self?.launch(
-                    kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, model: model, context: context, toolkit: toolkit,
-                    taskApp: taskApp, background: false
+                    kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, images: images, model: model, context: context,
+                    toolkit: toolkit, taskApp: taskApp, background: false
                 )
             }
             if !(panel?.isList ?? false) { panel = .inbox }
@@ -669,8 +684,8 @@ final class AppModel: ObservableObject {
             launchError = nil
             launchAfterHarness = { [weak self] in
                 self?.launch(
-                    kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, model: model, context: context, toolkit: toolkit,
-                    taskApp: taskApp, background: background, report: report
+                    kind: kind, folder: folder, prompt: prompt, screenshot: screenshot, images: images, model: model, context: context,
+                    toolkit: toolkit, taskApp: taskApp, background: background, report: report
                 )
             }
             if harness?.status != "installing" { engine.prepareHarness() }
@@ -692,14 +707,15 @@ final class AppModel: ObservableObject {
         launchError = nil
         launchingKind = kind.rawValue
         launchingInBackground = background
-        launchingWithScreenshot = screenshot != nil
+        launchingWithScreenshot = screenshot != nil || !images.isEmpty
         launchingTask = taskApp ?? "none"
         launchingModel = model ?? "default"
         let id = request("l")
         track(
             id, .launch,
             sent: engine.launch(
-                requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, model: model, context: context,
+                requestId: id, kind: kind, cwd: folder, prompt: prompt, screenshot: screenshot?.path, images: images.map(\.path), model: model,
+                context: context,
                 toolkit: toolkit, bus: prefs.busForSessions, computer: prefs.computerUse, askFirst: prefs.askFirst, background: background
             )
         )

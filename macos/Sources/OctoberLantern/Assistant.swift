@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Lantern's assistant, opened by clicking the lantern: a chat with October's AI (the same
 /// endpoint as Point & Ask, without a screenshot) that knows what your agents are doing. When the
@@ -19,6 +20,8 @@ final class Assistant: ObservableObject {
         /// From Point & Ask: the selection, which the agent gets, and where the user was.
         var screenshot: URL?
         var context: String?
+        /// Images you added in the conversation (pasted, dropped or picked).
+        var images: [URL] = []
     }
 
     struct Turn: Identifiable, Codable {
@@ -35,6 +38,8 @@ final class Assistant: ObservableObject {
         var taskProblem: String?
         /// Out of free questions or credit: where to upgrade.
         var upgrade: URL?
+        /// Images you added to this message (paths in the screenshots folder).
+        var images: [String]?
     }
 
     /// An agent Ask Lantern started: found by its tmux session, then by its id. Its last messages
@@ -50,6 +55,8 @@ final class Assistant: ObservableObject {
         var inTerminal = false
         /// Started in a Terminal window because the agent has never been signed in.
         var signIn: Bool?
+        /// The images it was given, so Try again gives them again.
+        var images: [String]?
         var transcript: [ChatMessage] = []
     }
 
@@ -71,6 +78,13 @@ final class Assistant: ObservableObject {
     /// With an agent at work in the conversation, the box talks to it; this sends the next
     /// message to Lantern instead.
     @Published var askLanternInstead = false
+    /// Images waiting to go with the next message.
+    @Published private(set) var attachments: [URL] = []
+    /// Why the last image couldn't be added (too many, unreadable).
+    @Published var attachProblem: String?
+    /// Ask Lantern's box has the keyboard: Command-V with an image on the clipboard adds it.
+    var boxFocused = false
+    private var pasteMonitor: Any?
     let dictation = Dictation()
     private var task: Task<Void, Never>?
     private var saving: Task<Void, Never>?
@@ -78,6 +92,79 @@ final class Assistant: ObservableObject {
     private init() {
         dictation.onText = { [weak self] text, _ in self?.text = text }
         conversations = Self.load()
+        // The text field's own paste ignores pictures: an image on the clipboard is added here.
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers == "v" else { return event }
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard Assistant.shared.boxFocused, let images = ImageAttachments.fromPasteboard() else { return false }
+                Assistant.shared.attach(images)
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
+    // MARK: Images
+
+    /// Adds saved images to the next message (up to `ImageAttachments.limit`).
+    func attach(_ images: [URL]) {
+        attachProblem = nil
+        guard !images.isEmpty else {
+            attachProblem = "That image couldn't be added. Try saving it as a PNG or JPEG first."
+            return
+        }
+        let room = ImageAttachments.limit - attachments.count
+        if images.count > room { attachProblem = "Up to \(ImageAttachments.limit) images on one message." }
+        attachments += images.prefix(max(room, 0))
+    }
+
+    /// Adds image files (dropped or picked).
+    func attach(files: [URL]) {
+        let images = files.filter(ImageAttachments.isImage)
+        guard !images.isEmpty else {
+            attachProblem = "Only images can be added here."
+            return
+        }
+        attach(images.compactMap(ImageAttachments.save(file:)))
+    }
+
+    func removeAttachment(_ url: URL) {
+        attachments.removeAll { $0 == url }
+        attachProblem = nil
+    }
+
+    /// Choose images with the Open dialog.
+    func pickImages() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose images to add"
+        // Above Lantern's panel, which floats over other windows.
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+        NSApp.activate()
+        guard panel.runModal() == .OK else { return }
+        attach(files: panel.urls)
+    }
+
+    /// The images added anywhere in this conversation, for a task it starts (the request may come
+    /// in a follow-up: "yes, do that").
+    private var conversationImages: [URL] {
+        var seen: [URL] = []
+        for path in turns.flatMap({ $0.images ?? [] }) {
+            let url = URL(fileURLWithPath: path)
+            if !seen.contains(url), FileManager.default.fileExists(atPath: path) { seen.append(url) }
+        }
+        return Array(seen.suffix(10))
+    }
+
+    /// The lines that tell an agent where the images are.
+    static func imageLines(_ images: [URL]) -> String {
+        switch images.count {
+        case 0: ""
+        case 1: "\n\nAn image I added (open it to see it): \(images[0].path)"
+        default: "\n\nImages I added (open them to see them):\n" + images.map { "- \($0.path)" }.joined(separator: "\n")
+        }
     }
 
     func submit() {
@@ -100,6 +187,8 @@ final class Assistant: ObservableObject {
         currentId = UUID()
         asking = false
         askLanternInstead = false
+        attachments = []
+        attachProblem = nil
         model?.watch(nil)
     }
 
@@ -144,11 +233,14 @@ final class Assistant: ObservableObject {
     }
 
     private func reply(to agent: Agent) {
-        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty, let model else { return }
+        var message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty || !attachments.isEmpty, let model else { return }
+        if message.isEmpty { message = attachments.count == 1 ? "Take a look at this image." : "Take a look at these images." }
         dictation.stop()
-        model.sendDirect(message, to: agent)
+        model.sendDirect(message + Self.imageLines(attachments), to: agent)
         text = ""
+        attachments = []
+        attachProblem = nil
         Analytics.shared.capture("assistant_task_reply", ["kind": agent.kind.rawValue])
     }
 
@@ -182,14 +274,71 @@ final class Assistant: ObservableObject {
             .appendingPathComponent("Library/Application Support/October Lantern/ask-lantern.json")
     }
 
+    /// How the saved conversations loaded, for Send Logs.
+    private(set) static var loadNote = "none saved yet"
+    /// The file is there but couldn't be read: it isn't written over until it can be.
+    private static var unreadable = false
+
+    /// One conversation that can't be read is left out (and the file kept as a copy), rather
+    /// than losing the whole list the next time it's saved.
     private static func load() -> [Conversation] {
-        guard let data = try? Data(contentsOf: file) else { return [] }
+        guard FileManager.default.fileExists(atPath: file.path) else { return [] }
+        guard let data = try? Data(contentsOf: file) else {
+            unreadable = true
+            loadNote = "the file couldn't be opened"
+            AppLog.write("Ask Lantern: saved chats couldn't be opened; not saving over them")
+            return []
+        }
+        unreadable = false
+        switch decode(data) {
+        case .success(let read):
+            loadNote = "\(read.loaded.count) loaded"
+            if read.skipped > 0 {
+                let copy = keepCopy()
+                loadNote += ", \(read.skipped) couldn't be read (kept in \(copy))"
+                AppLog.write("Ask Lantern: \(read.skipped) saved chats couldn't be read; the file is kept as \(copy). First problem: \(read.problem ?? "?")")
+            }
+            return read.loaded
+        case .failure(let error):
+            let copy = keepCopy()
+            loadNote = "none could be read (kept in \(copy))"
+            AppLog.write("Ask Lantern: saved chats couldn't be read (\(error)); the file is kept as \(copy)")
+            return []
+        }
+    }
+
+    /// The saved conversations in `data`, without any that can't be read: how many those were,
+    /// and why the first couldn't be. A failure when it isn't a list of conversations at all.
+    static func decode(_ data: Data) -> Result<(loaded: [Conversation], skipped: Int, problem: String?), Error> {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([Conversation].self, from: data)) ?? []
+        do {
+            let all = try decoder.decode([Lossy<Conversation>].self, from: data)
+            let loaded = all.compactMap(\.value)
+            return .success((loaded, all.count - loaded.count, all.compactMap(\.problem).first))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// A copy of the saved chats as they are, before they're next saved over.
+    private static func keepCopy() -> String {
+        let stamp = DateFormatter()
+        stamp.dateFormat = "yyyyMMdd-HHmmss"
+        let copy = file.deletingLastPathComponent().appendingPathComponent("ask-lantern-unreadable-\(stamp.string(from: Date())).json")
+        try? FileManager.default.copyItem(at: file, to: copy)
+        return copy.lastPathComponent
     }
 
     private static func store(_ conversations: [Conversation]) {
+        if unreadable {
+            // Try again: the chats on disk come first, then they're saved with the new ones.
+            let earlier = load()
+            if unreadable { return }
+            let merged = conversations + earlier.filter { old in !conversations.contains { $0.id == old.id } }
+            Assistant.shared.conversations = Array(merged.prefix(50))
+            return store(Assistant.shared.conversations)
+        }
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(conversations) else { return }
@@ -220,22 +369,39 @@ final class Assistant: ObservableObject {
         Self.store(conversations)
     }
 
+    /// One saved conversation, or why it couldn't be read.
+    private struct Lossy<T: Decodable>: Decodable {
+        let value: T?
+        let problem: String?
+        init(from decoder: Decoder) {
+            do { value = try T(from: decoder); problem = nil } catch { value = nil; problem = "\(error)" }
+        }
+    }
+
     static func title(_ question: String) -> String {
         let line = question.split(whereSeparator: \.isNewline).first.map(String.init) ?? question
         return line.count > 60 ? String(line.prefix(59)) + "…" : line
     }
 
     private func ask() {
-        let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !asking, OctoberAccount.shared.signedIn else { return }
+        var question = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let images = attachments
+        guard !question.isEmpty || !images.isEmpty, !asking, OctoberAccount.shared.signedIn else { return }
+        if question.isEmpty { question = images.count == 1 ? "Take a look at this image." : "Take a look at these images." }
         dictation.stop()
         text = ""
-        turns.append(Turn(question: question))
+        attachments = []
+        attachProblem = nil
+        var turn = Turn(question: question)
+        if !images.isEmpty { turn.images = images.map(\.path) }
+        turns.append(turn)
         asking = true
-        let id = turns[turns.count - 1].id
+        let id = turn.id
+        // October sees the first image; an agent this starts gets them all.
         let request = OctoberAI.Request(
             turns: turns.dropLast().filter { !$0.failed }.map { ($0.question, $0.answer) },
-            question: question, image: nil, context: agentSummary(), mode: "chat"
+            question: question, image: images.first.flatMap(ImageAttachments.jpegForOctober),
+            context: agentSummary(images: images.count), mode: "chat"
         )
         task = Task {
             do {
@@ -308,7 +474,7 @@ final class Assistant: ObservableObject {
         let own = screenshot != nil ? prompt
             : index.map { Self.taskPrompt(question: turns[$0].question, suggested: prompt, followUp: $0 > 0) } ?? prompt
         cancelTask()
-        pending = PendingTask(prompt: own, kind: kind, folder: folder, screenshot: screenshot, context: context)
+        pending = PendingTask(prompt: own, kind: kind, folder: folder, screenshot: screenshot, context: context, images: conversationImages)
         startPending(turn: turn)
     }
 
@@ -337,7 +503,10 @@ final class Assistant: ObservableObject {
     func retry(_ link: TaskLink) {
         guard let i = turns.firstIndex(where: { $0.task == link }) else { return }
         turns[i].task = nil
-        pending = PendingTask(prompt: link.prompt, kind: AgentKind(rawValue: link.kind), folder: link.folder, screenshot: nil, context: nil)
+        pending = PendingTask(
+            prompt: link.prompt, kind: AgentKind(rawValue: link.kind), folder: link.folder, screenshot: nil, context: nil,
+            images: (link.images ?? []).map(URL.init(fileURLWithPath:)).filter { FileManager.default.fileExists(atPath: $0.path) }
+        )
         startPending(turn: turns[i].id)
     }
 
@@ -351,9 +520,13 @@ final class Assistant: ObservableObject {
         // installing when that's the agent.
         let signIn = model.neverSetUpKinds.contains(p.kind)
         turns[i].taskProblem = nil
-        turns[i].task = TaskLink(kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable, signIn: signIn ? true : nil)
+        turns[i].task = TaskLink(
+            kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable, signIn: signIn ? true : nil,
+            images: p.images.isEmpty ? nil : p.images.map(\.path)
+        )
         let started = model.launchTask(
-            prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable && !signIn, screenshot: p.screenshot, context: p.context
+            prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable && !signIn, screenshot: p.screenshot,
+            images: p.images, context: p.context
         ) { [weak self] outcome in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
             switch outcome {
@@ -393,11 +566,16 @@ final class Assistant: ObservableObject {
     }
 
     /// What the agents are doing, for the model: one line each, most urgent first.
-    private func agentSummary() -> String {
+    private func agentSummary(images: Int = 0) -> String {
         guard let model else { return "" }
+        let chat = switch images {
+        case 0: "Lantern's assistant chat (no screenshot)."
+        case 1: "Lantern's assistant chat. The user added the image attached (an agent started for this gets it too)."
+        default: "Lantern's assistant chat. The user added \(images) images; the first is attached (an agent started for this gets them all)."
+        }
         let agents = model.agents.filter(\.isLive).sorted { rank($0) < rank($1) }
-        guard !agents.isEmpty else { return "Lantern's assistant chat (no screenshot). No coding agents are running on this Mac." }
-        var lines = ["Lantern's assistant chat (no screenshot). The user's coding agents on this Mac right now:"]
+        guard !agents.isEmpty else { return "\(chat) No coding agents are running on this Mac." }
+        var lines = ["\(chat) The user's coding agents on this Mac right now:"]
         for a in agents.prefix(20) {
             var line = "- @\(a.handle) (\(a.kind.displayName)) in \(a.project ?? "?"): \(a.state.label)"
             if let t = a.title { line += "; working on \"\(t.prefix(80))\"" }
@@ -597,6 +775,16 @@ private struct TurnView: View {
                 Text(turn.question).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            if let images = turn.images, !images.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(images, id: \.self) { path in
+                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: path)) } label: {
+                            Thumbnail(url: URL(fileURLWithPath: path), size: 40)
+                        }
+                        .buttonStyle(.plain).help("Open this image")
+                    }
+                }
+            }
             if turn.answer.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -618,6 +806,40 @@ private struct TurnView: View {
                 Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+}
+
+/// A small square preview of an image you added (blank once the file has been cleared away).
+struct Thumbnail: View {
+    let url: URL
+    let size: CGFloat
+    /// Small copies, made once: the conversation redraws while an agent works.
+    private static let cache = NSCache<NSURL, NSImage>()
+
+    private var image: NSImage? {
+        if let hit = Self.cache.object(forKey: url as NSURL) { return hit }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let small = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 160,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+              ] as CFDictionary) else { return nil }
+        let image = NSImage(cgImage: small, size: .zero)
+        Self.cache.setObject(image, forKey: url as NSURL)
+        return image
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "photo").font(.system(size: size * 0.35)).foregroundStyle(Theme.muted)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(Theme.faint)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.hairline))
     }
 }
 
@@ -651,16 +873,59 @@ struct AskBox: View {
     @ObservedObject var dictation = Assistant.shared.dictation
     @ObservedObject var account = OctoberAccount.shared
     @FocusState private var focused: Bool
+    @State private var dropping = false
+
+    /// Images dropped on the box: files from Finder, or a picture dragged from a browser.
+    private func drop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in Assistant.shared.attach(files: [url]) }
+                }
+            } else if provider.canLoadObject(ofClass: NSImage.self) {
+                handled = true
+                _ = provider.loadObject(ofClass: NSImage.self) { image, _ in
+                    guard let image = image as? NSImage else { return }
+                    Task { @MainActor in Assistant.shared.attach(ImageAttachments.save(image).map { [$0] } ?? []) }
+                }
+            }
+        }
+        return handled
+    }
 
     var body: some View {
         Group {
             if account.signedIn {
                 VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 8) {
+                if !assistant.attachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(assistant.attachments, id: \.self) { url in
+                                Thumbnail(url: url, size: 46).overlay(alignment: .topTrailing) {
+                                    Button { assistant.removeAttachment(url) } label: {
+                                        Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.white, .black.opacity(0.7))
+                                    }
+                                    .buttonStyle(.plain).help("Remove this image").offset(x: 4, y: -4)
+                                }
+                            }
+                        }
+                        .padding(.top, 4).padding(.trailing, 4)
+                    }
+                }
                 HStack(alignment: .bottom, spacing: 6) {
                     TextField(placeholder, text: $assistant.text, axis: .vertical)
                         .textFieldStyle(.plain).font(.system(size: large ? 15 : 13)).lineLimit(large ? 2...6 : 1...6)
                         .focused($focused)
                         .onSubmit { assistant.submit() }
+                    Button { assistant.pickImages() } label: {
+                        Image(systemName: "paperclip").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.muted)
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain).help("Add images (you can also paste or drop them here)")
                     Button {
                         if dictation.isActive { dictation.stop() } else { dictation.start(prefix: assistant.text, owner: "assistant") }
                     } label: {
@@ -675,9 +940,17 @@ struct AskBox: View {
                     }
                     .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
                 }
+                }
                 .padding(.leading, large ? 14 : 11).padding(.trailing, 8).padding(.vertical, large ? 11 : 7)
                 .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.3)))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(focused ? Theme.amber.opacity(0.5) : Theme.stroke))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(
+                    dropping ? Theme.amber : focused ? Theme.amber.opacity(0.5) : Theme.stroke, lineWidth: dropping ? 2 : 1))
+                .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in drop(providers) }
+                .onChange(of: focused, initial: true) { _, now in assistant.boxFocused = now }
+                .onDisappear { assistant.boxFocused = false }
+                if let problem = assistant.attachProblem {
+                    Text(problem).font(.system(size: 11)).foregroundStyle(Theme.amber).padding(.top, 5)
+                }
                 if let agent = assistant.activeAgent {
                     Button {
                         assistant.askLanternInstead.toggle()
@@ -714,7 +987,8 @@ struct AskBox: View {
     }
 
     private var canSubmit: Bool {
-        !assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (replying || !assistant.asking)
+        (!assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !assistant.attachments.isEmpty)
+            && (replying || !assistant.asking)
     }
 }
 

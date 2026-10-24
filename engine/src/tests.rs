@@ -654,6 +654,26 @@ fn new_sessions_carry_the_screenshot() {
     assert!(!agent_command(Kind::Claude, Path::new("/p"), Some("hi"), None, None, None).contains("--add-dir"));
 }
 
+/// Images added to a task are named in the first message; Codex gets each attached, Claude Code
+/// their folder once.
+#[test]
+fn new_sessions_carry_added_images() {
+    use crate::launch::{Extras, agent_command_with, first_message};
+    use std::path::{Path, PathBuf};
+    let dir = "/Users/me/Library/Application Support/October Lantern/screenshots";
+    let images = [PathBuf::from(format!("{dir}/a.png")), PathBuf::from(format!("{dir}/b.png"))];
+    let msg = first_message(Some("make it match"), Extras { images: &images, ..Default::default() }).unwrap();
+    assert!(msg.starts_with("make it match") && msg.contains("- ") && msg.contains("a.png") && msg.contains("b.png"), "{msg}");
+    let one = first_message(None, Extras { images: &images[..1], ..Default::default() }).unwrap();
+    assert!(one.contains("wait for my instructions") && one.contains("a.png") && !one.contains("b.png"), "{one}");
+    let files: Vec<&Path> = images.iter().map(PathBuf::as_path).collect();
+    let env = crate::launch::LaunchEnv::default();
+    let codex = agent_command_with(Kind::Codex, Path::new("/p"), Some(&msg), &files, None, None, &env);
+    assert_eq!(codex.split_once(" -- ").unwrap().0.matches("--image").count(), 2, "{codex}");
+    let claude = agent_command_with(Kind::Claude, Path::new("/p"), Some(&msg), &files, None, None, &env);
+    assert_eq!(claude.split_once(" -- ").unwrap().0.matches("--add-dir").count(), 1, "{claude}");
+}
+
 #[test]
 fn models_are_listed_and_passed() {
     use crate::models::{parse_bullets, parse_codex, parse_slashed, parse_table, valid};
@@ -1014,7 +1034,7 @@ fn bundled_october_runs_with_its_node_and_sign_in() {
     };
     let session = env_for(Some(&("tok.en".to_string(), 2_000)), 1_000);
     let extra = october_env(false, Some(&bundled), session.clone());
-    let cmd = agent_command_with(Kind::October, Path::new("/p"), Some("hi"), None, None, None, &extra);
+    let cmd = agent_command_with(Kind::October, Path::new("/p"), Some("hi"), &[], None, None, &extra);
     // The command is single-quoted for `$SHELL -lic`; look inside it.
     let inner = cmd.replace(r"'\''", "'");
     assert!(inner.contains("PATH='/S/October Lantern/runtime/node-v24.21.0-darwin-arm64/bin':\"$PATH\" "), "{inner}");
@@ -1030,12 +1050,12 @@ fn bundled_october_runs_with_its_node_and_sign_in() {
     assert!(!inner.contains("REFRESH"), "the refresh token is never passed");
     // With October Bus, the Bus wraps the bundled program and the environment still comes first.
     let bus = crate::bus::Attach { wrap: vec!["'/bus'".into(), "agent".into(), "run".into(), "--".into()], ..Default::default() };
-    let wrapped = agent_command_with(Kind::October, Path::new("/p"), None, None, None, Some(&bus), &extra).replace(r"'\''", "'");
+    let wrapped = agent_command_with(Kind::October, Path::new("/p"), None, &[], None, Some(&bus), &extra).replace(r"'\''", "'");
     assert!(wrapped.contains("OCTOBER_SUPABASE_EXPIRES_AT='2000' exec '/bus' agent run -- '/S/October Lantern/harness/1.0/"), "{wrapped}");
     // `october` on the user's PATH is used as it is, still signed in.
     let own = october_env(true, Some(&bundled), session);
     assert_eq!((own.program.as_deref(), own.path_prefix.as_deref()), (None, None));
-    let plain = agent_command_with(Kind::October, Path::new("/p"), None, None, None, None, &own);
+    let plain = agent_command_with(Kind::October, Path::new("/p"), None, &[], None, None, &own);
     assert!(plain.contains("exec october") && !plain.contains("PATH=") && plain.contains("OCTOBER_SUPABASE_ACCESS_TOKEN"), "{plain}");
     // Signed out, or an expired token: no sign-in at all.
     assert!(env_for(None, 1_000).is_empty());

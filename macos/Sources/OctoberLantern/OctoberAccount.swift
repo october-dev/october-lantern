@@ -81,10 +81,12 @@ final class OctoberAccount: ObservableObject {
     private var offline = false
 
     /// An account that doesn't touch the Keychain or October's servers (for tests).
-    static func detached() -> OctoberAccount {
+    /// `signedIn`: with a made-up session, for drawing the signed-in views.
+    static func detached(signedIn: Bool = false) -> OctoberAccount {
         let a = OctoberAccount(restore: false)
         a.store = ({ _ in }, {})
         a.offline = true
+        if signedIn { a.session = Session(accessToken: "", refreshToken: "", expiresAt: .distantFuture, userId: "preview", email: "you@example.com") }
         return a
     }
 

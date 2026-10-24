@@ -40,6 +40,9 @@ enum Request {
         prompt: Option<String>,
         /// A screenshot the app saved for this session (in the screenshots folder).
         screenshot: Option<String>,
+        /// Images added to the task (pasted or dropped), also in the screenshots folder.
+        #[serde(default)]
+        images: Vec<String>,
         /// A model id for the agent's `--model`; absent for the agent's own default.
         model: Option<String>,
         /// What the person is working in (a task started from an app), added to the first message.
@@ -338,6 +341,7 @@ pub fn run() -> Result<()> {
                     cwd,
                     prompt,
                     screenshot,
+                    images,
                     model,
                     context,
                     toolkit,
@@ -359,9 +363,11 @@ pub fn run() -> Result<()> {
                     std::thread::spawn(move || {
                         let mode = if background { launch::Mode::Background } else { launch::Mode::Terminal };
                         let screenshot = screenshot.map(std::path::PathBuf::from);
+                        let images: Vec<std::path::PathBuf> = images.into_iter().map(std::path::PathBuf::from).collect();
                         let toolkit = if toolkit { crate::toolkit::text() } else { None };
                         let extras = launch::Extras {
                             screenshot: screenshot.as_deref(),
+                            images: &images,
                             context: context.as_deref(),
                             toolkit: toolkit.as_deref(),
                             bus,

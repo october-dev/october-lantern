@@ -16,7 +16,7 @@ final class ScreenCapture: ObservableObject {
     @Published private(set) var needsPermission = false
 
     /// Where screenshots are kept; the engine only accepts screenshots from here.
-    static var folder: URL {
+    nonisolated static var folder: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/October Lantern/screenshots", isDirectory: true)
     }

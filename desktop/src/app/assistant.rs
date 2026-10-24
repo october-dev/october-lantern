@@ -76,8 +76,30 @@ pub(super) fn conversations_path() -> PathBuf {
     crate::settings::data_dir().join("ask-lantern.json")
 }
 
+/// The saved conversations, leaving out any that can't be read rather than losing them all the
+/// next time the list is saved: the file is first kept as a copy beside it.
 pub(super) fn load_conversations(path: &Path) -> Vec<Conversation> {
-    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let (conversations, skipped) = match serde_json::from_str::<Vec<serde_json::Value>>(&text) {
+        Ok(all) => {
+            let total = all.len();
+            let read: Vec<Conversation> = all.into_iter().filter_map(|c| serde_json::from_value(c).ok()).collect();
+            let skipped = total - read.len();
+            (read, skipped)
+        }
+        Err(error) => {
+            eprintln!("Lantern: Ask Lantern's saved conversations couldn't be read: {error}");
+            (Vec::new(), 1)
+        }
+    };
+    if skipped > 0 {
+        let copy = path.with_file_name(format!("ask-lantern-unreadable-{}.json", Lantern::now_ms() as u64));
+        match std::fs::copy(path, &copy) {
+            Ok(_) => eprintln!("Lantern: {skipped} saved conversation(s) couldn't be read; the file is kept as {}", copy.display()),
+            Err(error) => eprintln!("Lantern: couldn't keep a copy of the saved conversations: {error}"),
+        }
+    }
+    conversations
 }
 
 /// Puts `conversation` first (replacing its earlier copy), keeping the most recent 50.
@@ -910,6 +932,21 @@ mod tests {
         lantern.clear_assistant();
         lantern.delete_conversation(&first);
         assert_eq!(load_conversations(&file).len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_conversation_that_cant_be_read_is_left_out_and_the_file_kept() {
+        let dir = std::env::temp_dir().join(format!("lantern-ask-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ask-lantern.json");
+        std::fs::write(&file, r#"[{"id":"a","title":"Kept","turns":[]},{"id":"b","title":"Broken","turns":"nope"}]"#).unwrap();
+        let read = load_conversations(&file);
+        assert_eq!(read.iter().map(|c| c.title.as_str()).collect::<Vec<_>>(), ["Kept"]);
+        let copies = std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ask-lantern-unreadable-")).count();
+        assert_eq!(copies, 1);
+        std::fs::write(&file, "{ not a list").unwrap();
+        assert!(load_conversations(&file).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

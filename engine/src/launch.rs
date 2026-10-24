@@ -267,12 +267,13 @@ pub fn screenshots_dir() -> PathBuf {
     support_dir().join("screenshots")
 }
 
-/// The first message, with the screenshot's path added so any agent can open it.
 /// What goes with the first message, besides your words.
 #[derive(Default, Clone, Copy)]
 pub struct Extras<'a> {
     /// A screenshot the app saved (in the screenshots folder).
     pub screenshot: Option<&'a Path>,
+    /// Images you added to the task (pasted or dropped), saved by the app in the screenshots folder.
+    pub images: &'a [PathBuf],
     /// What you're working in, from the app (a task: the app, its window, its document).
     pub context: Option<&'a str>,
     /// The toolkit list (toolkit.md).
@@ -328,20 +329,31 @@ pub(crate) fn guidance_for(os: &str, message: String, cwd: &Path) -> String {
     )
 }
 
-/// The first message: your words, then the context, the screenshot's path and the toolkit list.
-/// Nothing is sent when there are no words and no screenshot (an agent would act on context
-/// alone).
+/// The first message: your words, then the context, the screenshot's and images' paths and the
+/// toolkit list. Nothing is sent when there are no words and nothing to look at (an agent would
+/// act on context alone).
 pub fn first_message(prompt: Option<&str>, extras: Extras) -> Option<String> {
-    let mut out = match (prompt, extras.screenshot) {
-        (Some(p), _) => p.to_string(),
-        (None, Some(_)) => "Take a look at the screenshot below, then wait for my instructions.".into(),
-        (None, None) => return None,
+    let mut out = match (prompt, extras.screenshot, extras.images.is_empty()) {
+        (Some(p), _, _) => p.to_string(),
+        (None, Some(_), _) => "Take a look at the screenshot below, then wait for my instructions.".into(),
+        (None, None, false) => "Take a look at the images below, then wait for my instructions.".into(),
+        (None, None, true) => return None,
     };
     if let Some(c) = extras.context.map(str::trim).filter(|c| !c.is_empty()) {
         out.push_str(&format!("\n\n{c}"));
     }
     if let Some(s) = extras.screenshot {
         out.push_str(&format!("\n\nFor context, a screenshot of my screen when I started this session: {}", s.display()));
+    }
+    match extras.images {
+        [] => {}
+        [one] => out.push_str(&format!("\n\nAn image I added (open it to see it): {}", one.display())),
+        many => {
+            out.push_str("\n\nImages I added (open them to see them):");
+            for image in many {
+                out.push_str(&format!("\n- {}", image.display()));
+            }
+        }
     }
     if let Some(n) = extras.bus_note {
         out.push_str(&format!("\n\n{n}"));
@@ -366,7 +378,27 @@ pub(crate) fn agent_command(
     model: Option<&str>,
     bus: Option<&crate::bus::Attach>,
 ) -> String {
-    agent_command_with(kind, cwd, prompt, screenshot, model, bus, &LaunchEnv::default())
+    agent_command_with(kind, cwd, prompt, screenshot.as_slice(), model, bus, &LaunchEnv::default())
+}
+
+/// Lets the agent see the screenshot and images, which are outside the project: Claude Code and
+/// Gemini CLI may read their folders without asking, Codex gets each one attached.
+fn image_args(kind: Kind, files: &[&Path]) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut args = Vec::new();
+    for file in files {
+        let dir = file.parent().unwrap_or(file).to_string_lossy().into_owned();
+        match kind {
+            Kind::Claude | Kind::Gemini if !dirs.contains(&dir) => dirs.push(dir),
+            Kind::Codex => args.extend(["--image".to_string(), file.to_string_lossy().into_owned()]),
+            _ => {}
+        }
+    }
+    let flag = if kind == Kind::Claude { "--add-dir" } else { "--include-directories" };
+    for dir in dirs {
+        args.extend([flag.to_string(), dir]);
+    }
+    args
 }
 
 // tmux launches (Unix) and tests; Windows starts Lantern's own sessions with `agent_argv`.
@@ -375,7 +407,7 @@ pub(crate) fn agent_command_with(
     kind: Kind,
     cwd: &Path,
     prompt: Option<&str>,
-    screenshot: Option<&Path>,
+    images: &[&Path],
     model: Option<&str>,
     bus: Option<&crate::bus::Attach>,
     extra: &LaunchEnv,
@@ -403,15 +435,9 @@ pub(crate) fn agent_command_with(
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         cmd.push_str(&format!(" {flag} {}", quote(m)));
     }
-    // Let the agent read the screenshot without asking (it's outside the project), or attach it.
-    if let Some(s) = screenshot {
-        let dir = quote(&s.parent().unwrap_or(s).to_string_lossy());
-        match kind {
-            Kind::Claude => cmd.push_str(&format!(" --add-dir {dir}")),
-            Kind::Codex => cmd.push_str(&format!(" --image {}", quote(&s.to_string_lossy()))),
-            Kind::Gemini => cmd.push_str(&format!(" --include-directories {dir}")),
-            _ => {}
-        }
+    for arg in image_args(kind, images) {
+        cmd.push(' ');
+        cmd.push_str(&quote(&arg));
     }
     // Claude Code gets a session id of Lantern's choosing, so its conversation is matched
     // exactly from the start (see scanner::transcript_status).
@@ -461,7 +487,7 @@ fn open_in_terminal(_name: &str, _script: &str) -> Result<()> {
 pub(crate) fn agent_argv(
     kind: Kind,
     prompt: Option<&str>,
-    screenshot: Option<&Path>,
+    images: &[&Path],
     model: Option<&str>,
     bus: Option<&crate::bus::Attach>,
     program_override: Option<&Path>,
@@ -518,15 +544,7 @@ pub(crate) fn agent_argv(
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         args.extend([flag.to_string(), m.to_string()]);
     }
-    if let Some(s) = screenshot {
-        let dir = s.parent().unwrap_or(s).to_string_lossy().into_owned();
-        match kind {
-            Kind::Claude => args.extend(["--add-dir".into(), dir]),
-            Kind::Codex => args.extend(["--image".into(), s.to_string_lossy().into_owned()]),
-            Kind::Gemini => args.extend(["--include-directories".into(), dir]),
-            _ => {}
-        }
-    }
+    args.extend(image_args(kind, images));
     if kind == Kind::Claude {
         args.extend(["--session-id".into(), uuid::Uuid::new_v4().hyphenated().to_string()]);
     }
@@ -644,7 +662,7 @@ fn codex_has_no_daemon(found: &Path, program: &Path, args: &[String]) -> bool {
 #[cfg(windows)]
 fn check_codex_early() {
     // Working out Codex's arguments asks it, and remembers the answer.
-    std::thread::spawn(|| agent_argv(Kind::Codex, None, None, None, None, None, None, false).map(drop));
+    std::thread::spawn(|| agent_argv(Kind::Codex, None, &[], None, None, None, None, false).map(drop));
 }
 
 /// Whether `codex --help` offers `--no-daemon` (as an option, not just in prose).
@@ -682,7 +700,7 @@ fn launch_session(
     kind: Kind,
     cwd: &Path,
     prompt: Option<&str>,
-    screenshot: Option<&Path>,
+    images: &[&Path],
     model: Option<&str>,
     bus: Option<crate::bus::Attach>,
     bus_problem: Option<String>,
@@ -692,7 +710,7 @@ fn launch_session(
 ) -> Result<Launched> {
     let program_override = extra.program.as_deref().map(Path::new);
     let node_dir = extra.path_prefix.as_deref().map(Path::new);
-    let (program, args) = agent_argv(kind, prompt, screenshot, model, bus.as_ref(), program_override, node_dir, extra.ask_first)?;
+    let (program, args) = agent_argv(kind, prompt, images, model, bus.as_ref(), program_override, node_dir, extra.ask_first)?;
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
     let session = format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000);
@@ -794,10 +812,12 @@ pub fn launch(
         }
         LaunchEnv::default()
     };
-    if let Some(s) = screenshot {
+    // Only files the app saved in the screenshots folder, so a request can't hand an agent anything else.
+    let images: Vec<&Path> = screenshot.into_iter().chain(extras.images.iter().map(PathBuf::as_path)).collect();
+    for s in &images {
         let inside = s.canonicalize().ok().zip(screenshots_dir().canonicalize().ok()).is_some_and(|(s, dir)| s.starts_with(dir));
         if !inside || !s.is_file() {
-            bail!("the screenshot wasn't saved; try again");
+            bail!("an image for this task wasn't saved; try again");
         }
     }
     extra.ask_first = extras.ask_first;
@@ -851,9 +871,9 @@ pub fn launch(
     let prompt = message.as_deref();
 
     #[cfg(unix)]
-    let launched = launch_tmux(kind, cwd, prompt, screenshot, model, bus, bus_problem, &extra, mode, deadline);
+    let launched = launch_tmux(kind, cwd, prompt, &images, model, bus, bus_problem, &extra, mode, deadline);
     #[cfg(windows)]
-    let launched = launch_session(kind, cwd, prompt, screenshot, model, bus, bus_problem, &extra, mode, deadline);
+    let launched = launch_session(kind, cwd, prompt, &images, model, bus, bus_problem, &extra, mode, deadline);
     launched
 }
 
@@ -864,7 +884,7 @@ fn launch_tmux(
     kind: Kind,
     cwd: &Path,
     prompt: Option<&str>,
-    screenshot: Option<&Path>,
+    images: &[&Path],
     model: Option<&str>,
     bus: Option<crate::bus::Attach>,
     bus_problem: Option<String>,
@@ -881,7 +901,7 @@ fn launch_tmux(
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
         check_launch_deadline(deadline)?;
-        open_in_terminal(&name, &agent_command_with(kind, cwd, prompt, screenshot, model, bus.as_ref(), extra))?;
+        open_in_terminal(&name, &agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra))?;
         if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
             crate::bus::link_when_ready(b.id.clone());
         }
@@ -895,7 +915,7 @@ fn launch_tmux(
     let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
-        .arg(agent_command_with(kind, cwd, prompt, screenshot, model, bus.as_ref(), extra));
+        .arg(agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra));
     check_launch_deadline(deadline)?;
     let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
@@ -1099,7 +1119,7 @@ mod hands_free_tests {
         assert!(hands_free_args(Kind::Pi, false).is_empty());
         // "Ask before agents act": no auto-approve flags at all.
         let asking = LaunchEnv { ask_first: true, ..Default::default() };
-        let claude = agent_command_with(Kind::Claude, Path::new("/tmp/p"), None, None, None, None, &asking);
+        let claude = agent_command_with(Kind::Claude, Path::new("/tmp/p"), None, &[], None, None, &asking);
         assert!(!claude.contains("--dangerously-skip-permissions"), "{claude}");
         assert!(hands_free_env(Kind::Goose, true).is_empty());
     }

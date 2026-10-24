@@ -71,6 +71,7 @@ enum Support {
         details += "\nEngine: \(model.engineHealth)"
         details += "\nComputer use: \(model.computer?.status ?? "off")"
         details += "\nSigned in to October: \(OctoberAccount.shared.session == nil ? "no" : "yes")"
+        details += "\nSaved chats: \(Assistant.loadNote) (\(Assistant.shared.conversations.count) now)"
         let token = OctoberAccount.shared.session?.accessToken
         model.show("Sending logs…")
         Task {
