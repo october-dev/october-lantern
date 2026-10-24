@@ -885,6 +885,57 @@ mod tests {
         assert!(view.account_use_email, "the email form opens in place");
     }
 
+    /// Clicks the control named `label` (by its accessibility name: icon buttons have no text).
+    fn click_control(
+        ctx: &egui::Context,
+        assets: &Assets,
+        model: &Model,
+        inputs: &mut Inputs,
+        view: &mut UiState,
+        label: &str,
+    ) -> Vec<UiAction> {
+        ctx.enable_accesskit();
+        let mut tree = None;
+        let mut out = Vec::new();
+        let run = |events: Vec<egui::Event>, inputs: &mut Inputs, view: &mut UiState, out: &mut Vec<UiAction>| {
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 900.0))),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let env = Env { now_ms: 1_790_000_000_000.0, reduce_motion: true, home: "/home/me".into() };
+                    super::super::render_panel(ui, &mut Ctx { model, inputs, view, assets, out, env: &env }, 900.0);
+                },
+            )
+        };
+        if let Some(update) = run(Vec::new(), inputs, view, &mut out).platform_output.accesskit_update {
+            tree = Some(update);
+        }
+        let tree = tree.expect("egui emits an accessibility tree when enabled");
+        let bounds = tree
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .and_then(|(_, node)| node.bounds())
+            .unwrap_or_else(|| panic!("no control named {label}"));
+        let pos = egui::pos2(((bounds.x0 + bounds.x1) / 2.0) as f32, ((bounds.y0 + bounds.y1) / 2.0) as f32);
+        out.clear();
+        for pressed in [true, false] {
+            run(
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE },
+                ],
+                inputs,
+                view,
+                &mut out,
+            );
+        }
+        out
+    }
+
     #[test]
     fn images_can_be_added_and_removed_before_sending() {
         let ctx = egui::Context::default();
@@ -893,15 +944,16 @@ mod tests {
         let mut fixture: crate::app::fixture::Fixture =
             serde_json::from_str(include_str!("../../fixtures/panel-assistant-thread.json")).unwrap();
         let mut view = UiState::default();
-        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Paperclip"), vec![UiAction::PickAssistantImages]);
-        fixture.model.assistant.attachments = vec!["/nowhere/a.png".into()];
-        fixture.inputs.assistant.clear();
+        let (model, inputs) = (&mut fixture.model, &mut fixture.inputs);
+        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Paperclip"), vec![UiAction::PickAssistantImages]);
+        model.assistant.attachments = vec!["/nowhere/a.png".into()];
+        inputs.assistant.clear();
         assert_eq!(
-            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Remove this image"),
+            click_control(&ctx, &assets, model, inputs, &mut view, "Remove this image"),
             vec![UiAction::RemoveAssistantImage("/nowhere/a.png".into())]
         );
-        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
-        assert!(texts.iter().any(|(text, _)| text == "Ask"), "an image alone can be sent");
+        // An image alone can be sent.
+        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Ask"), vec![UiAction::SubmitAssistant]);
     }
 
     #[test]
