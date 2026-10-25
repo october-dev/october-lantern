@@ -32,7 +32,9 @@ pub fn question_card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, keys: bool) {
             }
         })
         .inner;
-    if let Some(answer) = answer {
+    // Answered already: its options still take clicks (so they don't open the chat behind), but
+    // nothing more is sent.
+    if let Some(answer) = answer.filter(|_| sent.is_none()) {
         cx.view.question_picks.remove(&prompt_id);
         cx.emit(UiAction::AnswerQuestion { agent_id: agent.id.clone(), prompt_id, answer });
     }
@@ -142,7 +144,7 @@ fn choice_questions(
                 sent.is_some(),
                 q.multi_select,
             );
-            if row.clicked() {
+            if row.clicked() && sent.is_none() {
                 if one_click {
                     answer = Some(AgentAnswer::Picks { picks: vec![vec![oi]] });
                 } else {
@@ -162,7 +164,17 @@ fn choice_questions(
         if !one_click {
             let picks = cx.view.question_picks.get(prompt_id);
             let complete = (0..questions.len()).all(|qi| picks.and_then(|p| p.get(&qi)).is_some_and(|s| !s.is_empty()));
-            if ui.add_enabled_ui(complete, |ui| c::amber_button(ui, "Send answers")).inner.clicked()
+            // Looks disabled until every question has an answer, but still takes the click.
+            let send = ui
+                .scope(|ui| {
+                    if !complete {
+                        ui.multiply_opacity(0.5);
+                    }
+                    c::amber_button(ui, "Send answers")
+                })
+                .inner;
+            if send.clicked()
+                && complete
                 && let Some(picks) = picks
             {
                 answer = Some(AgentAnswer::Picks {
@@ -239,7 +251,7 @@ fn option_row(
     });
     let badge = inner.inner;
     let rect = inner.response.rect;
-    let response = ui.interact(rect, id, if faded { Sense::hover() } else { Sense::click() });
+    let response = ui.interact(rect, id, Sense::click());
     let (fill, stroke) = if chosen {
         (t::opacity(t::GREEN, 0.18), t::opacity(t::GREEN, 0.75))
     } else if response.hovered() && !faded {

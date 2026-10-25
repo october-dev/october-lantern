@@ -105,9 +105,11 @@ struct QuestionCard: View {
                 }
             }
             if !oneClick, sent == nil {
+                // Looks disabled until every question has an answer, but still takes the click, so
+                // it doesn't open the chat behind the card.
                 Button("Send answers") { sendPicks() }
                     .buttonStyle(AmberButtonStyle())
-                    .disabled(!complete)
+                    .opacity(complete ? 1 : 0.5)
             }
             if sent == nil {
                 Button("Don't answer") { model.answer(agent, .no) }
@@ -190,7 +192,7 @@ struct OptionRow: View {
     @State private var hover = false
 
     var body: some View {
-        Button(action: action) {
+        Button { if !faded { action() } } label: {
             HStack(alignment: .top, spacing: 9) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -228,8 +230,8 @@ struct OptionRow: View {
             .opacity(faded && !chosen ? 0.45 : 1)
             .contentShape(Rectangle())
         }
+        // Answered, it still takes clicks (so they don't open the chat behind) and does nothing.
         .buttonStyle(.plain)
-        .allowsHitTesting(!faded)
         .onHover { hover = $0 }
         .accessibilityLabel(tick ? label : "\(number). \(label)")
     }
