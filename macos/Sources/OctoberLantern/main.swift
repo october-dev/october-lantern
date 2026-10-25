@@ -44,6 +44,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return
         }
+        // The question cards with sample questions, without starting the engine.
+        if let i = CommandLine.arguments.firstIndex(of: "--snapshot-questions"), i + 1 < CommandLine.arguments.count {
+            let dir = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            var cards: [(String, AnyView)] = QuestionCard.samples().map { name, agent in
+                (name, AnyView(QuestionCard(agent: agent, model: model).padding(14).frame(width: 380)))
+            }
+            model.answered["p5"] = .picks([[1]])
+            // The pill's dots: working, needs you, done, idle.
+            let dots = QuestionCard.samples().map(\.1).prefix(4).enumerated().map { i, agent in
+                var json = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(agent)) as! [String: Any]
+                json["state"] = ["working", "needs_input", "waiting", "idle"][i]
+                return try! JSONDecoder().decode(Agent.self, from: JSONSerialization.data(withJSONObject: json))
+            }
+            cards.append(("pill", AnyView(
+                VStack(spacing: 8) {
+                    LanternButton(count: 1, waiting: true, working: true, onTap: {}, onDrag: {}, onDragEnd: {})
+                    AgentDots(agents: dots, new: [dots[1].id], open: { _ in }, more: {})
+                }
+                .padding(6).background(Capsule().fill(Color(white: 0.14))).padding(14)
+            )))
+            func next() {
+                guard !cards.isEmpty else { exit(0) }
+                let (name, card) = cards.removeFirst()
+                let view = card.background(Color.black)
+                let window = NSWindow(contentViewController: NSHostingController(rootView: view.environment(\.colorScheme, .dark)))
+                window.appearance = NSAppearance(named: .darkAqua)
+                window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if let content = window.contentView, let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+                        content.cacheDisplay(in: content.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("question-\(name).png"))
+                    }
+                    window.close()
+                    next()
+                }
+            }
+            next()
+            return
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count {
             model.start()
             snapshot(into: URL(fileURLWithPath: CommandLine.arguments[i + 1]))

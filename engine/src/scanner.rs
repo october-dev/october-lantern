@@ -296,6 +296,8 @@ impl Scanner {
                 question_kind: status.question_kind,
                 question_detail: status.question_detail,
                 prompt_id: status.prompt_id,
+                choices: status.choices,
+                transcript: (kind == Kind::Claude).then(|| self.claude_paths.get(&p.pid).map(|(path, _)| path.clone())).flatten(),
                 session_match,
                 source: live_status.and_then(|l| crate::apps::claude_source(l.entrypoint.as_deref())).map(String::from),
                 live: true,
@@ -442,10 +444,13 @@ impl Scanner {
             state: status.state.unwrap_or(State::Unknown),
             state_since: status.since,
             last_message: status.last_message,
-            question: None,
-            question_kind: None,
+            // Apps aren't answered by keys: say what it's asking, without buttons.
+            question_kind: status.question_kind.map(|_| crate::model::QuestionKind::Other),
+            question: status.question,
             question_detail: None,
             prompt_id: None,
+            choices: None,
+            transcript: None,
             session_match: SessionMatch::Exact,
             source: Some(source.to_string()),
             live,
@@ -674,6 +679,7 @@ pub(crate) fn hide_ambiguous(agents: &mut [Agent]) {
             a.question_kind = None;
             a.question_detail = None;
             a.prompt_id = None;
+            a.choices = None;
             a.title = None;
             a.session_id = None;
         }
@@ -693,9 +699,9 @@ fn is_codex_app_server(p: &Proc) -> bool {
 
 /// Claude's status file says busy or idle the moment it changes. Busy is working; idle after a
 /// transcript that still looks mid-turn means the turn ended (or was stopped). A hook's question
-/// (a permission prompt) is kept.
+/// (a permission prompt), or one in the transcript (a question for you), is kept.
 pub(crate) fn apply_live(status: &mut SessionStatus, source: StateSource, live: &crate::apps::ClaudeLive) {
-    if source == StateSource::Hook && status.state == Some(State::NeedsInput) {
+    if status.state == Some(State::NeedsInput) && (source == StateSource::Hook || status.prompt_id.is_some()) {
         return;
     }
     match live.busy() {
@@ -724,6 +730,15 @@ fn merge(hook: Option<&HookEvent>, transcript: Option<SessionStatus>) -> (Sessio
             s.session_id = s.session_id.or(t.session_id.clone());
             if s.last_message.is_none() && s.state == Some(State::Waiting) {
                 s.last_message = t.last_message.clone();
+            }
+            // Claude's own question or plan, open in the transcript, is the prompt a hook is
+            // announcing (an older hook calls it a permission to run AskUserQuestion).
+            if hook_newer && s.state == Some(State::NeedsInput) && t.prompt_id.is_some() && h.question_kind != t.question_kind {
+                s.question = t.question.clone();
+                s.question_kind = t.question_kind;
+                s.question_detail = t.question_detail.clone();
+                s.prompt_id = t.prompt_id.clone();
+                s.choices = t.choices.clone();
             }
             (s, if hook_newer { StateSource::Hook } else { StateSource::Transcript })
         }

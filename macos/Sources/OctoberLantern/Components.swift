@@ -11,10 +11,14 @@ enum Theme {
     static let hairline = Color.white.opacity(0.10)
     static let stroke = Color.white.opacity(0.14)
 
+    static let blue = Color(red: 0.30, green: 0.58, blue: 1.0)
+
+    /// Blue is working, amber needs you, green is done (its turn is over).
     static func color(for state: AgentState) -> Color {
         switch state {
-        case .needsInput, .waiting: amber
-        case .working: green
+        case .needsInput: amber
+        case .waiting: green
+        case .working: blue
         case .idle, .unknown: Color.white.opacity(0.35)
         }
     }

@@ -13,6 +13,7 @@ pub mod icons;
 mod markdown;
 mod october;
 mod point_ask;
+mod question;
 mod sessions;
 mod settings;
 pub mod theme;
@@ -40,6 +41,9 @@ pub struct Env {
 #[serde(default)]
 pub struct UiState {
     pub expanded_cards: std::collections::HashSet<String>,
+    /// Options ticked so far on a question card, by prompt id, then question.
+    #[serde(skip)]
+    pub question_picks: std::collections::HashMap<String, std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>>,
     pub request_details: std::collections::HashSet<String>,
     pub expanded_bubbles: std::collections::HashSet<String>,
     pub welcome_step: usize,
@@ -177,10 +181,11 @@ pub enum UiAction {
     DismissTurns {
         turn_keys: Vec<String>,
     },
-    AnswerPermission {
+    /// Answers an agent's question from its card (a permission, Claude's own question, its plan).
+    AnswerQuestion {
         agent_id: AgentId,
         prompt_id: String,
-        allow: bool,
+        answer: crate::model::AgentAnswer,
     },
     ToggleDictation {
         owner: DictationOwner,
@@ -617,12 +622,19 @@ mod tests {
         let mut inputs = Inputs::default();
         let mut view = UiState::default();
         let mut actions = Vec::new();
-        let pos = egui::pos2(85.0, 13.0);
+        fn find(shape: &egui::Shape) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Yes" => Some(text.pos + text.galley.size() * 0.5),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(find),
+                _ => None,
+            }
+        }
+        let mut pos = egui::Pos2::ZERO;
         // Hit testing uses the previous frame's widgets. Lay them out before pressing.
         for pressed in [None, Some(true), Some(false)] {
             let mut output = ctx.run_ui(
                 egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 100.0))),
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 300.0))),
                     events: if let Some(pressed) = pressed {
                         vec![
                             egui::Event::PointerMoved(pos),
@@ -639,7 +651,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    feed::permission_buttons(
+                    question::question_card(
                         ui,
                         &mut Ctx {
                             model: &model,
@@ -650,19 +662,30 @@ mod tests {
                             env: &Env::default(),
                         },
                         &agent,
+                        false,
                     );
                 },
             );
+            if pressed.is_none() {
+                pos = output.shapes.iter().find_map(|s| find(&s.shape)).expect("Yes is shown");
+            }
             output.textures_delta.clear();
         }
-        assert_eq!(actions, vec![UiAction::AnswerPermission { agent_id: "a".into(), prompt_id: "observed-123".into(), allow: true }]);
+        assert_eq!(
+            actions,
+            vec![UiAction::AnswerQuestion {
+                agent_id: "a".into(),
+                prompt_id: "observed-123".into(),
+                answer: crate::model::AgentAnswer::Yes
+            }]
+        );
     }
 
     #[test]
     fn nested_card_permission_button_does_not_open_the_chat() {
         fn find(shape: &egui::Shape) -> Option<egui::Pos2> {
             match shape {
-                egui::Shape::Text(text) if text.galley.job.text == "Allow" => Some(text.pos + text.galley.size() * 0.5),
+                egui::Shape::Text(text) if text.galley.job.text == "Yes" => Some(text.pos + text.galley.size() * 0.5),
                 egui::Shape::Vec(shapes) => shapes.iter().find_map(find),
                 _ => None,
             }
@@ -717,7 +740,11 @@ mod tests {
         }
         assert_eq!(
             out,
-            vec![UiAction::AnswerPermission { agent_id: "claude:1:1".into(), prompt_id: "fixture-prompt-1".into(), allow: true }]
+            vec![UiAction::AnswerQuestion {
+                agent_id: "claude:1:1".into(),
+                prompt_id: "fixture-prompt-1".into(),
+                answer: crate::model::AgentAnswer::Yes
+            }]
         );
     }
 

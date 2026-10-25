@@ -162,7 +162,7 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
         return o;
     }
     if let Op::Keys { prompt: Some(prompt), .. } = &op
-        && crate::hooks::current_prompt(agent.pid).as_ref() != Some(prompt)
+        && !still_asking(agent, prompt)
     {
         return Outcome::failed("prompt_changed", "That prompt was already answered or replaced. Check the terminal.");
     }
@@ -200,6 +200,16 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
         },
     };
     result.err().unwrap_or(Outcome::Done)
+}
+
+/// The prompt is still the agent's open question, right before Lantern presses keys for it: by its
+/// hook events, or for a question read from Claude's transcript, by the transcript now.
+fn still_asking(agent: &Agent, prompt: &str) -> bool {
+    if crate::hooks::current_prompt(agent.pid).as_deref() == Some(prompt) {
+        return true;
+    }
+    prompt.starts_with("t-")
+        && agent.transcript.as_deref().is_some_and(|path| crate::transcripts::parse_claude(path, 0).prompt_id.as_deref() == Some(prompt))
 }
 
 fn classify(e: anyhow::Error) -> Outcome {

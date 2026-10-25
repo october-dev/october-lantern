@@ -3,7 +3,7 @@
 use super::Lantern;
 use crate::os::Event;
 use crate::os::shell::{self as platform, PANEL_TITLE, PILL_TITLE, Role};
-use crate::shell::{self, Hover, PILL_COLLAPSED, PILL_EXPANDED};
+use crate::shell::{self, Hover, PILL_COLLAPSED};
 use crate::ui::{self, Ctx, Env};
 use eframe::egui::{self, Pos2, Rect, Vec2, ViewportBuilder, ViewportCommand, ViewportId, vec2};
 use std::sync::mpsc::Sender;
@@ -235,7 +235,7 @@ impl Lantern {
         self.model.pill_expanded = expanded;
 
         // Where the pill goes.
-        let size = if expanded { PILL_EXPANDED } else { PILL_COLLAPSED };
+        let size = shell::pill_size(expanded, self.model.pill_agents().len());
         let current = outer.map_or(Pos2::ZERO, |rect| rect.center());
         let work = shell::work_area_at(&w.areas, current).unwrap_or(Rect::from_min_size(Pos2::ZERO, vec2(1920.0, 1080.0)));
         let home = shell::pill_frame(work, size, self.model.prefs.edge, self.model.prefs.pill_top).min;

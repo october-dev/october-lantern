@@ -221,7 +221,10 @@ fn card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, is_new: bool) {
                     if let Some(title) = &agent.title {
                         ui.add(egui::Label::new(c::text(title, 12.0, Weight::Medium, t::white(0.75))).truncate());
                     }
-                    if let Some(question) = &agent.question {
+                    if agent.is_answerable() {
+                        let keys = cx.inputs.drafts.recipient() == Some(agent.id.as_str());
+                        super::question::question_card(ui, cx, agent, keys);
+                    } else if let Some(question) = &agent.question {
                         egui::Frame::new().fill(t::opacity(t::AMBER, 0.12)).corner_radius(10).inner_margin(10).show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.spacing_mut().item_spacing.y = 6.0;
@@ -249,7 +252,6 @@ fn card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, is_new: bool) {
                             toggle(&mut cx.view.expanded_cards, &agent.id);
                         }
                     }
-                    permission_buttons(ui, cx, agent);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
                         if c::small_button(ui, "Reply", Icon::Reply).clicked() {
@@ -331,43 +333,6 @@ pub fn request_detail(ui: &mut Ui, cx: &mut Ctx, agent: &Agent) {
             ui.add(egui::Label::new(c::text(detail, 11.5, Weight::Mono, t::white(0.9))).wrap().selectable(true));
         });
     }
-}
-
-pub fn permission_buttons(ui: &mut Ui, cx: &mut Ctx, agent: &Agent) {
-    if !agent.can_answer_permission() {
-        return;
-    }
-    let Some(prompt_id) = &agent.prompt_id else {
-        return;
-    };
-    ui.horizontal(|ui| {
-        let width = (ui.available_width() - 8.0) / 2.0;
-        ui.spacing_mut().item_spacing.x = 8.0;
-        for (title, allow, icon) in [("Allow", true, Icon::Check), ("Deny", false, Icon::Close)] {
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 27.0), Sense::click());
-            let fill = if allow { t::AMBER } else { t::FAINT };
-            let ink = if allow { t::black(0.85) } else { t::INK };
-            ui.painter().rect(rect, 9, fill, if allow { Stroke::NONE } else { Stroke::new(1.0, t::HAIRLINE) }, egui::StrokeKind::Inside);
-            let galley = ui.painter().layout_no_wrap(title.into(), t::font(12.0, Weight::Semibold), ink);
-            let left = rect.center().x - (galley.size().x + 18.0) / 2.0;
-            c::paint_icon(
-                ui.painter(),
-                egui::Rect::from_center_size(egui::pos2(left + 6.0, rect.center().y), egui::Vec2::splat(12.0)),
-                icon,
-                ink,
-            );
-            ui.painter().galley(egui::pos2(left + 18.0, rect.center().y - galley.size().y / 2.0), galley, ink);
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), title));
-            let response = response.on_hover_text(if allow {
-                "Allow once: presses 1 in the agent's terminal, if this is still the prompt on screen"
-            } else {
-                "Decline (presses Escape), then tell the agent what to do instead"
-            });
-            if response.clicked() {
-                cx.emit(UiAction::AnswerPermission { agent_id: agent.id.clone(), prompt_id: prompt_id.clone(), allow });
-            }
-        }
-    });
 }
 
 fn row(ui: &mut Ui, cx: &mut Ctx, agent: &Agent) {

@@ -115,6 +115,15 @@ enum Request {
         keys: Vec<String>,
         prompt_id: Option<String>,
     },
+    /// Answers the question an agent is asking (a permission, Claude's own question, its plan) with
+    /// what the person chose; the engine presses the terminal's keys for it (see `answer_keys`).
+    #[serde(rename_all = "camelCase")]
+    Answer {
+        request_id: String,
+        agent_id: String,
+        prompt_id: String,
+        answer: Answer,
+    },
     /// Ask October Desktop to allow Lantern (it shows a code to compare), cancel that, or forget it.
     #[serde(rename = "october.pair")]
     OctoberPair,
@@ -491,6 +500,15 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
+                Ok(Request::Answer { request_id, agent_id, prompt_id, answer }) => {
+                    let checked = reachable(&agents, &agent_id)
+                        .and_then(|a| answer_keys(a, &answer).and_then(|keys| keys_for(a, keys, Some(prompt_id))).map(|op| (a, op)));
+                    match checked {
+                        Ok((agent, op)) => executor.submit(app_action(agent, op, "replyResult", request_id)),
+                        Err(o) => emit(&result_json("replyResult", &request_id, &o)),
+                    }
+                    next_scan = Instant::now() + Duration::from_millis(300);
+                }
                 Ok(Request::OctoberPair) => link.send(october_link::Command::Pair),
                 Ok(Request::OctoberCancelPair) => link.send(october_link::Command::CancelPair),
                 Ok(Request::OctoberForget) => link.send(october_link::Command::Forget),
@@ -585,12 +603,68 @@ fn reachable<'a>(agents: &'a [Agent], agent_id: &str) -> Result<&'a Agent, Outco
     }
 }
 
+/// What the person chose for an agent's question.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum Answer {
+    /// Allow once; approve the plan.
+    Yes,
+    /// The permission prompt's "don't ask again" option.
+    Always,
+    /// Deny; keep planning; don't answer Claude's question (it's told you declined).
+    No,
+    /// The options picked for each of Claude's questions, in order (0-based).
+    Picks { picks: Vec<Vec<usize>> },
+}
+
+/// The keys that give `answer` in the agent's terminal, as Claude Code's prompts take them:
+/// a permission's options are 1 (yes), 2 (don't ask again, when offered) and Escape; a plan's 1
+/// and Escape. Claude's questions take an option's number; one single-choice question is answered
+/// by it, otherwise each pick-many question is ticked and left with Tab, and 1 submits them all.
+pub(crate) fn answer_keys(agent: &Agent, answer: &Answer) -> Result<Vec<deliver::Key>, Outcome> {
+    use deliver::Key;
+    let bad = |m: &str| Outcome::failed("bad_request", m.to_string());
+    let digit = |i: usize| char::from_digit(i as u32 + 1, 10).map(Key::Char).ok_or_else(|| bad("that option can't be picked from Lantern"));
+    let choices = agent.choices.clone().unwrap_or_default();
+    match (agent.question_kind, answer) {
+        (Some(QuestionKind::Permission | QuestionKind::Plan | QuestionKind::Choice), Answer::No) => Ok(vec![Key::Escape]),
+        (Some(QuestionKind::Permission | QuestionKind::Plan), Answer::Yes) => Ok(vec![Key::Char('1')]),
+        (Some(QuestionKind::Permission), Answer::Always) if choices.always.is_some() => Ok(vec![Key::Char('2')]),
+        (Some(QuestionKind::Choice), Answer::Picks { picks }) => {
+            let questions = &choices.questions;
+            if questions.is_empty() || picks.len() != questions.len() {
+                return Err(bad("answer every question"));
+            }
+            let mut keys = Vec::new();
+            for (q, picked) in questions.iter().zip(picks) {
+                let mut picked = picked.clone();
+                picked.sort_unstable();
+                picked.dedup();
+                if picked.iter().any(|i| *i >= q.options.len()) || (!q.multi_select && picked.len() != 1) {
+                    return Err(bad("pick one of the options for each question"));
+                }
+                for i in &picked {
+                    keys.push(digit(*i)?);
+                }
+                if q.multi_select {
+                    keys.push(Key::Tab);
+                }
+            }
+            if questions.len() > 1 || questions[0].multi_select {
+                keys.push(Key::Char('1'));
+            }
+            Ok(keys)
+        }
+        _ => Err(Outcome::failed("prompt_changed", "That question has changed. Check the terminal.")),
+    }
+}
+
 /// Keys for a permission prompt must name the prompt the person saw, and it must still be the
 /// agent's current one.
 pub(crate) fn keys_for(agent: &Agent, keys: Vec<deliver::Key>, prompt_id: Option<String>) -> Result<Op, Outcome> {
     let changed = || Outcome::failed("prompt_changed", "That prompt was already answered or replaced. Check the terminal.");
     match (&agent.question_kind, prompt_id) {
-        (Some(QuestionKind::Permission), None) => Err(Outcome::failed("bad_request", "keys for a permission prompt must name the prompt")),
+        (Some(k), None) if k.answered_with_keys() => Err(Outcome::failed("bad_request", "keys for a prompt must name the prompt")),
         (_, Some(id)) if agent.prompt_id.as_ref() != Some(&id) => Err(changed()),
         (_, prompt) => Ok(Op::Keys { keys, prompt }),
     }

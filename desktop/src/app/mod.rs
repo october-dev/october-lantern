@@ -54,6 +54,8 @@ enum Pending {
     Reply(Ticket),
     Keys {
         agent_id: String,
+        /// The question answered, whose "Sent" is taken back if the keys didn't go in.
+        prompt_id: Option<String>,
     },
     Focus {
         agent_id: String,

@@ -3,7 +3,6 @@
 use super::{
     Ctx, DictationOwner, UiAction, chat,
     components::{self as c, MarkdownStyle},
-    feed,
     icons::Icon,
     theme::{self as t, Weight},
 };
@@ -325,12 +324,11 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
         |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 8.0;
-            if let Some(agent) = agent.filter(|agent| agent.is_permission_prompt()) {
-                ui.add(egui::Label::new(c::text(agent.question.as_deref().unwrap_or(""), 12.0, Weight::Medium, t::AMBER)).wrap());
-                feed::permission_buttons(ui, cx, agent);
-            }
             for (key, message) in chat::keyed(messages) {
                 chat::bubble(ui, cx, message, &format!("task-{turn}-{key}"));
+            }
+            if let Some(agent) = agent.filter(|agent| agent.is_answerable()) {
+                super::question::question_card(ui, cx, agent, latest);
             }
             if let Some(error) = &link.error {
                 c::label(ui, format!("Couldn't start it: {error}"), 11.5, Weight::Regular, t::RED);
@@ -349,7 +347,7 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
                 let quiet = |ui: &mut Ui, text: &str| c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
                 match agent.state {
                     AgentState::Working => busy(ui, cx.env, "Working on it…"),
-                    AgentState::NeedsInput if !agent.is_permission_prompt() => {
+                    AgentState::NeedsInput if !agent.is_answerable() => {
                         c::label(ui, "Needs your answer. Reply below.", 11.0, Weight::Regular, t::AMBER);
                     }
                     AgentState::NeedsInput => {}

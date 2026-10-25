@@ -162,6 +162,46 @@ impl Route {
     }
 }
 
+/// What an agent's question offers (engine `Choices`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Choices {
+    /// Claude's own questions, in the order the terminal asks them.
+    pub questions: Vec<ChoiceQuestion>,
+    /// A permission prompt's "don't ask again" option, as the terminal words it.
+    pub always: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChoiceQuestion {
+    pub question: String,
+    pub header: Option<String>,
+    pub multi_select: bool,
+    pub options: Vec<ChoiceOption>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChoiceOption {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+/// What the person chose for an agent's question; serialized as the engine's `Answer`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AgentAnswer {
+    /// Allow once; start on the plan.
+    Yes,
+    /// The permission prompt's "don't ask again" option.
+    Always,
+    /// Deny; keep planning; don't answer Claude's question.
+    No,
+    /// The options picked for each of Claude's questions, in order (0-based).
+    Picks { picks: Vec<Vec<usize>> },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Agent {
@@ -180,11 +220,15 @@ pub struct Agent {
     pub state_since: Option<f64>,
     pub last_message: Option<String>,
     pub question: Option<String>,
-    /// "permission" at a tool permission prompt (`1` allows once, Escape declines); "other" otherwise.
+    /// "permission" at a tool permission prompt (`1` allows once, Escape declines); "choice" for
+    /// Claude's own multiple-choice question; "plan" for its plan waiting for approval; "other"
+    /// otherwise.
     pub question_kind: Option<String>,
     pub question_detail: Option<String>,
-    /// Identifies one permission prompt; Allow/Deny carry it so they can't answer a different one.
+    /// Identifies one prompt; answers carry it so they can't answer a different one.
     pub prompt_id: Option<String>,
+    /// The options Lantern offers for the question (Claude's own questions; a permission's "always").
+    pub choices: Option<Choices>,
     /// "exact", "guessed", "ambiguous" (state and history hidden) or "none".
     pub session_match: Option<String>,
     /// The app a session belongs to when it isn't a terminal ("Claude Desktop", "Codex app").
@@ -198,12 +242,14 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn is_permission_prompt(&self) -> bool {
-        self.state == AgentState::NeedsInput && self.question_kind.as_deref() == Some("permission") && self.prompt_id.is_some()
-    }
-    /// Allow/Deny can be answered with a keypress.
-    pub fn can_answer_permission(&self) -> bool {
-        self.is_permission_prompt() && self.route.as_ref().is_some_and(Route::sends_keys)
+    /// A question Lantern can answer from its card, by pressing the terminal's keys.
+    pub fn is_answerable(&self) -> bool {
+        let kind_ok = match self.question_kind.as_deref() {
+            Some("permission" | "plan") => true,
+            Some("choice") => self.choices.as_ref().is_some_and(|c| !c.questions.is_empty()),
+            _ => false,
+        };
+        kind_ok && self.state == AgentState::NeedsInput && self.prompt_id.is_some() && self.route.as_ref().is_some_and(Route::sends_keys)
     }
     pub fn is_live(&self) -> bool {
         self.live.unwrap_or(true)
@@ -912,6 +958,9 @@ pub struct Model {
     pub launch_preview: Option<LaunchPreview>,
     /// A reply to the composer's recipient (`Inputs::drafts`) is on its way.
     pub sending: bool,
+    /// What was sent for each question (by prompt id), shown as "Sent" on its card until the
+    /// agent moves on.
+    pub answered: std::collections::HashMap<String, AgentAnswer>,
     pub assistant: AssistantModel,
     pub new_session: NewSessionModel,
     pub point_ask: PointAskModel,
@@ -958,6 +1007,13 @@ impl Model {
     pub fn any_working(&self) -> bool {
         self.agents.iter().any(|agent| agent.state == AgentState::Working)
     }
+    /// The agents shown as dots on the pill: running ones whose kind counts, in a steady order.
+    pub fn pill_agents(&self) -> Vec<&Agent> {
+        let mut agents: Vec<&Agent> = self.agents.iter().filter(|agent| agent.is_live() && self.prefs.counts(&agent.kind)).collect();
+        // `agents` is in rank order, which moves as states change; dots keep their place.
+        agents.sort_by(|a, b| a.id.cmp(&b.id));
+        agents
+    }
 }
 
 #[cfg(test)]
@@ -974,7 +1030,7 @@ mod tests {
         .unwrap();
         assert_eq!(agent.state, AgentState::NeedsInput);
         assert_eq!(agent.turn_key(), "claude:42:1790180000@1790180000123");
-        assert!(agent.can_answer_permission());
+        assert!(agent.is_answerable());
         assert!(agent.in_session("claude-proj-1") && !agent.in_session("claude-proj"));
         assert!(agent.is_live());
     }

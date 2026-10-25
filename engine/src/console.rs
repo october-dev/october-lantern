@@ -26,14 +26,17 @@ pub struct Key {
 const ENTER: Key = Key { vk: 0x0D, scan: 0x1C, unit: b'\r' as u16 };
 #[cfg(any(windows, test))]
 const ESCAPE: Key = Key { vk: 0x1B, scan: 0x01, unit: 0x1B };
+#[cfg(any(windows, test))]
+const TAB: Key = Key { vk: 0x09, scan: 0x0F, unit: 0x09 };
 
-/// What a delivery types: one line of text, or a single key ("escape" or one character).
+/// What a delivery types: one line of text, or a single key ("escape", "tab" or one character).
 #[cfg(any(windows, test))]
 pub fn keys(mode: &str, payload: &str) -> Option<Vec<Key>> {
     let typed = |text: &str| text.encode_utf16().map(|unit| Key { vk: 0, scan: 0, unit }).collect::<Vec<_>>();
     match mode {
         "text" => Some(typed(&payload.replace(['\r', '\n'], " "))),
         "key" if payload == "escape" => Some(vec![ESCAPE]),
+        "key" if payload == "tab" => Some(vec![TAB]),
         "key" if payload.chars().count() == 1 => Some(typed(payload)),
         _ => None,
     }
@@ -244,6 +247,7 @@ mod tests {
         assert_eq!(text, "fix it now é", "newlines would submit early");
         assert!(typed.iter().all(|k| k.vk == 0));
         assert_eq!(keys("key", "escape"), Some(vec![ESCAPE]));
+        assert_eq!(keys("key", "tab"), Some(vec![TAB]));
         assert_eq!(keys("key", "1"), Some(vec![Key { vk: 0, scan: 0, unit: b'1' as u16 }]));
         assert_eq!(keys("key", "12"), None);
         assert_eq!(keys("other", "x"), None);

@@ -1,0 +1,61 @@
+{
+ "surface": "panel",
+ "maxHeight": 1032,
+ "nowMs": 1790000000000,
+ "home": "/home/me",
+ "reduceMotion": true,
+ "model": {
+  "caps": {
+   "platform": "linux",
+   "dense_glass": true
+  },
+  "engine": {
+   "state": "ready"
+  },
+  "panel": "inbox",
+  "agents": [
+   {
+    "id": "claude:1:1",
+    "kind": "claude",
+    "handle": "claude-1",
+    "state": "needs_input",
+    "stateSince": 1789999990000,
+    "project": "lantern",
+    "canReply": true,
+    "question": "Which layout?",
+    "questionKind": "choice",
+    "promptId": "t-fixture-1",
+    "route": {
+     "via": "tmux"
+    },
+    "lastMessage": "Before I build the pricing page:",
+    "choices": {
+     "questions": [
+      {
+       "question": "Which layout?",
+       "header": "Layout",
+       "multiSelect": false,
+       "options": [
+        {
+         "label": "Three tiers",
+         "description": "Free, Pro and Max side by side"
+        },
+        {
+         "label": "One plan"
+        },
+        {
+         "label": "A table"
+        }
+       ]
+      }
+     ]
+    }
+   }
+  ],
+  "inbox": {
+   "new": [
+    "claude:1:1"
+   ]
+  }
+ }
+}

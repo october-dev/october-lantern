@@ -116,6 +116,9 @@ impl Lantern {
         let _fresh = self.turns.observe(&agents, &self.model.prefs, Self::now_ms());
         let live: HashSet<String> = agents.iter().map(|agent| agent.id.clone()).collect();
         self.inputs.drafts.prune(&live);
+        // "Sent" stays on a question's card only while the agent is still on it.
+        let prompts: HashSet<String> = agents.iter().filter_map(|agent| agent.prompt_id.clone()).collect();
+        self.model.answered.retain(|prompt, _| prompts.contains(prompt));
         self.model.agents = agents;
         self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
         self.refresh_folders();
@@ -171,7 +174,7 @@ impl Lantern {
         }
     }
 
-    fn reply_result(&mut self, event: &Value) {
+    pub(super) fn reply_result(&mut self, event: &Value) {
         let Some(id) = text(event, "requestId") else { return };
         let ok = event["ok"] == true;
         match self.pending.remove(&id) {
@@ -190,7 +193,12 @@ impl Lantern {
                 let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());
                 self.show(format!("@{handle}: {}", text(event, "message").unwrap_or_else(|| "not sent".into())));
             }
-            Some(Pending::Keys { agent_id }) if !ok => {
+            Some(Pending::Keys { agent_id, prompt_id }) if !ok => {
+                if event["error"] != "uncertain"
+                    && let Some(prompt_id) = prompt_id
+                {
+                    self.model.answered.remove(&prompt_id);
+                }
                 let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());
                 self.show(format!("@{handle}: {}", text(event, "message").unwrap_or_else(|| "couldn't answer".into())));
             }

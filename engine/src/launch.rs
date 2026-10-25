@@ -986,6 +986,8 @@ fn startup_agent(
         question_kind: None,
         question_detail: None,
         prompt_id: None,
+        choices: None,
+        transcript: None,
         session_match: SessionMatch::None,
         source: None,
         live: true,

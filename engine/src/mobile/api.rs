@@ -329,6 +329,8 @@ mod tests {
             question_kind: None,
             question_detail: None,
             prompt_id: None,
+            choices: None,
+            transcript: None,
             session_match: crate::model::SessionMatch::Exact,
             source: None,
             live: true,

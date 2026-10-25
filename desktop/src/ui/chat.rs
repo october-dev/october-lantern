@@ -2,7 +2,6 @@
 use super::{
     Ctx, UiAction,
     components::{self as c},
-    feed,
     icons::Icon,
     theme::{self as t, Weight},
 };
@@ -37,14 +36,9 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, max_height: f32) {
             }
         });
     });
-    if agent.is_permission_prompt() {
+    if agent.is_answerable() {
         egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 10 }).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui.add(
-                egui::Label::new(c::text(agent.question.as_deref().unwrap_or(""), 12.5, Weight::Medium, t::AMBER)).wrap().selectable(true),
-            );
-            feed::request_detail(ui, cx, agent);
-            feed::permission_buttons(ui, cx, agent);
+            super::question::question_card(ui, cx, agent, true);
         });
     }
     divider(ui);

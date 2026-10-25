@@ -1,7 +1,7 @@
 //! The one place UI intent becomes effects (CONTRACT §4). Actions carry what the person saw
 //! (prompt ids, turn keys); stale ones are dropped here.
 use super::{Lantern, Pending};
-use crate::model::{Chat, PanelMode};
+use crate::model::{AgentAnswer, Chat, PanelMode};
 use crate::ui::UiAction;
 use serde_json::json;
 
@@ -31,7 +31,7 @@ impl Lantern {
                 self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
                 self.save_prefs();
             }
-            UiAction::AnswerPermission { agent_id, prompt_id, allow } => self.answer_permission(&agent_id, &prompt_id, allow),
+            UiAction::AnswerQuestion { agent_id, prompt_id, answer } => self.answer_question(&agent_id, &prompt_id, answer),
             UiAction::StartNewSession => self.start_new_session(),
             UiAction::ChooseSessionAgent { kind } => self.choose_session_agent(kind),
             UiAction::ChooseSessionModel { kind, model } => {
@@ -239,16 +239,17 @@ impl Lantern {
         }
     }
 
-    /// Allow/Deny answer exactly the prompt the person saw, or nothing.
-    fn answer_permission(&mut self, agent_id: &str, prompt_id: &str, allow: bool) {
-        let current =
-            self.model.agent(agent_id).filter(|agent| agent.can_answer_permission() && agent.prompt_id.as_deref() == Some(prompt_id));
-        if current.is_none() {
+    /// Answers exactly the question the person saw, once, or nothing. The engine presses the
+    /// terminal's keys for it.
+    fn answer_question(&mut self, agent_id: &str, prompt_id: &str, answer: AgentAnswer) {
+        let current = self.model.agent(agent_id).filter(|agent| agent.is_answerable() && agent.prompt_id.as_deref() == Some(prompt_id));
+        if current.is_none() || self.model.answered.contains_key(prompt_id) {
             return;
         }
-        let key = if allow { "1" } else { "Escape" };
-        if let Some(id) = self.request(json!({"type": "keys", "agentId": agent_id, "keys": [key], "promptId": prompt_id})) {
-            self.pending.insert(id, Pending::Keys { agent_id: agent_id.into() });
+        let request = json!({"type": "answer", "agentId": agent_id, "promptId": prompt_id, "answer": answer});
+        if let Some(id) = self.request(request) {
+            self.model.answered.insert(prompt_id.into(), answer);
+            self.pending.insert(id, Pending::Keys { agent_id: agent_id.into(), prompt_id: Some(prompt_id.into()) });
         }
     }
 }
@@ -377,5 +378,36 @@ mod report_tests {
         assert!(decoded.contains("Agents: Claude Code ×2, Codex ×1"), "{decoded}");
         assert!(decoded.contains("Terminals: Code via pty ×1, Ptyxis via tmux ×2"), "{decoded}");
         assert!(!decoded.contains("secret-project") && !decoded.contains("private words"));
+    }
+}
+
+#[cfg(test)]
+mod question_tests {
+    #[test]
+    fn a_question_is_answered_once_and_sent_comes_back_off_when_the_keys_did_not_go_in() {
+        use crate::model::{Agent, AgentAnswer, AgentState, Route};
+        let (engine, _) = crate::sidecar::test_sender();
+        let mut lantern = super::Lantern::new(engine, None);
+        lantern.connected = true;
+        lantern.model.agents = vec![Agent {
+            id: "claude:1:1".into(),
+            handle: "claude-1".into(),
+            state: AgentState::NeedsInput,
+            question_kind: Some("plan".into()),
+            prompt_id: Some("t-1".into()),
+            route: Some(Route { via: "tmux".into(), ..Default::default() }),
+            ..Default::default()
+        }];
+        lantern.answer_question("claude:1:1", "t-1", AgentAnswer::Yes);
+        lantern.answer_question("claude:1:1", "t-1", AgentAnswer::No);
+        assert_eq!(lantern.model.answered.get("t-1"), Some(&AgentAnswer::Yes), "the first answer only");
+        assert_eq!(lantern.pending.len(), 1);
+        // A question that has moved on isn't answered.
+        lantern.answer_question("claude:1:1", "t-0", AgentAnswer::Yes);
+        assert_eq!(lantern.pending.len(), 1);
+        let id = lantern.pending.keys().next().unwrap().clone();
+        lantern.reply_result(&serde_json::json!({"type": "replyResult", "requestId": id, "ok": false, "error": "prompt_changed",
+            "message": "That prompt was already answered or replaced. Check the terminal."}));
+        assert!(lantern.model.answered.is_empty());
     }
 }

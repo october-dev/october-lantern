@@ -661,12 +661,10 @@ private struct TaskCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let agent, agent.isPermissionPrompt {
-                Text(agent.question ?? "").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
-                    .fixedSize(horizontal: false, vertical: true)
-                PermissionButtons(agent: agent, model: model)
-            }
             ForEach(ChatView.keyed(messages), id: \.key) { item in Bubble(message: item.message) }
+            if let agent, agent.isAnswerable {
+                QuestionCard(agent: agent, model: model, keys: latest)
+            }
             status
             footer
             Color.clear.frame(height: 1).id(latest ? "task-bottom" : "task-\(link.prompt.hashValue)")
@@ -721,7 +719,7 @@ private struct TaskCard: View {
             // was done, so nothing here claims it.
             switch agent.state {
             case .working: busy("Working on it…")
-            case .needsInput where !agent.isPermissionPrompt: note("Needs your answer. Reply below.", color: Theme.amber)
+            case .needsInput where !agent.isAnswerable: note("Needs your answer. Reply below.", color: Theme.amber)
             case .needsInput: EmptyView()
             case .waiting: note("Finished its turn. Reply below if there's more.", color: Theme.muted)
             case .idle: note("Open, but not working on anything.", color: Theme.muted)

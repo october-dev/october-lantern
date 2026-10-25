@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use crate::model::{SessionStatus, State, epoch_ms, truncate};
+use crate::model::{Choices, QuestionKind, SessionStatus, State, epoch_ms, truncate};
 
 pub(crate) const TAIL_BYTES: u64 = 512 * 1024;
 const HEAD_BYTES: u64 = 128 * 1024;
@@ -196,6 +196,44 @@ fn has_block(content: &Value, kind: &str) -> bool {
     content.as_array().is_some_and(|b| b.iter().any(|b| b["type"] == kind))
 }
 
+/// A question Claude is waiting on, from its transcript: what hooks report, for sessions without
+/// them.
+struct OpenQuestion {
+    question: Option<String>,
+    kind: QuestionKind,
+    detail: Option<String>,
+    choices: Option<Choices>,
+    prompt_id: String,
+}
+
+/// The transcript's last entry calls AskUserQuestion or ExitPlanMode and has no result yet: Claude
+/// is showing that question in the terminal. (Other tools may be running, or waiting on a
+/// permission prompt only a hook can see.)
+fn open_question(content: &Value) -> Option<OpenQuestion> {
+    let call = content.as_array()?.iter().rev().find(|b| b["type"] == "tool_use")?;
+    let prompt_id = format!("t-{}", call["id"].as_str()?);
+    match call["name"].as_str()? {
+        "AskUserQuestion" => {
+            let questions = crate::hooks::choice_questions(&call["input"])?;
+            Some(OpenQuestion {
+                question: Some(crate::hooks::question_line(&questions)),
+                kind: QuestionKind::Choice,
+                detail: None,
+                choices: Some(Choices { questions, always: None }),
+                prompt_id,
+            })
+        }
+        "ExitPlanMode" => Some(OpenQuestion {
+            question: Some("Its plan is ready. Start on it?".into()),
+            kind: QuestionKind::Plan,
+            detail: call["input"]["plan"].as_str().map(|p| truncate(p, 20_000)),
+            choices: None,
+            prompt_id,
+        }),
+        _ => None,
+    }
+}
+
 /// Claude Code writes one JSONL entry per content block of an API message (a `text` entry, then
 /// a `tool_use` entry, sharing `message.id`), and every entry carries the message's final
 /// `stop_reason`. So the last entry's `stop_reason` says whether the turn is over, whatever block
@@ -239,6 +277,17 @@ pub(crate) fn parse_claude(path: &Path, mtime: u64) -> SessionStatus {
         status.since = Some(at);
     }
     let content = &last["message"]["content"];
+    if last["type"] == "assistant"
+        && let Some(asking) = open_question(content)
+    {
+        status.state = Some(State::NeedsInput);
+        status.question = asking.question;
+        status.question_kind = Some(asking.kind);
+        status.question_detail = asking.detail;
+        status.choices = asking.choices;
+        status.prompt_id = Some(asking.prompt_id);
+        return status;
+    }
     status.state = Some(match last["type"].as_str() {
         Some("assistant") if last["message"]["stop_reason"] == "tool_use" || has_block(content, "tool_use") => State::Working,
         Some("assistant") => State::Waiting,

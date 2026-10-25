@@ -13,6 +13,7 @@ use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId,
 pub const AMBER: Color32 = Color32::from_rgb(250, 184, 69);
 pub const GREEN: Color32 = Color32::from_rgb(92, 204, 130);
 pub const RED: Color32 = Color32::from_rgb(237, 92, 92);
+pub const BLUE: Color32 = Color32::from_rgb(77, 148, 255);
 /// Native dark-mode link blue; links are not amber app controls (ref-4).
 pub const LINK: Color32 = Color32::from_rgb(10, 132, 255);
 pub const INK: Color32 = Color32::WHITE;
@@ -63,10 +64,12 @@ pub fn opacity(color: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (alpha.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
+/// Blue is working, amber needs you, green is done (its turn is over).
 pub fn state_color(state: AgentState) -> Color32 {
     match state {
-        AgentState::NeedsInput | AgentState::Waiting => AMBER,
-        AgentState::Working => GREEN,
+        AgentState::NeedsInput => AMBER,
+        AgentState::Waiting => GREEN,
+        AgentState::Working => BLUE,
         AgentState::Idle | AgentState::Unknown => white(0.35),
     }
 }
@@ -186,7 +189,12 @@ mod tests {
         assert_eq!(AMBER.to_array(), [250, 184, 69, 255]);
         assert_eq!(GREEN.to_array(), [92, 204, 130, 255]);
         assert_eq!(RED.to_array(), [237, 92, 92, 255]);
-        assert_eq!(state_color(AgentState::NeedsInput), state_color(AgentState::Waiting));
+        assert_eq!(BLUE.to_array(), [77, 148, 255, 255]);
+        assert_eq!(
+            [AgentState::Working, AgentState::NeedsInput, AgentState::Waiting].map(state_color),
+            [BLUE, AMBER, GREEN],
+            "blue working, amber needs you, green done"
+        );
         assert_eq!(state_label(AgentState::Waiting), "Your turn");
     }
 }

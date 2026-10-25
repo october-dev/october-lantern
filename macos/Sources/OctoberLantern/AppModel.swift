@@ -252,6 +252,9 @@ final class AppModel: ObservableObject {
 
     var anyWorking: Bool { agents.contains { $0.state == .working } }
 
+    /// The agents shown as dots on the pill: running ones whose kind counts, in a steady order.
+    var pillAgents: [Agent] { agents.filter { $0.isLive && prefs.counts($0.kind) }.sorted { $0.id < $1.id } }
+
     /// The composer's recipient. A chosen agent that has gone away is `nil` (and `targetMissing`),
     /// never silently replaced by another agent.
     var target: Agent? {
@@ -449,16 +452,25 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Answers a permission prompt: "1" allows once, Escape declines. The engine refuses if the
-    /// prompt on screen is no longer the one shown here.
-    func answerPermission(_ agent: Agent, allow: Bool) {
-        guard let promptId = agent.promptId else { return }
-        Analytics.shared.capture("permission_answered", ["allow": allow, "route": agent.route?.via ?? "none"])
-        let id = request("k")
-        track(
-            id, .keys(agentId: agent.id),
-            sent: engine.keys(requestId: id, agentId: agent.id, keys: [allow ? "1" : "Escape"], promptId: promptId)
+    /// What was sent for each question (by prompt id), shown as "Sent" on its card until the agent
+    /// moves on. Cleared again when the engine couldn't press the keys.
+    @Published var answered: [String: AgentAnswer] = [:]
+    private var answering: [String: String] = [:]
+
+    /// Answers an agent's question from its card. The engine refuses if the question on screen is
+    /// no longer the one shown here.
+    func answer(_ agent: Agent, _ answer: AgentAnswer) {
+        guard let promptId = agent.promptId, answered[promptId] == nil else { return }
+        Analytics.shared.capture(
+            agent.questionKind == "permission" ? "permission_answered" : "question_answered",
+            ["answer": answer.kind, "kind": agent.questionKind ?? "none", "route": agent.route?.via ?? "none"]
         )
+        let id = request("k")
+        answered[promptId] = answer
+        answering[id] = promptId
+        let sent = engine.answer(requestId: id, agentId: agent.id, promptId: promptId, answer: answer)
+        track(id, .keys(agentId: agent.id), sent: sent)
+        if !sent { answered[promptId] = nil }
     }
 
     func send() {
@@ -878,6 +890,7 @@ final class AppModel: ObservableObject {
                 show("Couldn't send to @\(handle(agentId)): \(message ?? "unknown error")")
             }
         case .keys(let agentId), .direct(let agentId):
+            if let promptId = answering.removeValue(forKey: requestId), !ok, !uncertain { answered[promptId] = nil }
             if ok {
                 show("\(message ?? "Sent") to @\(handle(agentId))")
             } else if uncertain {

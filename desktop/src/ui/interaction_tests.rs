@@ -8,6 +8,7 @@ fn fixture(name: &str) -> crate::app::fixture::Fixture {
         "inbox" => include_str!("../../fixtures/panel-inbox.json"),
         "chat" => include_str!("../../fixtures/panel-chat.json"),
         "permission" => include_str!("../../fixtures/panel-permission.json"),
+        "question" => include_str!("../../fixtures/panel-question.json"),
         _ => unreachable!(),
     })
     .unwrap()
@@ -178,27 +179,87 @@ fn non_replyable_windows_chat_keeps_the_hint_and_sends_by_button_or_enter() {
     }
 }
 
+fn answer(answer: crate::model::AgentAnswer, prompt: &str) -> Vec<UiAction> {
+    vec![UiAction::AnswerQuestion { agent_id: "claude:1:1".into(), prompt_id: prompt.into(), answer }]
+}
+
 #[test]
-fn permission_buttons_explain_what_they_press() {
-    for (title, help) in [
-        ("Allow", "Allow once: presses 1 in the agent's terminal, if this is still the prompt on screen"),
-        ("Deny", "Decline (presses Escape), then tell the agent what to do instead"),
-    ] {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        ctx.global_style_mut(|style| {
-            style.interaction.tooltip_delay = 0.0;
-            style.interaction.show_tooltips_only_when_still = false;
-        });
-        let assets = Assets::load(&ctx);
-        let mut f = fixture("permission");
+fn a_permission_card_offers_the_terminals_options() {
+    use crate::model::AgentAnswer;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let assets = Assets::load(&ctx);
+    let mut f = fixture("permission");
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    text_rect(&output, "Then tell @claude-1 what to do instead");
+    assert!(find_text(&output, "Always allow cargo test:*").is_none(), "only when the terminal offers it");
+    let no = text_rect(&output, "No").center();
+    assert_eq!(click(&ctx, &assets, &mut f, no), answer(AgentAnswer::No, "fixture-prompt-1"));
+
+    let mut f = fixture("permission");
+    f.model.agents[0].choices = Some(crate::model::Choices { always: Some("Always allow cargo test:*".into()), ..Default::default() });
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    let always = text_rect(&output, "Always allow cargo test:*").center();
+    assert_eq!(click(&ctx, &assets, &mut f, always), answer(AgentAnswer::Always, "fixture-prompt-1"));
+}
+
+#[test]
+fn claudes_question_is_answered_by_its_option_or_number_key_but_not_while_typing() {
+    use crate::model::AgentAnswer;
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let assets = Assets::load(&ctx);
+    let mut f = fixture("question");
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    text_rect(&output, "Free, Pro and Max side by side");
+    let one_plan = text_rect(&output, "One plan").center();
+    assert_eq!(click(&ctx, &assets, &mut f, one_plan), answer(AgentAnswer::Picks { picks: vec![vec![1]] }, "t-fixture-1"));
+
+    // A number key picks on the card the reply box is addressed to.
+    let mut f = fixture("question");
+    f.inputs.drafts.address(Some("claude:1:1"));
+    render(&ctx, &assets, &mut f, Vec::new());
+    let (_, actions) = render(&ctx, &assets, &mut f, vec![key(egui::Key::Num3, true)]);
+    assert_eq!(actions, answer(AgentAnswer::Picks { picks: vec![vec![2]] }, "t-fixture-1"));
+    let (_, actions) = render(&ctx, &assets, &mut f, vec![key(egui::Key::Num9, true)]);
+    assert!(actions.is_empty(), "no ninth option");
+
+    // Once sent, it says so and can't be answered again.
+    let mut f = fixture("question");
+    f.model.answered.insert("t-fixture-1".into(), AgentAnswer::Picks { picks: vec![vec![1]] });
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    text_rect(&output, "Sent");
+    let three = text_rect(&output, "Three tiers").center();
+    assert!(click(&ctx, &assets, &mut f, three).is_empty());
+}
+
+#[test]
+fn several_questions_are_sent_together_once_each_has_an_answer() {
+    use crate::model::{AgentAnswer, ChoiceOption, ChoiceQuestion};
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let assets = Assets::load(&ctx);
+    let mut f = fixture("question");
+    let option = |label: &str| ChoiceOption { label: label.into(), description: None };
+    let choices = f.model.agents[0].choices.as_mut().unwrap();
+    choices.questions.push(ChoiceQuestion {
+        question: "Which checks?".into(),
+        header: Some("Checks".into()),
+        multi_select: true,
+        options: vec![option("Unit tests"), option("Screenshots"), option("Accessibility")],
+    });
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    text_rect(&output, "Pick any");
+    let send = text_rect(&output, "Send answers").center();
+    assert!(click(&ctx, &assets, &mut f, send).is_empty(), "not until every question has an answer");
+    for label in ["A table", "Unit tests", "Accessibility", "Screenshots", "Screenshots"] {
         let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
-        let pos = text_rect(&output, title).center();
-        render(&ctx, &assets, &mut f, vec![Event::PointerMoved(pos)]);
-        let (output, actions) = render(&ctx, &assets, &mut f, vec![Event::PointerMoved(pos)]);
-        assert!(actions.is_empty());
-        text_rect(&output, help);
+        let pos = text_rect(&output, label).center();
+        assert!(click(&ctx, &assets, &mut f, pos).is_empty(), "{label} only ticks");
     }
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    let send = text_rect(&output, "Send answers").center();
+    assert_eq!(click(&ctx, &assets, &mut f, send), answer(AgentAnswer::Picks { picks: vec![vec![2], vec![0, 2]] }, "t-fixture-1"));
 }
 
 #[test]

@@ -257,6 +257,12 @@ final class EngineClient {
         return send(request)
     }
 
+    /// Answers an agent's question; the engine presses the terminal's keys for it.
+    @discardableResult
+    func answer(requestId: String, agentId: String, promptId: String, answer: AgentAnswer) -> Bool {
+        send(["type": "answer", "requestId": requestId, "agentId": agentId, "promptId": promptId, "answer": answer.json])
+    }
+
     /// "october.pair", "october.cancelPair" or "october.forget".
     @discardableResult
     func october(_ type: String) -> Bool {

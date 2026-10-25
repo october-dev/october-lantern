@@ -85,6 +85,34 @@ struct Route: Codable, Hashable {
     var sendsKeys: Bool { via == "tmux" || via == "cmux" || via == "iterm" }
 }
 
+/// What an agent's question offers (engine `Choices`).
+struct Choices: Codable, Hashable {
+    struct Question: Codable, Hashable {
+        let question: String
+        let header: String?
+        let multiSelect: Bool
+        let options: [Option]
+    }
+    struct Option: Codable, Hashable {
+        let label: String
+        let description: String?
+    }
+    var questions: [Question] = []
+    /// A permission prompt's "don't ask again" option, as the terminal words it.
+    var always: String?
+
+    enum CodingKeys: String, CodingKey { case questions, always }
+    init(questions: [Question] = [], always: String? = nil) {
+        self.questions = questions
+        self.always = always
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        questions = try c.decodeIfPresent([Question].self, forKey: .questions) ?? []
+        always = try c.decodeIfPresent(String.self, forKey: .always)
+    }
+}
+
 struct Agent: Codable, Identifiable, Hashable {
     /// `<kind>:<pid>:<start time>`; a reused pid is a different agent.
     let id: String
@@ -101,12 +129,15 @@ struct Agent: Codable, Identifiable, Hashable {
     let lastMessage: String?
     let question: String?
     /// "permission" when a hook says the agent is at a tool permission prompt (`1` allows once,
-    /// Escape declines); "other" for any other question.
+    /// Escape declines); "choice" for Claude's own multiple-choice question; "plan" for its plan
+    /// waiting for approval; "other" for any other question.
     let questionKind: String?
     /// The whole request behind `question` (a permission prompt's full command).
     let questionDetail: String?
     /// Identifies one permission prompt; Allow/Deny send it so they can't answer a different one.
     let promptId: String?
+    /// The options Lantern offers for the question (Claude's own questions; a permission's "always").
+    let choices: Choices?
     /// How the conversation was matched to this process: "exact", "guessed", "ambiguous" (another
     /// agent of this kind in this folder; state and history hidden) or "none".
     let sessionMatch: String?
@@ -120,8 +151,15 @@ struct Agent: Codable, Identifiable, Hashable {
     let route: Route?
     let stateSource: String
 
-    /// A tool permission prompt Lantern can answer with a keypress.
-    var isPermissionPrompt: Bool { state == .needsInput && questionKind == "permission" && promptId != nil }
+    /// A question Lantern can answer from its card (by pressing the terminal's keys).
+    var isAnswerable: Bool {
+        guard state == .needsInput, promptId != nil, route?.sendsKeys ?? false else { return false }
+        switch questionKind {
+        case "permission", "plan": return true
+        case "choice": return !(choices?.questions ?? []).isEmpty
+        default: return false
+        }
+    }
 
     var isLive: Bool { live ?? true }
 
@@ -280,5 +318,31 @@ enum EngineMessage: Decodable {
         default:
             self = .other
         }
+    }
+}
+
+/// What the person chose for an agent's question (engine `Answer`).
+enum AgentAnswer: Hashable {
+    /// Allow once; start on the plan.
+    case yes
+    /// The permission prompt's "don't ask again" option.
+    case always
+    /// Deny; keep planning; don't answer Claude's question.
+    case no
+    /// The options picked for each of Claude's questions, in order (0-based).
+    case picks([[Int]])
+
+    var kind: String {
+        switch self {
+        case .yes: "yes"
+        case .always: "always"
+        case .no: "no"
+        case .picks: "picks"
+        }
+    }
+
+    var json: [String: Any] {
+        if case .picks(let picks) = self { return ["kind": kind, "picks": picks] }
+        return ["kind": kind]
     }
 }

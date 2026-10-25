@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::history::describe_tool;
-use crate::model::{QuestionKind, SessionStatus, State, truncate};
+use crate::model::{ChoiceOption, ChoiceQuestion, Choices, QuestionKind, SessionStatus, State, truncate};
 use crate::transcripts::home;
 
 pub fn support_dir() -> PathBuf {
@@ -49,6 +49,9 @@ pub struct HookEvent {
     pub question_detail: Option<String>,
     /// Identifies one permission prompt, so Allow/Deny can't answer a later one.
     pub prompt_id: Option<String>,
+    /// The options Lantern offers for it (Claude's own questions, a permission's "always").
+    #[serde(default)]
+    pub choices: Option<Choices>,
     pub transcript_path: Option<String>,
     /// Process ids above the hook command, nearest first. The agent is one of them.
     pub ancestors: Vec<u32>,
@@ -66,6 +69,7 @@ impl HookEvent {
             question_kind: self.question_kind,
             question_detail: self.question_detail.clone(),
             prompt_id: self.prompt_id.clone(),
+            choices: self.choices.clone(),
             last_message: self.message.clone(),
             session_id: self.session_id.clone(),
             title: None,
@@ -107,6 +111,7 @@ pub(crate) fn continue_turn(prev: Option<&HookEvent>, mut ev: HookEvent) -> Hook
         ev.question = ev.question.or(prev.question.clone());
         ev.question_detail = ev.question_detail.or(prev.question_detail.clone());
         ev.prompt_id = prev.prompt_id.clone().or(ev.prompt_id);
+        ev.choices = ev.choices.or(prev.choices.clone());
         ev.message = ev.message.or(prev.message.clone());
     }
     ev
@@ -145,6 +150,7 @@ pub fn run_hook(source: &str, arg: Option<String>) {
                     question_kind: None,
                     question_detail: None,
                     prompt_id: None,
+                    choices: None,
                     transcript_path: None,
                     ancestors: crate::procs::ancestors_of(std::process::id()),
                     at: now_ms(),
@@ -165,22 +171,38 @@ pub(crate) fn claude_event(v: &Value) -> Option<HookEvent> {
     let session_id = v["session_id"].as_str().map(String::from);
     let at = now_ms();
     let mut detail = None;
+    let mut choices = None;
     let (state, question, question_kind, message) = match v["hook_event_name"].as_str().unwrap_or("") {
         // The moment Claude asks, with the tool and its whole input.
-        "PermissionRequest" => {
-            let tool = v["tool_name"].as_str().unwrap_or("a tool");
-            let what = match v["tool_input"]["command"].as_str() {
-                Some(c) => {
-                    detail = Some(full_text(c));
-                    format!("{tool} · {}", one_line(c))
+        "PermissionRequest" => match v["tool_name"].as_str().unwrap_or("a tool") {
+            // Claude's own question for you, asked through the permission prompt.
+            "AskUserQuestion" => match choice_questions(&v["tool_input"]) {
+                Some(questions) => {
+                    let question = question_line(&questions);
+                    choices = Some(Choices { questions, always: None });
+                    (State::NeedsInput, Some(question), Some(QuestionKind::Choice), None)
                 }
-                None => {
-                    detail = serde_json::to_string_pretty(&v["tool_input"]).ok().filter(|t| t != "null").map(|t| full_text(&t));
-                    describe_tool(tool, &v["tool_input"])
-                }
-            };
-            (State::NeedsInput, Some(format!("Permission to run {what}")), Some(QuestionKind::Permission), None)
-        }
+                None => (State::NeedsInput, Some("Claude is asking you something".into()), Some(QuestionKind::Other), None),
+            },
+            "ExitPlanMode" => {
+                detail = v["tool_input"]["plan"].as_str().map(full_text);
+                (State::NeedsInput, Some("Its plan is ready. Start on it?".into()), Some(QuestionKind::Plan), None)
+            }
+            tool => {
+                let what = match v["tool_input"]["command"].as_str() {
+                    Some(c) => {
+                        detail = Some(full_text(c));
+                        format!("{tool} · {}", one_line(c))
+                    }
+                    None => {
+                        detail = serde_json::to_string_pretty(&v["tool_input"]).ok().filter(|t| t != "null").map(|t| full_text(&t));
+                        describe_tool(tool, &v["tool_input"])
+                    }
+                };
+                choices = always_option(&v["permission_suggestions"]).map(|always| Choices { questions: Vec::new(), always: Some(always) });
+                (State::NeedsInput, Some(format!("Permission to run {what}")), Some(QuestionKind::Permission), None)
+            }
+        },
         "Notification" => match v["notification_type"].as_str().unwrap_or("") {
             // Fires only after the prompt has waited ~6 s; PermissionRequest already covered it,
             // unless this is a prompt PermissionRequest doesn't fire for (a sandboxed network request).
@@ -203,11 +225,12 @@ pub(crate) fn claude_event(v: &Value) -> Option<HookEvent> {
         // UserPromptSubmit, PostToolUse, PostToolUseFailure: Claude is at work.
         _ => (State::Working, None, None, None),
     };
-    let prompt_id = (question_kind == Some(QuestionKind::Permission)).then(|| {
-        use sha2::Digest;
-        let h = sha2::Sha256::digest(format!("{}|{}|{}|{at}", session_id.as_deref().unwrap_or(""), v["tool_name"], v["tool_input"]));
-        h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
-    });
+    let prompt_id =
+        (v["hook_event_name"] == "PermissionRequest" && question_kind.is_some_and(QuestionKind::answered_with_keys)).then(|| {
+            use sha2::Digest;
+            let h = sha2::Sha256::digest(format!("{}|{}|{}|{at}", session_id.as_deref().unwrap_or(""), v["tool_name"], v["tool_input"]));
+            h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        });
     Some(HookEvent {
         source: "claude".into(),
         state,
@@ -218,9 +241,58 @@ pub(crate) fn claude_event(v: &Value) -> Option<HookEvent> {
         question_kind,
         question_detail: detail,
         prompt_id,
+        choices,
         transcript_path: v["transcript_path"].as_str().map(String::from),
         ancestors,
         at,
+    })
+}
+
+/// The questions in an AskUserQuestion call, when the terminal can answer them with number keys
+/// (at most nine options each).
+pub(crate) fn choice_questions(input: &Value) -> Option<Vec<ChoiceQuestion>> {
+    let text = |v: &Value| v.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from);
+    let questions: Vec<ChoiceQuestion> = input["questions"]
+        .as_array()?
+        .iter()
+        .map(|q| {
+            Some(ChoiceQuestion {
+                question: text(&q["question"])?,
+                header: text(&q["header"]),
+                multi_select: q["multiSelect"].as_bool().unwrap_or(false),
+                options: q["options"]
+                    .as_array()?
+                    .iter()
+                    .map(|o| Some(ChoiceOption { label: text(&o["label"])?, description: text(&o["description"]) }))
+                    .collect::<Option<Vec<_>>>()?,
+            })
+        })
+        .collect::<Option<_>>()?;
+    let usable = !questions.is_empty() && questions.iter().all(|q| (1..=9).contains(&q.options.len()));
+    usable.then_some(questions)
+}
+
+/// One line for the inbox: the first question, and how many more.
+pub(crate) fn question_line(questions: &[ChoiceQuestion]) -> String {
+    let first = truncate(&questions[0].question, 200);
+    match questions.len() {
+        1 => first,
+        n => format!("{first} (+{} more)", n - 1),
+    }
+}
+
+/// What the terminal's second option says when Claude offers "don't ask again" for a permission
+/// (it does whenever the hook carries suggestions).
+fn always_option(suggestions: &Value) -> Option<String> {
+    let first = suggestions.as_array()?.first()?;
+    Some(match first["type"].as_str().unwrap_or("") {
+        "addRules" => match first["rules"][0]["ruleContent"].as_str() {
+            Some(rule) => format!("Always allow {}", truncate(rule, 60)),
+            None => "Always allow this".into(),
+        },
+        "addDirectories" => "Always allow this folder".into(),
+        "setMode" => "Allow all edits this session".into(),
+        _ => "Don't ask again".into(),
     })
 }
 
@@ -255,7 +327,7 @@ pub fn current_prompt(pid: u32) -> Option<String> {
         .into_iter()
         .filter(|e| e.ancestors.contains(&pid))
         .max_by_key(|e| e.at)
-        .filter(|e| e.state == State::NeedsInput && e.question_kind == Some(QuestionKind::Permission))
+        .filter(|e| e.state == State::NeedsInput && e.question_kind.is_some_and(QuestionKind::answered_with_keys))
         .and_then(|e| e.prompt_id)
 }
 

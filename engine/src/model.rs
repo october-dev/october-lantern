@@ -109,8 +109,50 @@ pub enum StateSource {
 pub enum QuestionKind {
     /// A tool permission prompt: `1` allows once, Escape declines.
     Permission,
+    /// Claude's own multiple-choice question (AskUserQuestion): numbers pick, Escape declines.
+    Choice,
+    /// Claude's plan, waiting for approval (ExitPlanMode): `1` approves, Escape keeps planning.
+    Plan,
     /// Anything else (an MCP elicitation form, a question for you): answer it in the terminal.
     Other,
+}
+
+impl QuestionKind {
+    /// Questions Lantern answers by pressing keys, so each one carries a prompt id.
+    pub fn answered_with_keys(self) -> bool {
+        self != QuestionKind::Other
+    }
+}
+
+/// What the answer buttons offer, for a question Lantern can answer itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Choices {
+    /// Claude's own questions (AskUserQuestion), in the order the terminal asks them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<ChoiceQuestion>,
+    /// A permission prompt's "don't ask again" option (the terminal's option 2), when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChoiceQuestion {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<ChoiceOption>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChoiceOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// How Lantern knows which session file belongs to an agent process.
@@ -217,6 +259,11 @@ pub struct Agent {
     pub question_detail: Option<String>,
     /// Identifies one permission prompt; Allow/Deny carry it so they can't answer a different one.
     pub prompt_id: Option<String>,
+    /// The options for a question Lantern answers itself (see `QuestionKind`).
+    pub choices: Option<Choices>,
+    /// The Claude Code transcript the state came from, for checking a question is still open.
+    #[serde(skip)]
+    pub transcript: Option<std::path::PathBuf>,
     pub session_match: SessionMatch,
     /// The app a session belongs to when it isn't a terminal: "Claude Desktop", "Cowork",
     /// "Codex app".
@@ -242,6 +289,7 @@ pub struct SessionStatus {
     pub question_kind: Option<QuestionKind>,
     pub question_detail: Option<String>,
     pub prompt_id: Option<String>,
+    pub choices: Option<Choices>,
     pub title: Option<String>,
     pub session_id: Option<String>,
 }

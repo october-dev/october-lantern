@@ -242,7 +242,9 @@ struct InboxCard: View {
                 Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink.opacity(0.75)).lineLimit(1)
             }
 
-            if let question = agent.question {
+            if agent.isAnswerable {
+                QuestionCard(agent: agent, model: model, keys: selected)
+            } else if let question = agent.question {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(question)
                         .font(.system(size: 13, weight: .medium))
@@ -268,10 +270,6 @@ struct InboxCard: View {
                     Button(expanded ? "Less" : "More") { expanded.toggle() }
                         .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
                 }
-            }
-
-            if agent.isPermissionPrompt {
-                PermissionButtons(agent: agent, model: model)
             }
 
             HStack(spacing: 8) {
@@ -310,36 +308,6 @@ struct RequestDetail: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 180)
-            }
-        }
-    }
-}
-
-/// Allow / Deny for a Claude Code permission prompt, where Lantern can press keys in its terminal.
-struct PermissionButtons: View {
-    let agent: Agent
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        if agent.route?.sendsKeys ?? false {
-            HStack(spacing: 8) {
-                Button { model.answerPermission(agent, allow: true) } label: {
-                    Label("Allow", systemImage: "checkmark").font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.black.opacity(0.85))
-                        .frame(maxWidth: .infinity).padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.amber))
-                }
-                .buttonStyle(.plain)
-                .help("Allow once: presses 1 in the agent's terminal, if this is still the prompt on screen")
-                Button { model.answerPermission(agent, allow: false) } label: {
-                    Label("Deny", systemImage: "xmark").font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Theme.ink)
-                        .frame(maxWidth: .infinity).padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Theme.faint))
-                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.hairline))
-                }
-                .buttonStyle(.plain)
-                .help("Decline (presses Escape), then tell the agent what to do instead")
             }
         }
     }

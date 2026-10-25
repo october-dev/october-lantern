@@ -301,6 +301,8 @@ pub(crate) fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
         question_kind: None,
         question_detail: None,
         prompt_id: None,
+        choices: None,
+        transcript: None,
         session_match: crate::model::SessionMatch::Exact,
         source: None,
         live: true,
@@ -483,6 +485,7 @@ fn repeated_hook_events_keep_the_turn() {
         question_kind: None,
         question_detail: None,
         prompt_id: None,
+        choices: None,
         transcript_path: None,
         ancestors: vec![1],
         at,
@@ -556,6 +559,7 @@ fn hook_events_carry_typed_questions() {
         question_kind: Some(QuestionKind::Permission),
         question_detail: None,
         prompt_id: Some("p1".into()),
+        choices: None,
         transcript_path: None,
         ancestors: vec![1],
         at: 5,
@@ -1213,4 +1217,111 @@ fn codex_version_decides_the_no_daemon_option_when_help_cannot_be_read() {
     assert!(!version_has_no_daemon("codex-cli 0.159.9"));
     assert!(!version_has_no_daemon("codex-cli 0.98.0"));
     assert!(!version_has_no_daemon("not a version"));
+}
+
+fn color_and_toppings() -> serde_json::Value {
+    serde_json::json!({"questions": [
+        {"question": "Which color?", "header": "Color", "multiSelect": false,
+         "options": [{"label": "Red", "description": "The color red"}, {"label": "Green"}, {"label": "Blue"}]},
+        {"question": "Which toppings?", "header": "Toppings", "multiSelect": true,
+         "options": [{"label": "Cheese"}, {"label": "Olives"}, {"label": "Onion"}]}
+    ]})
+}
+
+#[test]
+fn claudes_own_questions_are_choices_not_permissions() {
+    // AskUserQuestion comes through the permission hook; Allow (1) would quietly pick the first option.
+    let v = serde_json::json!({"hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "AskUserQuestion",
+        "tool_input": color_and_toppings()});
+    let ev = hooks::claude_event(&v).unwrap();
+    assert_eq!(ev.question_kind, Some(QuestionKind::Choice));
+    assert_eq!(ev.question.as_deref(), Some("Which color? (+1 more)"));
+    assert!(ev.prompt_id.is_some());
+    let questions = ev.choices.unwrap().questions;
+    assert_eq!((questions.len(), questions[1].multi_select, questions[0].options[0].label.as_str()), (2, true, "Red"));
+
+    let plan = serde_json::json!({"hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "ExitPlanMode",
+        "tool_input": {"plan": "1. Make hello.txt"}});
+    let ev = hooks::claude_event(&plan).unwrap();
+    assert_eq!((ev.question_kind, ev.question_detail.as_deref()), (Some(QuestionKind::Plan), Some("1. Make hello.txt")));
+
+    // A permission offers "always" only when Claude's terminal shows it (it has suggestions).
+    let bash = serde_json::json!({"hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
+        "tool_input": {"command": "npm install stripe"},
+        "permission_suggestions": [{"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "npm install:*"}]}]});
+    assert_eq!(hooks::claude_event(&bash).unwrap().choices.unwrap().always.as_deref(), Some("Always allow npm install:*"));
+    let bare = serde_json::json!({"hook_event_name": "PermissionRequest", "session_id": "s", "tool_name": "Bash",
+        "tool_input": {"command": "ls"}});
+    assert_eq!(hooks::claude_event(&bare).unwrap().choices, None);
+}
+
+#[test]
+fn an_open_question_in_the_transcript_needs_you_without_hooks() {
+    let dir = temp_dir("claude-question");
+    let path = dir.join("s.jsonl");
+    let user = r#"{"type":"user","timestamp":"2026-09-23T16:51:00.000Z","message":{"role":"user","content":"pick"}}"#;
+    let ask = serde_json::json!({"type": "assistant", "timestamp": "2026-09-23T16:51:05.000Z", "message": {"id": "m1",
+        "stop_reason": "tool_use", "content": [{"type": "tool_use", "id": "toolu_9", "name": "AskUserQuestion", "input": color_and_toppings()}]}});
+    fs::write(&path, format!("{user}\n{ask}\n")).unwrap();
+    let s = transcripts::parse_claude(&path, 0);
+    assert_eq!(
+        (s.state, s.question_kind, s.prompt_id.as_deref()),
+        (Some(State::NeedsInput), Some(QuestionKind::Choice), Some("t-toolu_9"))
+    );
+    assert_eq!(s.choices.unwrap().questions.len(), 2);
+    // Claude's status file says busy while it waits: the question stays.
+    let mut status = transcripts::parse_claude(&path, 0);
+    let busy = crate::apps::ClaudeLive { pid: 1, session_id: None, entrypoint: None, status: Some("busy".into()), status_updated_at: None };
+    scanner::apply_live(&mut status, StateSource::Transcript, &busy);
+    assert_eq!(status.state, Some(State::NeedsInput));
+    // Answered: back to work.
+    let answer = r#"{"type":"user","timestamp":"2026-09-23T16:51:09.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_9","content":"Red"}]}}"#;
+    fs::write(&path, format!("{user}\n{ask}\n{answer}\n")).unwrap();
+    assert_eq!(transcripts::parse_claude(&path, 0).state, Some(State::Working));
+}
+
+#[test]
+fn answers_become_the_terminals_keys() {
+    use crate::deliver::Key::{self, Char, Escape, Tab};
+    use crate::serve::{Answer, answer_keys};
+    let mut a = agent_for(1, 1, Some("ttys004"));
+    let keys = |a: &Agent, answer: Answer| answer_keys(a, &answer).ok();
+    let picks = |p: &[&[usize]]| Answer::Picks { picks: p.iter().map(|q| q.to_vec()).collect() };
+
+    a.question_kind = Some(QuestionKind::Permission);
+    assert_eq!(keys(&a, Answer::Yes), Some(vec![Char('1')]));
+    assert_eq!(keys(&a, Answer::No), Some(vec![Escape]));
+    assert_eq!(keys(&a, Answer::Always), None, "only offered when the terminal shows it");
+    a.choices = Some(crate::model::Choices { questions: Vec::new(), always: Some("Always allow this folder".into()) });
+    assert_eq!(keys(&a, Answer::Always), Some(vec![Char('2')]));
+
+    a.question_kind = Some(QuestionKind::Plan);
+    a.choices = None;
+    assert_eq!(keys(&a, Answer::Yes), Some(vec![Char('1')]));
+    assert_eq!(keys(&a, Answer::No), Some(vec![Escape]));
+
+    // As tested against Claude Code 2.1.310: one single-choice question is answered by its number;
+    // otherwise numbers (Tab after a pick-many question), then 1 submits.
+    a.question_kind = Some(QuestionKind::Choice);
+    let questions = hooks::choice_questions(&color_and_toppings()).unwrap();
+    a.choices = Some(crate::model::Choices { questions: questions[..1].to_vec(), always: None });
+    assert_eq!(keys(&a, picks(&[&[1]])), Some(vec![Char('2')]));
+    assert_eq!(keys(&a, picks(&[&[0, 1]])), None, "one pick for a single-choice question");
+    assert_eq!(keys(&a, picks(&[&[3]])), None);
+    assert_eq!(keys(&a, Answer::Yes), None);
+    a.choices = Some(crate::model::Choices { questions: questions.clone(), always: None });
+    let both: Vec<Key> = vec![Char('3'), Char('1'), Char('3'), Tab, Char('1')];
+    assert_eq!(keys(&a, picks(&[&[2], &[2, 0, 2]])), Some(both));
+    assert_eq!(keys(&a, picks(&[&[2]])), None, "every question needs an answer");
+    a.choices = Some(crate::model::Choices { questions: questions[1..].to_vec(), always: None });
+    assert_eq!(keys(&a, picks(&[&[1]])), Some(vec![Char('2'), Tab, Char('1')]));
+
+    // Not a question Lantern answers: nothing is pressed.
+    a.question_kind = Some(QuestionKind::Other);
+    assert_eq!(keys(&a, Answer::No), None);
+    // A question needs its prompt id, like a permission.
+    a.question_kind = Some(QuestionKind::Choice);
+    a.prompt_id = Some("t-1".into());
+    assert!(crate::serve::keys_for(&a, vec![Char('1')], None).is_err());
+    assert!(crate::serve::keys_for(&a, vec![Char('1')], Some("t-1".into())).is_ok());
 }

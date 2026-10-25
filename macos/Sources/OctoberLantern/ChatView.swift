@@ -15,16 +15,9 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if agent.isPermissionPrompt {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(agent.question ?? "").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.amber)
-                        .textSelection(.enabled)
-                    if let detail = agent.questionDetail, detail != agent.question {
-                        RequestDetail(detail: detail)
-                    }
-                    PermissionButtons(agent: agent, model: model)
-                }
-                .padding(.horizontal, 12).padding(.bottom, 10)
+            if agent.isAnswerable {
+                QuestionCard(agent: agent, model: model, keys: true)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
             }
             Rectangle().fill(Theme.hairline).frame(height: 1)
             ScrollViewReader { proxy in
