@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         switch piece {
                         case .text(let t): print(t, terminator: "")
                         case .note(let n): print("\n[note] \(n)")
-                        case .task(let prompt, let agent, let project): print("\n[task] agent=\(agent ?? "-") project=\(project ?? "-") prompt=\(prompt)")
+                        case .task(let prompt, let agent, let project, let to): print("\n[task] agent=\(agent ?? "-") project=\(project ?? "-") to=\(to ?? "-") prompt=\(prompt)")
                         }
                         fflush(stdout)
                     }

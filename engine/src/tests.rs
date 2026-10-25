@@ -303,6 +303,7 @@ pub(crate) fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
         prompt_id: None,
         choices: None,
         transcript: None,
+        bus_id: None,
         session_match: crate::model::SessionMatch::Exact,
         source: None,
         live: true,
@@ -1324,4 +1325,43 @@ fn answers_become_the_terminals_keys() {
     a.prompt_id = Some("t-1".into());
     assert!(crate::serve::keys_for(&a, vec![Char('1')], None).is_err());
     assert!(crate::serve::keys_for(&a, vec![Char('1')], Some("t-1".into())).is_ok());
+}
+
+/// By hand, against a running Bus: `LANTERN_BUS_E2E_TO=<agent's Bus id>
+/// LANTERN_ENGINE_BIN=target/debug/lantern-engine cargo test -- --ignored
+/// a_message_reaches_an_agent_through_a_real_bus` (with the Bus's environment).
+#[test]
+#[ignore]
+fn a_message_reaches_an_agent_through_a_real_bus() {
+    let to = std::env::var("LANTERN_BUS_E2E_TO").expect("LANTERN_BUS_E2E_TO");
+    crate::bus::send_as_you(&to, "Create a file called from-lantern.txt containing the word hello.").unwrap();
+}
+
+#[test]
+fn an_agents_bus_id_comes_from_its_bus_connection() {
+    let at = |pid: u32, ppid: u32, cmd: &[&str]| Proc { pid, ppid: Some(ppid), ..proc(cmd) };
+    let bus = "/Users/me/Library/Application Support/October Lantern/bin/october-bus-20b7456";
+    let table = crate::procs::ProcTable {
+        procs: [
+            at(10, 1, &["claude"]),
+            at(11, 10, &[bus, "mcp", "stdio", "--scope", "lantern", "--agent", "lantern-claude-1a2b3c4d", "--name", "Claude Code · x"]),
+            // Codex's node wrapper: the Bus connection is under its native binary.
+            at(20, 1, &["node", "/usr/local/bin/codex"]),
+            at(21, 20, &["codex"]),
+            at(22, 21, &[bus, "mcp", "stdio", "--agent", "lantern-codex-99aa00bb"]),
+            // The October harness runs under `october-bus agent run`.
+            at(30, 1, &[bus, "agent", "run", "--scope", "lantern", "--id", "lantern-october-0011aa22", "--", "october"]),
+            at(31, 30, &["october"]),
+            // Someone else's MCP server with an --agent flag isn't the Bus.
+            at(40, 1, &["claude"]),
+            at(41, 40, &["other-mcp", "--agent", "lantern-not-ours"]),
+        ]
+        .into_iter()
+        .map(|p| (p.pid, p))
+        .collect(),
+    };
+    assert_eq!(table.bus_id(10).as_deref(), Some("lantern-claude-1a2b3c4d"));
+    assert_eq!(table.bus_id(20).as_deref(), Some("lantern-codex-99aa00bb"));
+    assert_eq!(table.bus_id(31).as_deref(), Some("lantern-october-0011aa22"));
+    assert_eq!(table.bus_id(40), None);
 }

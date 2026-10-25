@@ -228,7 +228,13 @@ impl Lantern {
         match piece {
             Piece::Text(text) => self.model.assistant.turns[index].answer.push_str(&text),
             Piece::Note(note) => self.model.assistant.turns[index].note = Some(note),
-            Piece::Task { prompt, agent, project } => self.propose(prompt, agent, project, turn),
+            Piece::Task { prompt, agent, project, to } => {
+                let running = to.and_then(|to| self.model.agents.iter().find(|a| a.is_live() && a.handle == to).map(|a| a.id.clone()));
+                match running {
+                    Some(agent_id) => self.send_to_running(prompt, &agent_id, turn),
+                    None => self.propose(prompt, agent, project, turn),
+                }
+            }
         }
     }
 
@@ -251,6 +257,50 @@ impl Lantern {
             }
         }
         self.model.assistant.asking = false;
+    }
+
+    /// The answer named an agent that's already running (Swift `Assistant.send`): the work goes to
+    /// it, through October Bus or typed in, and its card joins the conversation.
+    fn send_to_running(&mut self, prompt: String, agent_id: &str, turn: u64) {
+        let Some(agent) = self.model.agent(agent_id).cloned() else { return };
+        let turns = &mut self.model.assistant.turns;
+        let Some(i) = turns.iter().position(|t| t.id == turn) else { return };
+        let prompt = task_prompt(&turns[i].question, prompt, i > 0);
+        let images = turns[i].images.clone();
+        turns[i].task = Some(TaskLink {
+            kind: agent.kind.clone(),
+            folder: agent.cwd.clone().unwrap_or_default(),
+            prompt: prompt.clone(),
+            agent_id: Some(agent.id.clone()),
+            images: images.clone(),
+            sent: true,
+            ..Default::default()
+        });
+        turns[i].started = Some(format!("Sent to @{}", agent.handle));
+        crate::analytics::capture(
+            "assistant_sent",
+            json!({"kind": agent.kind.as_str(), "route": agent.route.as_ref().map_or("none", |r| r.via.as_str()), "bus": agent.bus_id.is_some()}),
+        );
+        self.send_task_message(&agent.id, prompt + &super::images::image_lines(&images), turn);
+    }
+
+    /// Asks the engine to send it (`send`: October Bus with a nudge, else typed in).
+    fn send_task_message(&mut self, agent_id: &str, text: String, turn: u64) {
+        if let Some(id) = self.request(json!({"type": "send", "agentId": agent_id, "text": text})) {
+            self.pending.insert(id, Pending::Send { turn });
+        } else if let Some(task) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn).and_then(|t| t.task.as_mut()) {
+            task.error = Some("Lantern's engine isn't running.".into());
+        }
+    }
+
+    /// The engine's word on a message Ask Lantern sent to a running agent.
+    pub(super) fn task_message_sent(&mut self, turn: u64, ok: bool, message: Option<String>) {
+        let Some(task) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn).and_then(|t| t.task.as_mut()) else { return };
+        if ok {
+            task.delivery = Some(message.unwrap_or_else(|| "Sent".into()));
+        } else {
+            task.error = Some(message.unwrap_or_else(|| "It didn't go in.".into()));
+        }
     }
 
     /// The answer asked for work: start it after a short window to cancel. The agent gets your own
@@ -359,6 +409,20 @@ impl Lantern {
     /// `Assistant.retry`).
     pub(super) fn retry_assistant_task(&mut self, turn: u64) {
         let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) else { return };
+        // Sent to a running agent: send it again, if that agent still runs.
+        if let Some(link) = t.task.as_mut().filter(|link| link.sent) {
+            link.error = None;
+            let (agent_id, text) = (link.agent_id.clone(), link.prompt.clone() + &super::images::image_lines(&link.images));
+            match agent_id.filter(|id| self.model.agent(id).is_some_and(|a| a.is_live())) {
+                Some(agent_id) => self.send_task_message(&agent_id, text, turn),
+                None => {
+                    if let Some(link) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn).and_then(|t| t.task.as_mut()) {
+                        link.error = Some("that agent isn't running anymore.".into());
+                    }
+                }
+            }
+            return;
+        }
         let Some(link) = t.task.take() else { return };
         self.asking.next_id += 1;
         self.model.assistant.pending_task = Some(PendingTask {
@@ -829,8 +893,37 @@ mod tests {
         assert_eq!(super::task_prompt("yes, do that", "Fix the Wi-Fi".into(), true), "Fix the Wi-Fi");
         let mut lantern = lantern(&["claude"]);
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "Find the user's q".into(), agent: None, project: None });
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "Find the user's q".into(), agent: None, project: None, to: None });
         assert_eq!(lantern.model.assistant.pending_task.clone().unwrap().prompt, "q");
+    }
+
+    #[test]
+    fn work_for_a_running_agent_is_sent_to_it_not_started_again() {
+        let mut lantern = lantern(&["claude"]);
+        lantern.model.agents = vec![Agent {
+            id: "claude:4:4".into(),
+            kind: crate::model::AgentKind::new("claude"),
+            handle: "claude-1".into(),
+            cwd: Some("/work/lantern".into()),
+            bus_id: Some("lantern-claude-1a2b3c4d".into()),
+            can_reply: true,
+            ..Default::default()
+        }];
+        let (generation, turn) = with_turn(&mut lantern);
+        let task = |to: &str| Piece::Task { prompt: "Add tests for the toggle".into(), agent: None, project: None, to: Some(to.into()) };
+        lantern.assistant_piece(generation, turn, task("claude-1"));
+        assert!(lantern.model.assistant.pending_task.is_none(), "no new agent");
+        let link = lantern.model.assistant.turns[0].task.clone().unwrap();
+        assert!(link.sent && link.agent_id.as_deref() == Some("claude:4:4"));
+        assert_eq!(lantern.model.assistant.turns[0].started.as_deref(), Some("Sent to @claude-1"));
+        let id = lantern.pending.iter().find(|(_, p)| matches!(p, super::super::Pending::Send { .. })).map(|(id, _)| id.clone()).unwrap();
+        lantern.engine_event(serde_json::json!({"type": "sendResult", "requestId": id, "ok": true, "delivery": "bus", "message": "Sent through October Bus"}));
+        assert_eq!(lantern.model.assistant.turns[0].task.as_ref().unwrap().delivery.as_deref(), Some("Sent through October Bus"));
+
+        // A handle that isn't running: a new agent, as before.
+        let (generation, turn) = with_turn(&mut lantern);
+        lantern.assistant_piece(generation, turn, task("codex-9"));
+        assert!(lantern.model.assistant.pending_task.is_some());
     }
 
     #[test]
@@ -838,7 +931,7 @@ mod tests {
         let mut lantern = lantern(&["claude"]);
         lantern.model.new_session.folders = vec!["/work/october-lantern".into()];
         let (generation, turn) = with_turn(&mut lantern);
-        let task = Piece::Task { prompt: "fix the tests".into(), agent: None, project: Some("October-Lantern".into()) };
+        let task = Piece::Task { prompt: "fix the tests".into(), agent: None, project: Some("October-Lantern".into()), to: None };
         lantern.assistant_piece(generation, turn, task);
         let pending = lantern.model.assistant.pending_task.clone().unwrap();
         assert_eq!((pending.kind.as_str(), pending.folder.as_str()), ("claude", "/work/october-lantern"));
@@ -854,7 +947,11 @@ mod tests {
     fn a_failed_task_launch_shows_its_error_not_started() {
         let mut lantern = lantern(&["claude"]);
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: Some("claude".into()), project: None });
+        lantern.assistant_piece(
+            generation,
+            turn,
+            Piece::Task { prompt: "x".into(), agent: Some("claude".into()), project: None, to: None },
+        );
         lantern.start_pending_task();
         let id = lantern.pending.iter().find(|(_, p)| matches!(p, super::super::Pending::Launch)).map(|(id, _)| id.clone()).unwrap();
         lantern.engine_event(serde_json::json!({"type": "launchResult", "requestId": id, "ok": false, "message": "tmux is missing"}));
@@ -916,7 +1013,7 @@ mod tests {
         lantern.model.assistant.turns[0].images = vec![path(&a), path(&b)];
         lantern.assistant_done(lantern.asking.generation.load(Ordering::SeqCst), first, None);
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "match these".into(), agent: None, project: None });
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "match these".into(), agent: None, project: None, to: None });
         assert_eq!(lantern.model.assistant.pending_task.as_ref().unwrap().images, vec![a.clone(), b.clone()]);
         lantern.start_pending_task();
         let link = lantern.model.assistant.turns.iter().find(|t| t.id == turn).unwrap().task.clone().unwrap();
@@ -950,7 +1047,7 @@ mod tests {
     fn with_running_task(lantern: &mut Lantern) -> u64 {
         lantern.set_panel(Some(PanelMode::Assistant));
         let (generation, turn) = with_turn(lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None });
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None, to: None });
         lantern.assistant_done(generation, turn, None);
         lantern.start_pending_task();
         answer_launch(lantern, true, Some("claude-x-1"));
@@ -963,7 +1060,7 @@ mod tests {
         let mut lantern = lantern(&["claude"]);
         lantern.set_panel(Some(PanelMode::Assistant));
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "find my thesis".into(), agent: None, project: None });
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "find my thesis".into(), agent: None, project: None, to: None });
         lantern.start_pending_task();
         let link = lantern.model.assistant.turns[0].task.clone().expect("the task is in the conversation");
         assert_eq!((link.prompt.as_str(), link.in_terminal, link.session.as_deref()), ("q", false, None));
@@ -995,7 +1092,7 @@ mod tests {
         let mut lantern = lantern(&["claude"]);
         lantern.model.new_session.in_lantern_available = false;
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None });
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None, to: None });
         lantern.start_pending_task();
         answer_launch(&mut lantern, true, None);
         let t = &lantern.model.assistant.turns[0];
@@ -1123,7 +1220,7 @@ mod tests {
         lantern.assistant_piece(
             generation,
             turn,
-            Piece::Task { prompt: "find my passport".into(), agent: Some("grok".into()), project: None },
+            Piece::Task { prompt: "find my passport".into(), agent: Some("grok".into()), project: None, to: None },
         );
         let pending = lantern.model.assistant.pending_task.clone().unwrap();
         assert_eq!(pending.kind.as_str(), "codex");
@@ -1134,7 +1231,7 @@ mod tests {
     fn new_question_cancels_the_answer_and_the_pending_task() {
         let mut lantern = lantern(&["claude"]);
         let (generation, turn) = with_turn(&mut lantern);
-        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None });
+        lantern.assistant_piece(generation, turn, Piece::Task { prompt: "x".into(), agent: None, project: None, to: None });
         lantern.clear_assistant();
         assert!(lantern.model.assistant.turns.is_empty() && lantern.model.assistant.pending_task.is_none());
         lantern.assistant_piece(generation, turn, Piece::Text("late".into()));

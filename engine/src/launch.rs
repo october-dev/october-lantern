@@ -988,6 +988,7 @@ fn startup_agent(
         prompt_id: None,
         choices: None,
         transcript: None,
+        bus_id: None,
         session_match: SessionMatch::None,
         source: None,
         live: true,

@@ -264,6 +264,8 @@ pub struct Agent {
     /// The Claude Code transcript the state came from, for checking a question is still open.
     #[serde(skip)]
     pub transcript: Option<std::path::PathBuf>,
+    /// Its October Bus id, for an agent Lantern started on the Bus: messages from Lantern go there.
+    pub bus_id: Option<String>,
     pub session_match: SessionMatch,
     /// The app a session belongs to when it isn't a terminal: "Claude Desktop", "Cowork",
     /// "Codex app".

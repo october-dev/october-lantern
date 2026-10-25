@@ -42,6 +42,8 @@ pub enum Piece {
         prompt: String,
         agent: Option<String>,
         project: Option<String>,
+        /// A running agent (its handle) to send it to instead of starting one.
+        to: Option<String>,
     },
 }
 
@@ -243,7 +245,12 @@ pub fn read_ask_events(reader: impl Read, sink: &mut dyn FnMut(Piece) -> bool) -
                     && let Some(prompt) = task.get("prompt").and_then(Value::as_str).filter(|prompt| !prompt.trim().is_empty())
                 {
                     let named = |key: &str| task.get(key).and_then(Value::as_str).map(str::to_string);
-                    sink(Piece::Task { prompt: prompt.chars().take(4000).collect(), agent: named("agent"), project: named("project") });
+                    sink(Piece::Task {
+                        prompt: prompt.chars().take(4000).collect(),
+                        agent: named("agent"),
+                        project: named("project"),
+                        to: named("to"),
+                    });
                 }
                 if let Some(note) = note(&event) {
                     sink(Piece::Note(note));
@@ -442,7 +449,7 @@ mod tests {
             vec![
                 Piece::Text("On ".into()),
                 Piece::Text("it.".into()),
-                Piece::Task { prompt: "fix the wifi".into(), agent: Some("claude".into()), project: None },
+                Piece::Task { prompt: "fix the wifi".into(), agent: Some("claude".into()), project: None, to: None },
                 Piece::Note("3 free questions left today.".into()),
             ]
         );

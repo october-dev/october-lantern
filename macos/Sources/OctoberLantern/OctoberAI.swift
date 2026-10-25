@@ -111,8 +111,9 @@ enum OctoberAI {
         case text(String)
         case note(String)
         /// Work the assistant decided to start (chat mode): a prompt for a coding agent, and the
-        /// agent and project only when the user named them.
-        case task(prompt: String, agent: String?, project: String?)
+        /// agent and project only when the user named them. `to` names a running agent (its
+        /// handle) to send it to instead of starting one.
+        case task(prompt: String, agent: String?, project: String?, to: String?)
     }
 
     /// "18 free questions left today" from a free account's `done` event.
@@ -191,7 +192,10 @@ enum OctoberAI {
             case "done":
                 if let t = event["task"] as? [String: Any], let prompt = t["prompt"] as? String,
                    !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    continuation.yield(.task(prompt: String(prompt.prefix(4000)), agent: t["agent"] as? String, project: t["project"] as? String))
+                    continuation.yield(.task(
+                        prompt: String(prompt.prefix(4000)), agent: t["agent"] as? String, project: t["project"] as? String,
+                        to: t["to"] as? String
+                    ))
                 }
                 if let note = note(done: event) { continuation.yield(.note(note)) }
                 return

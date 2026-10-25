@@ -122,6 +122,21 @@ impl ProcTable {
         }
     }
 
+    /// The October Bus id Lantern gave the agent at `pid`: from its Bus connection under it
+    /// (`october-bus mcp stdio --agent <id>`, a child or, under a wrapper, a grandchild), or the
+    /// `october-bus agent run --id <id>` it runs under (the October harness).
+    pub fn bus_id(&self, pid: u32) -> Option<String> {
+        let is_bus = |p: &Proc| p.cmd.first().is_some_and(|c| basename(c).starts_with("october-bus"));
+        let flag =
+            |p: &Proc, name: &str| p.cmd.windows(2).find(|w| w[0] == name).map(|w| w[1].clone()).filter(|id| id.starts_with("lantern-"));
+        let children = |of: u32| self.procs.values().filter(move |p| p.ppid == Some(of));
+        let below = children(pid).chain(children(pid).flat_map(|c| children(c.pid)));
+        below
+            .filter(|p| is_bus(p))
+            .find_map(|p| flag(p, "--agent"))
+            .or_else(|| self.ancestors(pid).into_iter().take(3).filter(|p| is_bus(p)).find_map(|p| flag(p, "--id")))
+    }
+
     pub fn get(&self, pid: u32) -> Option<&Proc> {
         self.procs.get(&pid)
     }

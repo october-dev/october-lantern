@@ -229,6 +229,8 @@ pub struct Agent {
     pub prompt_id: Option<String>,
     /// The options Lantern offers for the question (Claude's own questions; a permission's "always").
     pub choices: Option<Choices>,
+    /// Its October Bus id, for an agent Lantern started on the Bus (Ask Lantern's messages go there).
+    pub bus_id: Option<String>,
     /// "exact", "guessed", "ambiguous" (state and history hidden) or "none".
     pub session_match: Option<String>,
     /// The app a session belongs to when it isn't a terminal ("Claude Desktop", "Codex app").
@@ -505,6 +507,10 @@ pub struct TaskLink {
     pub images: Vec<String>,
     /// Its last 60 messages, as last seen.
     pub transcript: Vec<ChatMessage>,
+    /// Sent to an agent that was already running, rather than started for this.
+    pub sent: bool,
+    /// How it reached that agent ("Sent through October Bus"), once the engine says.
+    pub delivery: Option<String>,
 }
 
 /// A saved Ask Lantern conversation (Swift `Assistant.Conversation`).

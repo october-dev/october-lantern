@@ -108,6 +108,9 @@ final class AppModel: ObservableObject {
         case keys(agentId: String)
         /// A message sent without the composer (Point & Ask).
         case direct(agentId: String)
+        /// Ask Lantern's message for a running agent (through October Bus); `report` gets whether it
+        /// went in, whether that's uncertain, and the engine's message.
+        case send(agentId: String, report: (_ ok: Bool, _ uncertain: Bool, _ message: String?) -> Void)
         case launch
         case focus(agentId: String)
     }
@@ -440,6 +443,13 @@ final class AppModel: ObservableObject {
 
     /// Sends `text` to `agent` without touching the composer's drafts (Point & Ask). Agents Lantern
     /// can't type into get it copied, and their app comes forward.
+    /// Ask Lantern's message for a running agent: through October Bus when it's on it (with a
+    /// nudge in its terminal), else typed in.
+    func sendFromAssistant(_ text: String, to agent: Agent, report: @escaping (_ ok: Bool, _ uncertain: Bool, _ message: String?) -> Void) {
+        let id = request("s")
+        track(id, .send(agentId: agent.id, report: report), sent: engine.send(requestId: id, agentId: agent.id, text: text))
+    }
+
     func sendDirect(_ text: String, to agent: Agent) {
         if agent.canReply {
             let id = request("d")
@@ -789,7 +799,7 @@ final class AppModel: ObservableObject {
     /// `reached`: the engine had the request, so a reply or key may have been typed after all.
     private func fail(_ id: String, _ message: String, reached: Bool) {
         switch pending[id] {
-        case .reply, .keys, .direct: replyFinished(id, ok: false, uncertain: reached, message: message)
+        case .reply, .keys, .direct, .send: replyFinished(id, ok: false, uncertain: reached, message: message)
         case .launch, .focus: actionFinished(id, ok: false, message: message)
         case nil: pendingSince[id] = nil
         }
@@ -800,7 +810,7 @@ final class AppModel: ObservableObject {
     func expire(_ id: String) {
         guard let op = pending[id] else { return pendingSince[id] = nil }
         switch op {
-        case .reply, .keys, .direct:
+        case .reply, .keys, .direct, .send:
             fail(id, "no answer from Lantern's engine yet. It may still type it: check the terminal before sending again", reached: true)
             overdue[id] = op
         case .launch:
@@ -889,6 +899,8 @@ final class AppModel: ObservableObject {
             } else {
                 show("Couldn't send to @\(handle(agentId)): \(message ?? "unknown error")")
             }
+        case .send(_, let report):
+            report(ok, uncertain, message)
         case .keys(let agentId), .direct(let agentId):
             if let promptId = answering.removeValue(forKey: requestId), !ok, !uncertain { answered[promptId] = nil }
             if ok {
@@ -929,7 +941,7 @@ final class AppModel: ObservableObject {
             }
         case .focus(let agentId):
             if !ok { show("Couldn't open @\(handle(agentId)): \(message ?? "unknown error")") }
-        case .reply, .keys, .direct:
+        case .reply, .keys, .direct, .send:
             break
         }
     }
@@ -941,7 +953,7 @@ final class AppModel: ObservableObject {
         let unsure = pending.values.compactMap { op -> String? in
             switch op {
             case .reply(let ticket): ticket.recipient
-            case .keys(let agentId), .direct(let agentId): agentId
+            case .keys(let agentId), .direct(let agentId), .send(let agentId, _): agentId
             default: nil
             }
         }

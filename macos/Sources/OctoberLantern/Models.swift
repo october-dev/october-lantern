@@ -138,6 +138,8 @@ struct Agent: Codable, Identifiable, Hashable {
     let promptId: String?
     /// The options Lantern offers for the question (Claude's own questions; a permission's "always").
     let choices: Choices?
+    /// Its October Bus id, for an agent Lantern started on the Bus (Ask Lantern's messages go there).
+    let busId: String?
     /// How the conversation was matched to this process: "exact", "guessed", "ambiguous" (another
     /// agent of this kind in this folder; state and history hidden) or "none".
     let sessionMatch: String?
@@ -278,7 +280,7 @@ enum EngineMessage: Decodable {
             )
         case "snapshot":
             self = .snapshot(agents: try c.decode([Agent].self, forKey: .agents))
-        case "replyResult":
+        case "replyResult", "sendResult":
             self = .replyResult(
                 requestId: try c.decode(String.self, forKey: .requestId),
                 ok: try c.decode(Bool.self, forKey: .ok),

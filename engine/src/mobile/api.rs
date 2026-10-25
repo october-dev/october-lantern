@@ -135,6 +135,7 @@ pub(super) fn delivery_result(id: &Value, outcome: Outcome) -> (u16, Value) {
     match outcome {
         Outcome::Done => ok(id, json!({"accepted": true, "delivery": "delivered"})),
         Outcome::Queued => ok(id, json!({"accepted": true, "delivery": "queued"})),
+        Outcome::OnBus => ok(id, json!({"accepted": true, "delivery": "bus"})),
         Outcome::Failed { message, .. } => ok(id, json!({"accepted": false, "reason": message})),
         Outcome::Uncertain(_) => ok(id, json!({"accepted": true, "delivery": "queued", "reason": "not-confirmed-check-the-terminal"})),
     }
@@ -331,6 +332,7 @@ mod tests {
             prompt_id: None,
             choices: None,
             transcript: None,
+            bus_id: None,
             session_match: crate::model::SessionMatch::Exact,
             source: None,
             live: true,

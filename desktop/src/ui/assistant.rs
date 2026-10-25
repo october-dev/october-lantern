@@ -300,9 +300,22 @@ fn question(ui: &mut Ui, turn: &AssistantTurn) {
 /// last said, without your first message when it's the question above (Swift `TaskCard.messages`).
 fn task_messages<'a>(link: &'a TaskLink, live: Option<&'a [ChatMessage]>) -> &'a [ChatMessage] {
     let all = live.unwrap_or(&link.transcript);
+    if link.sent {
+        return after_sent(&link.prompt, all);
+    }
     match all.first() {
         Some(first) if first.role == Role::User && chat::without_lantern_notes(&first.text).trim() == link.prompt => &all[1..],
         _ => all,
+    }
+}
+
+/// What an agent it was sent to said after it (Swift `Assistant.after(sent:in:)`): from its last
+/// message that is the one sent, or Lantern's nudge to read it on October Bus. Nothing until then.
+fn after_sent<'a>(prompt: &str, messages: &'a [ChatMessage]) -> &'a [ChatMessage] {
+    let start: String = prompt.trim().chars().take(60).collect();
+    match messages.iter().rposition(|m| m.role == Role::User && (m.text.contains(&start) || m.text.contains("message on October Bus"))) {
+        Some(i) => &messages[i + 1..],
+        None => &[],
     }
 }
 
@@ -331,7 +344,8 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
                 super::question::question_card(ui, cx, agent, latest);
             }
             if let Some(error) = &link.error {
-                c::label(ui, format!("Couldn't start it: {error}"), 11.5, Weight::Regular, t::RED);
+                let what = if link.sent { "Couldn't send it" } else { "Couldn't start it" };
+                c::label(ui, format!("{what}: {error}"), 11.5, Weight::Regular, t::RED);
                 if latest && c::plain_button(ui, "Try again", 11.0, Weight::Semibold, t::INK).clicked() {
                     cx.emit(UiAction::RetryAssistantTask { turn });
                 }
@@ -384,8 +398,15 @@ fn footer(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate::mode
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
         c::harness_logo(ui, cx.assets, &link.kind, 12.0);
-        c::label(ui, link.kind.display_name(), 10.5, Weight::Regular, t::MUTED)
-            .on_hover_text(format!("{} in {folder}", link.kind.display_name()));
+        let name = match agent.filter(|_| link.sent) {
+            Some(agent) => format!("@{}", agent.handle),
+            None => link.kind.display_name().to_string(),
+        };
+        c::label(ui, name, 10.5, Weight::Regular, t::MUTED).on_hover_text(format!("{} in {folder}", link.kind.display_name()));
+        if link.sent {
+            c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
+            c::label(ui, link.delivery.as_deref().unwrap_or("Sending…"), 10.5, Weight::Regular, t::MUTED);
+        }
         if let Some(agent) = agent {
             c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
             if c::plain_button(ui, "Open agent ↗", 10.5, Weight::Regular, t::MUTED)

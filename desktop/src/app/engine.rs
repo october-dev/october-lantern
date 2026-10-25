@@ -93,7 +93,7 @@ impl Lantern {
                 }
             }
             "historyResult" => self.history_result(&event),
-            "replyResult" => self.reply_result(&event),
+            "replyResult" | "sendResult" => self.reply_result(&event),
             "attachResult" => {
                 if let Some(Pending::Focus { agent_id }) = text(&event, "requestId").and_then(|id| self.pending.remove(&id))
                     && event["ok"] != true
@@ -188,6 +188,11 @@ impl Lantern {
                 } else {
                     self.show(format!("@{handle}: {}", text(event, "message").unwrap_or_else(|| "not sent; your draft is kept".into())));
                 }
+            }
+            Some(Pending::Send { turn }) => {
+                let message = text(event, "message")
+                    .or_else(|| (event["error"] == "uncertain").then(|| "Lantern isn't sure it went in. Check its terminal.".to_string()));
+                self.task_message_sent(turn, ok, message);
             }
             Some(Pending::Direct { agent_id }) if !ok => {
                 let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());

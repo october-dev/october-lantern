@@ -175,6 +175,12 @@ final class EngineClient {
         send(["type": "reply", "requestId": requestId, "agentId": agentId, "text": text])
     }
 
+    /// Ask Lantern's message for a running agent: through October Bus, or typed in (`sendResult`).
+    @discardableResult
+    func send(requestId: String, agentId: String, text: String) -> Bool {
+        send(["type": "send", "requestId": requestId, "agentId": agentId, "text": text])
+    }
+
     @discardableResult
     func launch(
         requestId: String, kind: AgentKind, cwd: String, prompt: String, screenshot: String?, images: [String] = [], model: String?,

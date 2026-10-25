@@ -58,6 +58,10 @@ final class Assistant: ObservableObject {
         /// The images it was given, so Try again gives them again.
         var images: [String]?
         var transcript: [ChatMessage] = []
+        /// Sent to an agent that was already running, rather than started for this.
+        var sent: Bool?
+        /// How it reached that agent ("Sent through October Bus"), once the engine says.
+        var delivery: String?
     }
 
     struct Conversation: Identifiable, Codable {
@@ -410,7 +414,12 @@ final class Assistant: ObservableObject {
                     switch piece {
                     case .text(let t): turns[i].answer += t
                     case .note(let n): turns[i].note = n
-                    case .task(let prompt, let agent, let project): propose(prompt: prompt, agent: agent, project: project, turn: id)
+                    case .task(let prompt, let agent, let project, let to):
+                        if let to, let running = model?.agents.first(where: { $0.isLive && $0.handle == to }) {
+                            send(prompt, to: running, turn: id)
+                        } else {
+                            propose(prompt: prompt, agent: agent, project: project, turn: id)
+                        }
                     }
                 }
                 if let i = turns.firstIndex(where: { $0.id == id }), turns[i].answer.isEmpty {
@@ -482,6 +491,53 @@ final class Assistant: ObservableObject {
         pending = nil
     }
 
+    /// Hands the work to an agent that's already running (October named it): through October Bus,
+    /// or typed in. Its card joins the conversation, as for an agent the conversation started.
+    private func send(_ prompt: String, to agent: Agent, turn: UUID) {
+        guard let model, let i = turns.firstIndex(where: { $0.id == turn }) else { return }
+        let own = Self.taskPrompt(question: turns[i].question, suggested: prompt, followUp: i > 0)
+        let images = (turns[i].images ?? []).map(URL.init(fileURLWithPath:))
+        var link = TaskLink(kind: agent.kind.rawValue, folder: agent.cwd ?? NSHomeDirectory(), prompt: own, agentId: agent.id)
+        link.sent = true
+        link.images = turns[i].images
+        turns[i].task = link
+        turns[i].started = "Sent to @\(agent.handle)"
+        model.sendFromAssistant(own + Self.imageLines(images), to: agent) { [weak self] ok, uncertain, message in
+            guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }), self.turns[i].task != nil else { return }
+            if ok {
+                self.turns[i].task?.delivery = message ?? "Sent"
+            } else {
+                self.turns[i].task?.error = message ?? (uncertain ? "Lantern isn't sure it went in. Check its terminal." : "It didn't go in.")
+            }
+        }
+        Analytics.shared.capture("assistant_sent", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none", "bus": agent.busId != nil])
+    }
+
+    /// What an agent it was sent to said after it: from its last message that is the one sent, or
+    /// Lantern's nudge to read it on October Bus. Nothing until that shows up.
+    static func after(sent prompt: String, in messages: [ChatMessage]) -> [ChatMessage] {
+        let start = String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        guard let i = messages.lastIndex(where: {
+            $0.role == .user && ($0.text.contains(start) || $0.text.contains("message on October Bus"))
+        }) else { return [] }
+        return Array(messages[(i + 1)...])
+    }
+
+    /// Sends again a message that didn't reach its agent.
+    private func resend(_ link: TaskLink, turn: UUID) {
+        guard let agent = agent(for: link), agent.isLive else {
+            if let i = turns.firstIndex(where: { $0.id == turn }) { turns[i].task?.error = "that agent isn't running anymore." }
+            return
+        }
+        guard let model, let i = turns.firstIndex(where: { $0.id == turn }) else { return }
+        turns[i].task?.error = nil
+        let images = (link.images ?? []).map(URL.init(fileURLWithPath:))
+        model.sendFromAssistant(link.prompt + Self.imageLines(images), to: agent) { [weak self] ok, uncertain, message in
+            guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
+            if ok { self.turns[i].task?.delivery = message ?? "Sent" } else { self.turns[i].task?.error = message ?? "It didn't go in." }
+        }
+    }
+
     /// Runs `then` once Lantern knows which agents are installed (within 20 seconds), else `failed`.
     private func waitForAgents(then: @escaping () -> Void, failed: @escaping () -> Void) {
         model?.refreshInstalled()
@@ -502,6 +558,7 @@ final class Assistant: ObservableObject {
     /// Starts a task that couldn't start again, with the same agent, folder and message.
     func retry(_ link: TaskLink) {
         guard let i = turns.firstIndex(where: { $0.task == link }) else { return }
+        if link.sent == true { return resend(link, turn: turns[i].id) }
         turns[i].task = nil
         pending = PendingTask(
             prompt: link.prompt, kind: AgentKind(rawValue: link.kind), folder: link.folder, screenshot: nil, context: nil,
@@ -650,10 +707,12 @@ private struct TaskCard: View {
     private var kind: AgentKind { AgentKind(rawValue: link.kind) }
     private var agent: Agent? { assistant.agent(for: link) }
 
-    /// The conversation without your first message (it's the question above).
+    /// The conversation without your first message (it's the question above). For an agent it was
+    /// sent to, only what came after it.
     private var messages: [ChatMessage] {
         let live = latest && agent != nil && agent?.id == model.watchedAgentId && !model.watchedMessages.isEmpty
         let all = live ? model.watchedMessages : link.transcript
+        if link.sent == true { return Assistant.after(sent: link.prompt, in: all) }
         guard let first = all.first, first.role == .user,
               Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
         return Array(all.dropFirst())
@@ -685,7 +744,11 @@ private struct TaskCard: View {
                 Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).frame(width: 12, height: 12)
                     .clipShape(RoundedRectangle(cornerRadius: 2.6, style: .continuous))
             }
-            Text(kind.displayName)
+            Text(link.sent == true ? agent.map { "@\($0.handle)" } ?? kind.displayName : kind.displayName)
+            if link.sent == true {
+                Text("·")
+                Text(link.delivery ?? "Sending…")
+            }
             if let agent {
                 Text("·")
                 Button { model.open(agent) } label: {
@@ -705,7 +768,7 @@ private struct TaskCard: View {
     @ViewBuilder private var status: some View {
         if let error = link.error {
             VStack(alignment: .leading, spacing: 5) {
-                Text("Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
+                Text(link.sent == true ? "Couldn't send it: \(error)" : "Couldn't start it: \(error)").font(.system(size: 11.5)).foregroundStyle(Theme.red)
                     .fixedSize(horizontal: false, vertical: true)
                 if latest {
                     Button("Try again") { assistant.retry(link) }

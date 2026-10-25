@@ -397,6 +397,78 @@ pub fn note(name: &str) -> String {
     )
 }
 
+/// Lantern's own identity on the Bus: what the person sends an agent from Lantern comes from it.
+const YOU: &str = "lantern-you";
+
+/// What the agent is told in its terminal, right after the message is in its Bus inbox: Bus
+/// messages wait until an agent checks, and one waiting for you never would.
+pub const NUDGE: &str = "I sent you a message on October Bus. Check your inbox (check_inbox) and do what it asks.";
+
+/// Sends `text` to the agent with Bus id `to`, as the person using Lantern. Lantern's identity
+/// registers (linked to the agent) for just this message: `october-bus agent run` hands its token
+/// to `lantern-engine bus-post`, which posts it.
+pub fn send_as_you(to: &str, text: &str) -> Result<()> {
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_ready()?;
+    let dir = support_dir().join("bus");
+    std::fs::create_dir_all(&dir)?;
+    let file = dir.join(format!("outgoing-{}.txt", uuid::Uuid::new_v4().simple()));
+    crate::hooks::write_atomic(&file, text.as_bytes())?;
+    // `LANTERN_ENGINE_BIN`: the engine to post with, for tests (whose own program is the test runner).
+    let engine = match std::env::var_os("LANTERN_ENGINE_BIN") {
+        Some(bin) => PathBuf::from(bin),
+        None => std::env::current_exe()?,
+    };
+    let engine = engine.to_string_lossy().into_owned();
+    let file_arg = file.to_string_lossy().into_owned();
+    let out = bus(
+        &[
+            "agent",
+            "run",
+            "--scope",
+            SCOPE,
+            "--id",
+            YOU,
+            "--name",
+            "You (from Lantern)",
+            "--connect-to",
+            to,
+            "--",
+            &engine,
+            "bus-post",
+            to,
+            &file_arg,
+        ],
+        Duration::from_secs(12),
+    );
+    let _ = std::fs::remove_file(&file);
+    let out = out?;
+    if !out.status.success() {
+        let why = String::from_utf8_lossy(&out.stderr).lines().rfind(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
+        bail!("October Bus didn't take it{}", if why.is_empty() { String::new() } else { format!(": {why}") });
+    }
+    Ok(())
+}
+
+/// `lantern-engine bus-post <to> <file>`: posts the file's text to `to` with the agent token
+/// `october-bus agent run` gives it.
+pub fn post(to: &str, file: &str) -> Result<()> {
+    let address = std::env::var("OCTOBER_BUS_ADDRESS").context("run under october-bus agent run")?;
+    let token = std::env::var("OCTOBER_BUS_AGENT_TOKEN").context("run under october-bus agent run")?;
+    let text = std::fs::read_to_string(file).context("reading the message")?;
+    let body = format!("From the person using Lantern (reply in your own session: nobody reads this Bus identity's inbox):\n\n{text}");
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(8))).build().into();
+    let message = serde_json::json!({"to": to, "body": body, "mode": "notify", "idempotencyKey": uuid::Uuid::new_v4().to_string()});
+    let mut response = agent
+        .post(format!("{}/v1/messages", address.trim_end_matches('/')))
+        .header("Authorization", format!("Bearer {token}"))
+        .send_json(&message)
+        .context("posting to October Bus")?;
+    println!("{}", response.body_mut().read_to_string().unwrap_or_default());
+    Ok(())
+}
+
 /// Agents Lantern started on the Bus, remembered across engine restarts for a day.
 fn registry() -> PathBuf {
     support_dir().join("bus/agents.json")

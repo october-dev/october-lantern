@@ -299,7 +299,7 @@ impl Lantern {
         match piece {
             Piece::Text(text) => t.answer.push_str(&text),
             Piece::Note(note) => t.note = Some(note),
-            Piece::Task { prompt, agent, project } => self.pointing.work = Some((prompt, agent, project)),
+            Piece::Task { prompt, agent, project, .. } => self.pointing.work = Some((prompt, agent, project)),
         }
     }
 
@@ -655,7 +655,7 @@ mod tests {
         let generation = lantern.pointing.conversation.load(Ordering::SeqCst);
         lantern.point_ask_piece(generation, 0, Piece::Text("Starting an agent to make the folder.".into()));
         let prompt = "Make a folder on the Desktop and move the images in the attached screenshot into it.";
-        lantern.point_ask_piece(generation, 0, Piece::Task { prompt: prompt.into(), agent: None, project: None });
+        lantern.point_ask_piece(generation, 0, Piece::Task { prompt: prompt.into(), agent: None, project: None, to: None });
         assert_eq!(lantern.model.point_ask.phase, PointAskPhase::Card, "nothing starts before the answer is complete");
         lantern.point_ask_done(generation, 0, None);
         assert_eq!(lantern.model.point_ask.phase, PointAskPhase::Closed);

@@ -66,6 +66,10 @@ enum Pending {
     Direct {
         agent_id: String,
     },
+    /// Ask Lantern's message for a running agent, for this turn.
+    Send {
+        turn: u64,
+    },
 }
 
 pub struct Lantern {

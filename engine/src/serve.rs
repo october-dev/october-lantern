@@ -115,6 +115,14 @@ enum Request {
         keys: Vec<String>,
         prompt_id: Option<String>,
     },
+    /// A message from Ask Lantern for a running agent: through October Bus when the agent is on
+    /// it (plus a nudge in its terminal), else typed in like `reply`. Answered with `sendResult`.
+    #[serde(rename_all = "camelCase")]
+    Send {
+        request_id: String,
+        agent_id: String,
+        text: String,
+    },
     /// Answers the question an agent is asking (a permission, Claude's own question, its plan) with
     /// what the person chose; the engine presses the terminal's keys for it (see `answer_keys`).
     #[serde(rename_all = "camelCase")]
@@ -500,6 +508,13 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
+                Ok(Request::Send { request_id, agent_id, text }) => {
+                    match reachable(&agents, &agent_id) {
+                        Ok(agent) => executor.submit(app_action(agent, Op::Bus(text), "sendResult", request_id)),
+                        Err(o) => emit(&result_json("sendResult", &request_id, &o)),
+                    }
+                    next_scan = Instant::now() + Duration::from_millis(300);
+                }
                 Ok(Request::Answer { request_id, agent_id, prompt_id, answer }) => {
                     let checked = reachable(&agents, &agent_id)
                         .and_then(|a| answer_keys(a, &answer).and_then(|keys| keys_for(a, keys, Some(prompt_id))).map(|op| (a, op)));
@@ -686,6 +701,9 @@ fn result_json(kind: &str, request_id: &str, outcome: &Outcome) -> Value {
     match outcome {
         Outcome::Done => json!({"type": kind, "requestId": request_id, "ok": true}),
         Outcome::Queued => json!({"type": kind, "requestId": request_id, "ok": true, "delivery": "queued", "message": "Queued in October"}),
+        Outcome::OnBus => {
+            json!({"type": kind, "requestId": request_id, "ok": true, "delivery": "bus", "message": "Sent through October Bus"})
+        }
         Outcome::Failed { code, message } => json!({"type": kind, "requestId": request_id, "ok": false, "error": code, "message": message}),
         Outcome::Uncertain(message) => json!({
             "type": kind, "requestId": request_id, "ok": false, "error": "uncertain",

@@ -26,6 +26,9 @@ pub enum Op {
         prompt: Option<String>,
     },
     Focus,
+    /// A message for the agent through October Bus, then a nudge in its terminal to read it;
+    /// typed in directly when it isn't on the Bus or the Bus doesn't take it.
+    Bus(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +43,8 @@ pub enum Outcome {
     },
     /// Typing started but Lantern can't tell whether it went in. Sending again could repeat it.
     Uncertain(String),
+    /// In the agent's October Bus inbox, and the agent was told in its terminal.
+    OnBus,
 }
 
 impl Outcome {
@@ -192,6 +197,19 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
                 }
             }
             result
+        }
+        Op::Bus(text) => {
+            let on_bus = agent.bus_id.as_deref().map(|id| crate::bus::send_as_you(id, &text));
+            if let Some(Err(e)) = &on_bus {
+                eprintln!("lantern: October Bus didn't take a message for @{}, typing it instead: {e:#}", agent.handle);
+            }
+            match on_bus {
+                Some(Ok(())) => match deliver::send_text(agent, crate::bus::NUDGE) {
+                    Ok(()) => return Outcome::OnBus,
+                    Err(e) => Err(Outcome::Uncertain(format!("it's in its October Bus inbox, but Lantern couldn't tell it so ({e:#})"))),
+                },
+                _ => deliver::send_text(agent, &text).map_err(classify),
+            }
         }
         Op::Focus => match link.focus(agent) {
             Ok(true) => Ok(()),

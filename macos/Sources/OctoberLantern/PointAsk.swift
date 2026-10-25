@@ -236,7 +236,7 @@ final class PointAsk: ObservableObject {
                     switch piece {
                     case .text(let text): turns[index].answer += text
                     case .note(let note): turns[index].note = note
-                    case .task(let prompt, let agent, let project): work = (prompt, agent, project)
+                    case .task(let prompt, let agent, let project, _): work = (prompt, agent, project)
                     }
                 }
                 if let work, !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
