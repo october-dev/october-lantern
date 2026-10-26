@@ -150,8 +150,9 @@ pub fn supported(kind: Kind) -> bool {
 /// folder, not the Bus's default under the temporary folder, which macOS clears of files older
 /// than a few days while the daemon still runs; Lantern could then neither reach that daemon nor
 /// start another (its store is still held), and agents started without the Bus.
+/// An `OCTOBER_BUS_RUNTIME_DIR` already set (tests, development) is kept.
 pub fn runtime_dir() -> PathBuf {
-    support_dir().join("bus").join("run")
+    std::env::var_os(RUNTIME_ENV).filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| support_dir().join("bus").join("run"))
 }
 
 const RUNTIME_ENV: &str = "OCTOBER_BUS_RUNTIME_DIR";
@@ -603,7 +604,9 @@ mod computer_tests {
     #[test]
     fn bus_connections_find_lanterns_daemon_where_it_keeps_its_run_file() {
         // Not under the temporary folder, which macOS clears while the daemon runs.
-        assert!(runtime_dir().starts_with(support_dir()));
+        if std::env::var_os(RUNTIME_ENV).is_none() {
+            assert!(runtime_dir().starts_with(support_dir()));
+        }
         let args = mcp_args("lantern-codex-1", "Codex · p");
         let after = |flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
         assert_eq!(after("--runtime-dir"), Some(runtime_dir().to_string_lossy().into_owned()));
