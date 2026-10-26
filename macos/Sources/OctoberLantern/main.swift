@@ -52,19 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 (name, AnyView(QuestionCard(agent: agent, model: model).padding(14).frame(width: 380)))
             }
             model.answered["p5"] = .picks([[1]])
-            // The pill's dots: working, needs you, done, idle.
-            let dots = QuestionCard.samples().map(\.1).prefix(4).enumerated().map { i, agent in
-                var json = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(agent)) as! [String: Any]
-                json["state"] = ["working", "needs_input", "waiting", "idle"][i]
-                return try! JSONDecoder().decode(Agent.self, from: JSONSerialization.data(withJSONObject: json))
-            }
-            cards.append(("pill", AnyView(
-                VStack(spacing: 8) {
-                    LanternButton(count: 1, waiting: true, working: true, onTap: {}, onDrag: {}, onDragEnd: {})
-                    AgentDots(agents: dots, new: [dots[1].id], open: { _ in }, more: {})
-                }
-                .padding(6).background(Capsule().fill(Color(white: 0.14))).padding(14)
-            )))
             func next() {
                 guard !cards.isEmpty else { exit(0) }
                 let (name, card) = cards.removeFirst()

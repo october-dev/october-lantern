@@ -16,12 +16,6 @@ pub const PANEL_GAP: f32 = 10.0;
 /// Pill sizes: collapsed (just the lantern) and expanded (lantern + 4 actions).
 pub const PILL_COLLAPSED: Vec2 = vec2(50.0, 50.0);
 pub const PILL_EXPANDED: Vec2 = vec2(50.0, 213.0);
-
-/// The pill's size with `dots` agents under the lantern (see `pill::dots_height`). Closed, it's just
-/// the lantern: the dots show only on the open pill.
-pub fn pill_size(expanded: bool, dots: usize) -> Vec2 {
-    if expanded { PILL_EXPANDED + vec2(0.0, pill::dots_height(dots)) } else { PILL_COLLAPSED }
-}
 /// Collapse this long after the pointer leaves.
 pub const COLLAPSE_AFTER: f64 = 0.7;
 /// After Welcome, the pill stays expanded this long so people can find it.

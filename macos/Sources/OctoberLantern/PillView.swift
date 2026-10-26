@@ -51,16 +51,6 @@ struct PillView: View {
                 }
             }
 
-            // Only on the open pill: closed, it's just the lantern.
-            if expanded, !model.pillAgents.isEmpty {
-                AgentDots(agents: model.pillAgents, new: Set(model.newInbox.map(\.id))) { agent in
-                    model.openChat(agent)
-                } more: {
-                    model.toggle(.agents)
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-
             if expanded {
                 VStack(spacing: 6) {
                     Rectangle().fill(Theme.stroke).frame(width: 22, height: 1).padding(.bottom, 2)
@@ -87,63 +77,6 @@ struct PillView: View {
         .environment(\.colorScheme, .dark)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: expanded)
         .fixedSize()
-    }
-}
-
-/// A dot for each agent that needs you (amber) or is working (blue), under the lantern on the open
-/// pill. Clicking one opens its conversation.
-struct AgentDots: View {
-    static let limit = 5
-    let agents: [Agent]
-    /// Agents with something you haven't seen: their dot has a ring.
-    let new: Set<String>
-    let open: (Agent) -> Void
-    let more: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ForEach(agents.prefix(Self.limit)) { agent in
-                AgentDot(agent: agent, isNew: new.contains(agent.id)) { open(agent) }
-            }
-            if agents.count > Self.limit {
-                Button(action: more) {
-                    Text("+\(agents.count - Self.limit)")
-                        .font(.system(size: 9, weight: .semibold, design: .rounded)).foregroundStyle(Theme.muted)
-                        .frame(width: 34, height: 14)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("\(agents.count - Self.limit) more need you or are working")
-            }
-        }
-    }
-}
-
-struct AgentDot: View {
-    let agent: Agent
-    let isNew: Bool
-    let action: () -> Void
-    @State private var hover = false
-
-    private var help: String {
-        (["@\(agent.handle)", agent.state.label] + [agent.project].compactMap { $0 }).joined(separator: " · ")
-    }
-
-    var body: some View {
-        Button(action: action) {
-            Circle()
-                .fill(Theme.color(for: agent.state))
-                .frame(width: 8, height: 8)
-                .overlay(Circle().stroke(Theme.color(for: agent.state).opacity(0.45), lineWidth: 1.5).padding(-3).opacity(isNew ? 1 : 0))
-                .scaleEffect(hover ? 1.35 : 1)
-                .frame(width: 34, height: 14)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hover = $0 }
-        .help(help)
-        .accessibilityLabel(help)
-        .animation(.easeOut(duration: 0.12), value: hover)
     }
 }
 
