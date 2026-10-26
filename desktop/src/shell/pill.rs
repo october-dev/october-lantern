@@ -320,11 +320,8 @@ mod tests {
             ..Default::default()
         };
         // Needing you first, then working; done agents get no dot.
-        model.agents = vec![
-            agent("claude:1", AgentState::Working),
-            agent("codex:2", AgentState::NeedsInput),
-            agent("claude:3", AgentState::Waiting),
-        ];
+        model.agents =
+            vec![agent("claude:1", AgentState::Working), agent("codex:2", AgentState::NeedsInput), agent("claude:3", AgentState::Waiting)];
         assert_eq!(model.pill_agents().len(), 2);
         // Closed, it's just the lantern.
         assert_eq!(crate::shell::pill_size(false, 2), vec2(50.0, 50.0));
