@@ -75,7 +75,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 - **Soft glow:** agents are working.
 - **Amber glow with a number:** that many agents have finished or are asking you something since you last looked.
 - **Amber glow, no number:** agents are still waiting, but you've already seen them.
-- **A dot for every running agent** under the lantern (the kinds Settings › Agents counts, up to 8, then "+N"): **blue** working, **amber** needs you, **green** done (its turn is over), grey idle; a ring means it has something you haven't seen. Hover shows its handle, state and project; clicking a dot opens its conversation. The same colours mark agents everywhere in Lantern.
+- **On the open pill, a dot for each agent that needs you or is working** under the lantern (the kinds Settings › Agents counts; needing you first, up to 5, then "+N"): **amber** needs you, **blue** working. Done and idle agents get no dot, and the closed pill is just the lantern. A ring means it has something you haven't seen. Hover shows its handle, state and project; clicking a dot opens its conversation. Elsewhere in Lantern the same colours mark agents, with **green** for done (its turn is over) and grey for idle.
 
 **Clicking the lantern** opens **Ask Lantern**: ask anything or tell it what to do (clicking it again closes the panel). Hovering shows four buttons, top to bottom: Ask Lantern (sparkles), Point & Ask, Start a new agent (+) and your agents' cards (Waiting, then all agents). Right-click the lantern for everything else: Ask Lantern, Point & Ask, Start New Agent, Your Agents, Dictate, October, Settings, Quit (also in the menu bar icon, which a full menu bar can hide; on Windows and Linux, in the tray menu).
 

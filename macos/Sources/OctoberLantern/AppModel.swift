@@ -257,17 +257,11 @@ final class AppModel: ObservableObject {
 
     /// The agents shown as dots on the pill: running ones whose kind counts. Those that need you
     /// come first (only 8 show), then finished, working and the rest; in a steady order within each.
+    /// The agents with a dot on the open pill: those that need you, then those working. Agents
+    /// that are done or idle get none (they're in Your agents), so the pill stays short.
     var pillAgents: [Agent] {
-        func rank(_ s: AgentState) -> Int {
-            switch s {
-            case .needsInput: 0
-            case .waiting: 1
-            case .working: 2
-            case .idle, .unknown: 3
-            }
-        }
-        return agents.filter { $0.isLive && prefs.counts($0.kind) }
-            .sorted { (rank($0.state), $0.id) < (rank($1.state), $1.id) }
+        agents.filter { $0.isLive && prefs.counts($0.kind) && ($0.state == .needsInput || $0.state == .working) }
+            .sorted { ($0.state == .needsInput ? 0 : 1, $0.id) < ($1.state == .needsInput ? 0 : 1, $1.id) }
     }
 
     /// The composer's recipient. A chosen agent that has gone away is `nil` (and `targetMissing`),

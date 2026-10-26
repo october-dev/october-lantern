@@ -51,12 +51,14 @@ struct PillView: View {
                 }
             }
 
-            if !model.pillAgents.isEmpty {
+            // Only on the open pill: closed, it's just the lantern.
+            if expanded, !model.pillAgents.isEmpty {
                 AgentDots(agents: model.pillAgents, new: Set(model.newInbox.map(\.id))) { agent in
                     model.openChat(agent)
                 } more: {
                     model.toggle(.agents)
                 }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if expanded {
@@ -88,10 +90,10 @@ struct PillView: View {
     }
 }
 
-/// A dot for every running agent, under the lantern: blue working, amber needs you, green done.
-/// Clicking one opens its conversation.
+/// A dot for each agent that needs you (amber) or is working (blue), under the lantern on the open
+/// pill. Clicking one opens its conversation.
 struct AgentDots: View {
-    static let limit = 8
+    static let limit = 5
     let agents: [Agent]
     /// Agents with something you haven't seen: their dot has a ring.
     let new: Set<String>
@@ -111,7 +113,7 @@ struct AgentDots: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("\(agents.count - Self.limit) more agents")
+                .help("\(agents.count - Self.limit) more need you or are working")
             }
         }
     }

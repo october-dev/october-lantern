@@ -11,8 +11,9 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, Strok
 const PAD: f32 = 6.0;
 const LANTERN: f32 = 38.0;
 const ICON: f32 = 32.0;
-/// Agent dots (Swift `AgentDots`): at most 8, one 14pt row each, then a "+N" row.
-const DOTS: usize = 8;
+/// Agent dots (Swift `AgentDots`), on the open pill only: at most 5, one 14pt row each, then a
+/// "+N" row.
+const DOTS: usize = 5;
 const DOT_ROW: f32 = 14.0;
 
 /// The room the agent dots take under the lantern (with the 8 between sections).
@@ -83,7 +84,7 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
 
     let agents = model.pill_agents();
     let mut y = lantern.max.y + 8.0;
-    if !agents.is_empty() {
+    if expanded && !agents.is_empty() {
         for agent in agents.iter().take(DOTS) {
             let row = Rect::from_min_size(pos2(rect.center().x - LANTERN / 2.0, y), vec2(LANTERN, DOT_ROW));
             let response = ui.interact(row, ui.id().with(("dot", &agent.id)), Sense::click());
@@ -116,7 +117,7 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
                 out.push(UiAction::TogglePanel(PanelMode::Agents));
             }
             if response.hovered() {
-                let help = format!("{more} more agents");
+                let help = format!("{more} more need you or are working");
                 input.help = Some((help.clone(), row, measure(&help)));
             }
             y += DOT_ROW;
@@ -308,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dot_for_every_running_agent_opens_its_chat() {
+    fn a_dot_for_each_agent_that_needs_you_or_works_opens_its_chat() {
         use crate::model::{Agent, AgentState};
         let mut model = Model::default();
         let agent = |id: &str, state| Agent {
@@ -318,17 +319,24 @@ mod tests {
             project: Some("lantern".into()),
             ..Default::default()
         };
-        // Needing you first (only 8 show), then by id within a state.
-        model.agents = vec![agent("claude:1", AgentState::Working), agent("codex:2", AgentState::NeedsInput)];
+        // Needing you first, then working; done agents get no dot.
+        model.agents = vec![
+            agent("claude:1", AgentState::Working),
+            agent("codex:2", AgentState::NeedsInput),
+            agent("claude:3", AgentState::Waiting),
+        ];
+        assert_eq!(model.pill_agents().len(), 2);
+        // Closed, it's just the lantern.
+        assert_eq!(crate::shell::pill_size(false, 2), vec2(50.0, 50.0));
         let first = pos2(25.0, PAD + LANTERN + 8.0 + DOT_ROW / 2.0);
-        assert_eq!(help_at(&model, false, first).as_deref(), Some("@codex-2 · Needs you · lantern"));
-        assert_eq!(help_at(&model, false, first + vec2(0.0, DOT_ROW)).as_deref(), Some("@claude-1 · Working · lantern"));
+        assert_eq!(help_at(&model, true, first).as_deref(), Some("@codex-2 · Needs you · lantern"));
+        assert_eq!(help_at(&model, true, first + vec2(0.0, DOT_ROW)).as_deref(), Some("@claude-1 · Working · lantern"));
         // Clicked: its chat.
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let assets = Assets::load(&ctx);
-        let size = crate::shell::pill_size(false, model.pill_agents().len());
-        assert_eq!(size, vec2(50.0, 50.0 + 8.0 + 2.0 * DOT_ROW));
+        let size = crate::shell::pill_size(true, model.pill_agents().len());
+        assert_eq!(size, crate::shell::PILL_EXPANDED + vec2(0.0, 8.0 + 2.0 * DOT_ROW));
         let mut out = Vec::new();
         for pressed in [None, Some(true), Some(false)] {
             let mut events = vec![egui::Event::PointerMoved(first)];
@@ -342,14 +350,14 @@ mod tests {
             }
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), events, ..Default::default() };
             let mut output = ctx.run_ui(input, |ui| {
-                show(ui, &model, &assets, false, &mut out);
+                show(ui, &model, &assets, true, &mut out);
             });
             output.textures_delta.clear();
         }
         assert_eq!(out, vec![UiAction::OpenChat { agent_id: "codex:2".into() }]);
-        // Nine or more: eight dots and "+N".
-        model.agents = (0..10).map(|i| agent(&format!("claude:{i}"), AgentState::Idle)).collect();
-        assert_eq!(dots_height(model.pill_agents().len()), 8.0 + 9.0 * DOT_ROW);
-        assert_eq!(help_at(&model, false, first + vec2(0.0, 8.0 * DOT_ROW)).as_deref(), Some("2 more agents"));
+        // Six or more: five dots and "+N".
+        model.agents = (0..7).map(|i| agent(&format!("claude:{i}"), AgentState::Working)).collect();
+        assert_eq!(dots_height(model.pill_agents().len()), 8.0 + 6.0 * DOT_ROW);
+        assert_eq!(help_at(&model, true, first + vec2(0.0, 5.0 * DOT_ROW)).as_deref(), Some("2 more need you or are working"));
     }
 }
