@@ -318,11 +318,11 @@ mod tests {
             project: Some("lantern".into()),
             ..Default::default()
         };
-        // Rank order changes with state; the dots keep theirs (by id).
-        model.agents = vec![agent("codex:2", AgentState::NeedsInput), agent("claude:1", AgentState::Working)];
+        // Needing you first (only 8 show), then by id within a state.
+        model.agents = vec![agent("claude:1", AgentState::Working), agent("codex:2", AgentState::NeedsInput)];
         let first = pos2(25.0, PAD + LANTERN + 8.0 + DOT_ROW / 2.0);
-        assert_eq!(help_at(&model, false, first).as_deref(), Some("@claude-1 · Working · lantern"));
-        assert_eq!(help_at(&model, false, first + vec2(0.0, DOT_ROW)).as_deref(), Some("@codex-2 · Needs you · lantern"));
+        assert_eq!(help_at(&model, false, first).as_deref(), Some("@codex-2 · Needs you · lantern"));
+        assert_eq!(help_at(&model, false, first + vec2(0.0, DOT_ROW)).as_deref(), Some("@claude-1 · Working · lantern"));
         // Clicked: its chat.
         let ctx = egui::Context::default();
         theme::install(&ctx);
@@ -346,7 +346,7 @@ mod tests {
             });
             output.textures_delta.clear();
         }
-        assert_eq!(out, vec![UiAction::OpenChat { agent_id: "claude:1".into() }]);
+        assert_eq!(out, vec![UiAction::OpenChat { agent_id: "codex:2".into() }]);
         // Nine or more: eight dots and "+N".
         model.agents = (0..10).map(|i| agent(&format!("claude:{i}"), AgentState::Idle)).collect();
         assert_eq!(dots_height(model.pill_agents().len()), 8.0 + 9.0 * DOT_ROW);

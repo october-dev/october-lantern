@@ -405,7 +405,7 @@ final class Assistant: ObservableObject {
         let request = OctoberAI.Request(
             turns: turns.dropLast().filter { !$0.failed }.map { ($0.question, $0.answer) },
             question: question, image: images.first.flatMap(ImageAttachments.jpegForOctober),
-            context: agentSummary(images: images.count), mode: "chat"
+            context: agentSummary(question: question, images: images.count), mode: "chat"
         )
         task = Task {
             do {
@@ -495,7 +495,9 @@ final class Assistant: ObservableObject {
     /// or typed in. Its card joins the conversation, as for an agent the conversation started.
     private func send(_ prompt: String, to agent: Agent, turn: UUID) {
         guard let model, let i = turns.firstIndex(where: { $0.id == turn }) else { return }
-        let own = Self.taskPrompt(question: turns[i].question, suggested: prompt, followUp: i > 0)
+        // October's message for that agent, not your words: those were to Lantern ("tell claude-1
+        // to …"), and the agent would take them as something to pass on.
+        let own = prompt
         let images = (turns[i].images ?? []).map(URL.init(fileURLWithPath:))
         var link = TaskLink(kind: agent.kind.rawValue, folder: agent.cwd ?? NSHomeDirectory(), prompt: own, agentId: agent.id)
         link.sent = true
@@ -623,15 +625,16 @@ final class Assistant: ObservableObject {
     }
 
     /// What the agents are doing, for the model: one line each, most urgent first.
-    private func agentSummary(images: Int = 0) -> String {
+    private func agentSummary(question: String, images: Int = 0) -> String {
         guard let model else { return "" }
         let chat = switch images {
         case 0: "Lantern's assistant chat (no screenshot)."
         case 1: "Lantern's assistant chat. The user added the image attached (an agent started for this gets it too)."
         default: "Lantern's assistant chat. The user added \(images) images; the first is attached (an agent started for this gets them all)."
         }
-        let agents = model.agents.filter(\.isLive).sorted { rank($0) < rank($1) }
-        guard !agents.isEmpty else { return "\(chat) No coding agents are running on this Mac." }
+        let live = model.agents.filter(\.isLive)
+        guard !live.isEmpty else { return "\(chat) No coding agents are running on this Mac." }
+        let agents = Self.summaryOrder(live, question: question)
         var lines = ["\(chat) The user's coding agents on this Mac right now:"]
         for a in agents.prefix(20) {
             var line = "- @\(a.handle) (\(a.kind.displayName)) in \(a.project ?? "?"): \(a.state.label)"
@@ -640,10 +643,21 @@ final class Assistant: ObservableObject {
             if let m = a.lastMessage { line += "; last said: \(m.replacingOccurrences(of: "\n", with: " ").prefix(200))" }
             lines.append(line)
         }
+        if agents.count > 20 { lines.append("(\(agents.count - 20) more running, not listed.)") }
         return String(lines.joined(separator: "\n").prefix(6000))
     }
 
-    private func rank(_ a: Agent) -> Int { a.state.wantsYou ? 0 : a.state == .working ? 1 : 2 }
+    /// Which agents October hears about first (it gets 20): any the question names ("claude-35",
+    /// "@codex-2"), then those that need you, then the most recently active.
+    static func summaryOrder(_ agents: [Agent], question: String) -> [Agent] {
+        let words = Set(question.lowercased().split { !($0.isLetter || $0.isNumber || $0 == "-") }.map(String.init))
+        func rank(_ a: Agent) -> Int {
+            if words.contains(a.handle.lowercased()) { return 0 }
+            return a.state.wantsYou ? 1 : a.state == .working ? 2 : 3
+        }
+        return agents.sorted { (rank($0), -($0.stateSince ?? 0)) < (rank($1), -($1.stateSince ?? 0)) }
+    }
+
 }
 
 /// The assistant panel: Ask or Do, a strip for agents waiting on you, and the conversation.

@@ -1013,11 +1013,18 @@ impl Model {
     pub fn any_working(&self) -> bool {
         self.agents.iter().any(|agent| agent.state == AgentState::Working)
     }
-    /// The agents shown as dots on the pill: running ones whose kind counts, in a steady order.
+    /// The agents shown as dots on the pill (Swift `pillAgents`): running ones whose kind counts.
+    /// Those that need you come first (only 8 show), then finished, working and the rest; in a
+    /// steady order within each.
     pub fn pill_agents(&self) -> Vec<&Agent> {
+        let rank = |state: AgentState| match state {
+            AgentState::NeedsInput => 0,
+            AgentState::Waiting => 1,
+            AgentState::Working => 2,
+            AgentState::Idle | AgentState::Unknown => 3,
+        };
         let mut agents: Vec<&Agent> = self.agents.iter().filter(|agent| agent.is_live() && self.prefs.counts(&agent.kind)).collect();
-        // `agents` is in rank order, which moves as states change; dots keep their place.
-        agents.sort_by(|a, b| a.id.cmp(&b.id));
+        agents.sort_by(|a, b| (rank(a.state), &a.id).cmp(&(rank(b.state), &b.id)));
         agents
     }
 }

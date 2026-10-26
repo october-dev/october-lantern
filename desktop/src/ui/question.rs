@@ -1,6 +1,6 @@
 //! QuestionCard.swift: an agent's question, answered right here. A permission (Yes / Always / No),
 //! Claude's own questions (their options, numbered as in the terminal) or its plan (start / keep
-//! planning). With `keys`, pressing a number picks too, unless a text box has the keyboard.
+//! planning). With `keys`, pressing a number picks too, unless something is being typed in a box.
 use super::{
     Ctx, UiAction,
     components::{self as c, MarkdownStyle},
@@ -16,7 +16,9 @@ pub fn question_card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, keys: bool) {
         return;
     };
     let sent = cx.model.answered.get(&prompt_id).cloned();
-    let pressed = if keys && sent.is_none() { number_pressed(ui) } else { None };
+    // Typing a reply: numbers are text. An empty box still answers, as the terminal does.
+    let typing = ui.ctx().egui_wants_keyboard_input() && !(cx.inputs.drafts.text().is_empty() && cx.inputs.assistant.is_empty());
+    let pressed = if keys && sent.is_none() && !typing { number_pressed(ui) } else { None };
     let answer = egui::Frame::new()
         .fill(t::opacity(t::AMBER, 0.10))
         .stroke(Stroke::new(1.0, t::opacity(t::AMBER, 0.22)))
@@ -283,11 +285,9 @@ fn option_row(
     response
 }
 
-/// A number key pressed on its own, while no text box has the keyboard: 0 for 1.
+/// A number key pressed on its own: 0 for 1. The key and the digit it would type are both taken,
+/// so an empty reply box doesn't get it too.
 fn number_pressed(ui: &mut Ui) -> Option<usize> {
-    if ui.ctx().egui_wants_keyboard_input() {
-        return None;
-    }
     const KEYS: [egui::Key; 9] = [
         egui::Key::Num1,
         egui::Key::Num2,
@@ -299,5 +299,8 @@ fn number_pressed(ui: &mut Ui) -> Option<usize> {
         egui::Key::Num8,
         egui::Key::Num9,
     ];
-    KEYS.iter().position(|key| c::consume_plain_key(ui, *key))
+    let i = KEYS.iter().position(|key| c::consume_plain_key(ui, *key))?;
+    let digit = (i + 1).to_string();
+    ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Text(text) if *text == digit)));
+    Some(i)
 }

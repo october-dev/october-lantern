@@ -197,12 +197,13 @@ impl Lantern {
             ..Default::default()
         });
         self.model.assistant.asking = true;
+        let context = with_images(agent_summary(&self.model.agents, &question, self.model.caps.platform), images.len());
         // October sees the first image; an agent this starts gets them all.
         let request = october_ai::Request {
             turns: earlier,
             question,
             image: images.first().and_then(|first| super::images::jpeg_for_october(std::path::Path::new(first))),
-            context: with_images(agent_summary(&self.model.agents, self.model.caps.platform), images.len()),
+            context,
             mode: Some("chat".into()),
             platform: self.model.caps.platform,
         };
@@ -265,7 +266,8 @@ impl Lantern {
         let Some(agent) = self.model.agent(agent_id).cloned() else { return };
         let turns = &mut self.model.assistant.turns;
         let Some(i) = turns.iter().position(|t| t.id == turn) else { return };
-        let prompt = task_prompt(&turns[i].question, prompt, i > 0);
+        // October's message for that agent, not your words: those were to Lantern ("tell claude-1
+        // to …"), and the agent would take them as something to pass on.
         let images = turns[i].images.clone();
         turns[i].task = Some(TaskLink {
             kind: agent.kind.clone(),
@@ -732,25 +734,32 @@ fn with_images(summary: String, count: usize) -> String {
     summary.replacen("Lantern's assistant chat (no screenshot).", &chat, 1)
 }
 
-pub fn agent_summary(agents: &[crate::model::Agent], platform: Platform) -> String {
+pub fn agent_summary(agents: &[crate::model::Agent], question: &str, platform: Platform) -> String {
     let computer = match platform {
         Platform::Windows => "this Windows PC",
         Platform::Linux => "this Linux computer",
     };
-    let rank = |state: AgentState| {
-        if state.wants_you() {
+    // October gets 20 (Swift `Assistant.summaryOrder`): any the question names ("claude-35",
+    // "@codex-2"), then those that need you, then the most recently active.
+    let question = question.to_lowercase();
+    let words: std::collections::HashSet<&str> = question.split(|c: char| !(c.is_alphanumeric() || c == '-')).collect();
+    let rank = |agent: &crate::model::Agent| {
+        if words.contains(agent.handle.to_lowercase().as_str()) {
             0
-        } else if state == AgentState::Working {
+        } else if agent.state.wants_you() {
             1
-        } else {
+        } else if agent.state == AgentState::Working {
             2
+        } else {
+            3
         }
     };
     let mut live: Vec<_> = agents.iter().filter(|agent| agent.is_live()).collect();
-    live.sort_by_key(|agent| rank(agent.state));
+    live.sort_by(|a, b| rank(a).cmp(&rank(b)).then(b.state_since.unwrap_or(0.0).total_cmp(&a.state_since.unwrap_or(0.0))));
     if live.is_empty() {
         return format!("Lantern's assistant chat (no screenshot). No coding agents are running on {computer}.");
     }
+    let unlisted = live.len().saturating_sub(20);
     let mut lines = vec![format!("Lantern's assistant chat (no screenshot). The user's coding agents on {computer} right now:")];
     for agent in live.into_iter().take(20) {
         let mut line = format!(
@@ -770,6 +779,9 @@ pub fn agent_summary(agents: &[crate::model::Agent], platform: Platform) -> Stri
             line.push_str(&format!("; last said: {}", message.replace('\n', " ").chars().take(200).collect::<String>()));
         }
         lines.push(line);
+    }
+    if unlisted > 0 {
+        lines.push(format!("({unlisted} more running, not listed.)"));
     }
     lines.join("\n").chars().take(6000).collect()
 }
@@ -915,6 +927,7 @@ mod tests {
         assert!(lantern.model.assistant.pending_task.is_none(), "no new agent");
         let link = lantern.model.assistant.turns[0].task.clone().unwrap();
         assert!(link.sent && link.agent_id.as_deref() == Some("claude:4:4"));
+        assert_eq!(link.prompt, "Add tests for the toggle", "October's message for it, not the words to Lantern");
         assert_eq!(lantern.model.assistant.turns[0].started.as_deref(), Some("Sent to @claude-1"));
         let id = lantern.pending.iter().find(|(_, p)| matches!(p, super::super::Pending::Send { .. })).map(|(id, _)| id.clone()).unwrap();
         lantern.engine_event(serde_json::json!({"type": "sendResult", "requestId": id, "ok": true, "delivery": "bus", "message": "Sent through October Bus"}));
@@ -1037,7 +1050,7 @@ mod tests {
 
     #[test]
     fn october_is_told_about_added_images() {
-        let summary = agent_summary(&[], Platform::Windows);
+        let summary = agent_summary(&[], "", Platform::Windows);
         assert_eq!(with_images(summary.clone(), 0), summary);
         assert!(with_images(summary.clone(), 1).starts_with("Lantern's assistant chat. The user added the image attached"));
         assert!(with_images(summary, 3).contains("added 3 images"));
@@ -1250,12 +1263,19 @@ mod tests {
         };
         let summary = agent_summary(
             &[agent("busy", AgentState::Working, Some("hidden")), agent("asks", AgentState::NeedsInput, Some("Allow rm?"))],
+            "which one needs me?",
             Platform::Linux,
         );
         let lines: Vec<&str> = summary.lines().collect();
         assert!(lines[0].ends_with("on this Linux computer right now:"));
         assert_eq!(lines[1], "- @asks (Claude Code) in p: Needs you; asking: Allow rm?");
         assert_eq!(lines[2], "- @busy (Claude Code) in p: Working");
-        assert!(agent_summary(&[], Platform::Windows).ends_with("No coding agents are running on this Windows PC."));
+        assert!(agent_summary(&[], "", Platform::Windows).ends_with("No coding agents are running on this Windows PC."));
+        // Of many, the one the question names is always listed (October gets 20).
+        let mut many: Vec<Agent> = (0..30).map(|i| agent(&format!("claude-{i}"), AgentState::NeedsInput, None)).collect();
+        many.push(agent("claude-35", AgentState::Waiting, None));
+        let summary = agent_summary(&many, "tell claude-35 to add tests", Platform::Linux);
+        assert!(summary.lines().nth(1).unwrap().starts_with("- @claude-35 "), "{summary}");
+        assert!(summary.ends_with("(11 more running, not listed.)"), "{summary}");
     }
 }

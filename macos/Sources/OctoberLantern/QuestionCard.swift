@@ -3,7 +3,7 @@ import SwiftUI
 
 /// An agent's question, answered right here: a permission (Yes / Always / No), Claude's own
 /// questions (their options, numbered as in the terminal) or its plan (start / keep planning).
-/// With `keys`, pressing a number picks too, unless you're typing in a text box.
+/// With `keys`, pressing a number picks too, unless you're typing something in a text box.
 struct QuestionCard: View {
     let agent: Agent
     @ObservedObject var model: AppModel
@@ -237,13 +237,19 @@ struct OptionRow: View {
     }
 }
 
-/// Number keys for the card in this window, except while a text box is being typed in.
+/// Only listens for keys: clicks go to the card's options in front of it (an AppKit view behind
+/// SwiftUI content would otherwise take them).
+private final class ClickThrough: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Number keys for the card in this window, except while there's text being typed in a box.
 private struct NumberKeys: NSViewRepresentable {
     let enabled: Bool
     let press: (Int) -> Bool
 
     func makeNSView(context: Context) -> NSView {
-        let view = NSView()
+        let view = ClickThrough()
         context.coordinator.view = view
         return view
     }
@@ -281,7 +287,8 @@ private struct NumberKeys: NSViewRepresentable {
         private func handle(_ event: NSEvent) -> Bool {
             guard let press, let window = view?.window, event.window === window,
                   event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-                  !(window.firstResponder is NSText),
+                  // Typing a reply: numbers are text. An empty box still answers, as the terminal does.
+                  (window.firstResponder as? NSText)?.string.isEmpty ?? true,
                   let chars = event.charactersIgnoringModifiers, let n = Int(chars), (1...9).contains(n)
             else { return false }
             return press(n)

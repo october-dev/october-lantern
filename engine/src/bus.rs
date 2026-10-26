@@ -146,9 +146,48 @@ pub fn supported(kind: Kind) -> bool {
     matches!(kind, Kind::Claude | Kind::Codex | Kind::Opencode | Kind::October | Kind::Gemini | Kind::Qwen | Kind::Copilot | Kind::Goose)
 }
 
+/// Where Lantern's Bus daemon keeps its run file (address and token) and lock: in Lantern's own
+/// folder, not the Bus's default under the temporary folder, which macOS clears of files older
+/// than a few days while the daemon still runs; Lantern could then neither reach that daemon nor
+/// start another (its store is still held), and agents started without the Bus.
+pub fn runtime_dir() -> PathBuf {
+    support_dir().join("bus").join("run")
+}
+
+const RUNTIME_ENV: &str = "OCTOBER_BUS_RUNTIME_DIR";
+
+/// An `october-bus` command for Lantern's daemon.
+fn command(bin: &std::path::Path) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env(RUNTIME_ENV, runtime_dir());
+    cmd
+}
+
 fn bus(args: &[&str], limit: Duration) -> Result<std::process::Output> {
     let bin = binary().context("October Bus isn't downloaded yet")?;
-    crate::run::output(Command::new(bin).args(args), limit)
+    crate::run::output(command(&bin).args(args), limit)
+}
+
+/// Stops Lantern's own Bus daemons that can't be reached any more (their run file is gone), so a
+/// new one can take the store. Only `october-bus… start` processes of this user, run from Lantern's
+/// program; never another app's Bus.
+fn stop_unreachable(bin: &std::path::Path) -> usize {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_exe(UpdateKind::Always).with_cmd(UpdateKind::Always),
+    );
+    let me = sysinfo::get_current_pid().ok().and_then(|pid| sys.process(pid)).and_then(|p| p.user_id().cloned());
+    let mut stopped = 0;
+    for p in sys.processes().values() {
+        let ours = p.exe() == Some(bin) && p.cmd().get(1).is_some_and(|a| a == "start") && p.user_id().cloned() == me;
+        if ours && p.kill_with(sysinfo::Signal::Term).unwrap_or_else(|| p.kill()) {
+            stopped += 1;
+        }
+    }
+    stopped
 }
 
 /// Stops Lantern's Bus daemon, if one is running (uninstalling: it runs from Lantern's folder).
@@ -161,6 +200,7 @@ pub fn stop() {
 /// Starts the daemon if it isn't running and makes sure Lantern's scope exists.
 pub fn ensure_ready() -> Result<()> {
     static READY: Mutex<Option<Instant>> = Mutex::new(None);
+    static RETRIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if READY.lock().unwrap().is_some_and(|at| at.elapsed() < Duration::from_secs(60)) {
         return Ok(());
     }
@@ -169,8 +209,9 @@ pub fn ensure_ready() -> Result<()> {
     if !running(()) {
         let bin = binary().context("October Bus isn't downloaded yet")?;
         std::fs::create_dir_all(support_dir())?;
+        create_private_dir(&runtime_dir())?;
         let log = std::fs::File::create(support_dir().join("october-bus.log")).ok();
-        let mut cmd = Command::new(bin);
+        let mut cmd = command(&bin);
         crate::platform::detach(cmd.arg("start").stdin(Stdio::null()));
         match log {
             Some(f) => cmd.stdout(f.try_clone()?).stderr(f),
@@ -183,6 +224,14 @@ pub fn ensure_ready() -> Result<()> {
         });
         let deadline = Instant::now() + Duration::from_secs(8);
         while !running(()) {
+            let log = std::fs::read_to_string(support_dir().join("october-bus.log")).unwrap_or_default();
+            // An earlier daemon of Lantern's still holds the store but can't be reached: stop it,
+            // then try again (once).
+            if log.contains("already owned") && !RETRIED.swap(true, std::sync::atomic::Ordering::SeqCst) && stop_unreachable(&bin) > 0 {
+                eprintln!("lantern: stopped an October Bus daemon Lantern could no longer reach; starting a new one");
+                std::thread::sleep(Duration::from_millis(500));
+                return ensure_ready();
+            }
             if Instant::now() >= deadline {
                 bail!("October Bus didn't start (see october-bus.log in Lantern's support folder)");
             }
@@ -248,6 +297,10 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
     let mut a = Attach { id: id.into(), name: name.into(), on_bus, computer: computer.is_some(), ..Default::default() };
     if !on_bus && computer.is_none() {
         return Ok(a);
+    }
+    if on_bus {
+        // The agent's Bus connection finds Lantern's daemon where it keeps its run file.
+        a.env.push((RUNTIME_ENV.into(), runtime_dir().to_string_lossy().into_owned()));
     }
     let bin = if on_bus { binary().context("October Bus isn't downloaded yet")?.to_string_lossy().into_owned() } else { String::new() };
     let dir = support_dir().join("bus");
@@ -379,9 +432,26 @@ pub(crate) fn merge_settings(base: Option<&[u8]>, bus: &[u8]) -> Result<Vec<u8>>
     Ok(serde_json::to_vec_pretty(&out)?)
 }
 
-/// `october-bus mcp stdio` arguments that register the agent when the agent starts it.
+/// `october-bus mcp stdio` arguments that register the agent when the agent starts it. Its data
+/// and run folders are given outright: agents such as Codex don't pass their environment on.
 fn mcp_args(id: &str, name: &str) -> Vec<String> {
-    ["mcp", "stdio", "--scope", SCOPE, "--agent", id, "--name", name].iter().map(|s| s.to_string()).collect()
+    let (data, run) = (data_dir().to_string_lossy().into_owned(), runtime_dir().to_string_lossy().into_owned());
+    ["mcp", "stdio", "--scope", SCOPE, "--agent", id, "--name", name, "--data-dir", &data, "--runtime-dir", &run]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// The Bus's own data folder (its `DefaultDaemonPaths`): Lantern's daemon keeps the default.
+fn data_dir() -> PathBuf {
+    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(dir) = env("OCTOBER_BUS_DATA_DIR") {
+        return dir;
+    }
+    if cfg!(windows) {
+        return env("LOCALAPPDATA").unwrap_or_else(|| crate::transcripts::home().join("AppData").join("Local")).join("October Bus");
+    }
+    env("XDG_DATA_HOME").unwrap_or_else(|| crate::transcripts::home().join(".local").join("share")).join("october-bus")
 }
 
 fn toml_string(s: &str) -> String {
@@ -469,6 +539,17 @@ pub fn post(to: &str, file: &str) -> Result<()> {
     Ok(())
 }
 
+/// The Bus refuses a runtime folder others can read.
+fn create_private_dir(dir: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 /// Agents Lantern started on the Bus, remembered across engine restarts for a day.
 fn registry() -> PathBuf {
     support_dir().join("bus/agents.json")
@@ -517,6 +598,16 @@ mod computer_tests {
 
     fn driver() -> (String, Vec<String>) {
         ("/x/cua-driver".into(), vec!["mcp".into(), "--socket".into(), "/x/cua.sock".into()])
+    }
+
+    #[test]
+    fn bus_connections_find_lanterns_daemon_where_it_keeps_its_run_file() {
+        // Not under the temporary folder, which macOS clears while the daemon runs.
+        assert!(runtime_dir().starts_with(support_dir()));
+        let args = mcp_args("lantern-codex-1", "Codex · p");
+        let after = |flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
+        assert_eq!(after("--runtime-dir"), Some(runtime_dir().to_string_lossy().into_owned()));
+        assert!(after("--data-dir").is_some_and(|d| d.ends_with("october-bus") || d.ends_with("October Bus")));
     }
 
     #[test]
