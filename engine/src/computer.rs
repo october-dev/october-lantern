@@ -223,18 +223,62 @@ fn claim(path: &std::path::Path) -> Result<Option<std::fs::File>> {
     }
 }
 
-/// Downloads the driver if needed and starts Lantern's daemon if it isn't running.
-pub fn start() -> Result<()> {
+/// What was last asked of the driver (on or off, from Settings) and how many requests there have
+/// been. Only the latest request may spawn the driver or report it ready: turning it off while an
+/// earlier start is still downloading, waiting for the lock or starting cancels that start instead
+/// of letting it finish afterwards.
+struct Wanted {
+    on: bool,
+    generation: u64,
+}
+
+static WANTED: Mutex<Wanted> = Mutex::new(Wanted { on: false, generation: 0 });
+
+/// Records a new request to turn the driver on or off; returns its generation.
+pub fn want(on: bool) -> u64 {
+    let mut w = WANTED.lock().unwrap();
+    w.on = on;
+    w.generation += 1;
+    w.generation
+}
+
+/// No request has come after this one.
+pub fn latest(generation: u64) -> bool {
+    WANTED.lock().unwrap().generation == generation
+}
+
+fn wanted_on(generation: u64) -> bool {
+    let w = WANTED.lock().unwrap();
+    w.on && w.generation == generation
+}
+
+/// How a start ended when it didn't fail.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Started {
+    Ready,
+    /// A later request (off, or another start) replaced this one; it spawned nothing it left running.
+    Superseded,
+}
+
+/// Downloads the driver if needed and starts Lantern's daemon if it isn't running, for the request
+/// `generation` (from `want(true)`).
+pub fn start(generation: u64) -> Result<Started> {
     static STARTING: Mutex<()> = Mutex::new(());
     let _guard = STARTING.lock().unwrap();
+    if !wanted_on(generation) {
+        return Ok(Started::Superseded);
+    }
     let bin = ensure_installed()?;
+    if !wanted_on(generation) {
+        return Ok(Started::Superseded);
+    }
     {
         let mut daemon = DAEMON.lock().unwrap();
         if let Some(d) = daemon.as_mut()
             && d.child.try_wait().ok().flatten().is_none()
             && running(&bin)
         {
-            return Ok(());
+            return Ok(Started::Ready);
         }
         *daemon = None;
     }
@@ -245,6 +289,9 @@ pub fn start() -> Result<()> {
     let lock = support_dir().join("cua-driver.lock");
     let deadline = Instant::now() + Duration::from_secs(10);
     let owner = loop {
+        if !wanted_on(generation) {
+            return Ok(Started::Superseded);
+        }
         if let Some(file) = claim(&lock)? {
             break file;
         }
@@ -271,10 +318,22 @@ pub fn start() -> Result<()> {
         Some(f) => cmd.stdout(f.try_clone()?).stderr(f),
         None => cmd.stdout(Stdio::null()).stderr(Stdio::null()),
     };
-    let child = cmd.spawn().context("starting Cua Driver")?;
-    *DAEMON.lock().unwrap() = Some(Daemon { child, _owner: owner });
+    {
+        // Checked and spawned under the daemon's lock, which `stop_for` takes too: an off request
+        // either comes first (and this start spawns nothing) or finds the daemon and stops it.
+        let mut daemon = DAEMON.lock().unwrap();
+        if !wanted_on(generation) {
+            return Ok(Started::Superseded);
+        }
+        let child = cmd.spawn().context("starting Cua Driver")?;
+        *daemon = Some(Daemon { child, _owner: owner });
+    }
     let deadline = Instant::now() + Duration::from_secs(15);
     while !running(&bin) {
+        if !wanted_on(generation) {
+            // The off (or newer) request stops what this one spawned.
+            return Ok(Started::Superseded);
+        }
         if DAEMON.lock().unwrap().as_mut().is_some_and(|d| d.child.try_wait().ok().flatten().is_some()) {
             bail!("Cua Driver stopped as it started (see cua-driver.log in Lantern's support folder)");
         }
@@ -283,12 +342,33 @@ pub fn start() -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Ok(())
+    Ok(if wanted_on(generation) { Started::Ready } else { Started::Superseded })
 }
 
-/// Stops Lantern's daemon (turned off in Settings, or the engine is exiting).
+/// Stops Lantern's daemon for the request `generation`, unless a later request came in (a newer
+/// start's daemon isn't this request's to stop).
+pub fn stop_for(generation: u64) {
+    let taken = {
+        let mut daemon = DAEMON.lock().unwrap();
+        if !latest(generation) {
+            return;
+        }
+        daemon.take()
+    };
+    if let Some(d) = taken {
+        shut(d);
+    }
+}
+
+/// Stops Lantern's daemon, whatever was asked last (the engine is exiting, or uninstalling).
 pub fn stop() {
-    let Some(mut d) = DAEMON.lock().unwrap().take() else { return };
+    let taken = DAEMON.lock().unwrap().take();
+    if let Some(d) = taken {
+        shut(d);
+    }
+}
+
+fn shut(mut d: Daemon) {
     if let Some(bin) = binary() {
         let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(3));
     }
@@ -328,6 +408,22 @@ mod tests {
         drop(first);
         assert!(claim(&path).unwrap().is_some(), "it's free again once the holder lets go");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_latest_request_starts_the_driver() {
+        let first = want(true);
+        assert!(wanted_on(first));
+        let off = want(false);
+        assert!(!wanted_on(first), "turning it off cancels the earlier start");
+        assert!(latest(off) && !latest(first));
+        // A start for the replaced request does nothing: no download, no lock, no driver.
+        assert_eq!(start(first).unwrap(), Started::Superseded);
+        let again = want(true);
+        assert!(wanted_on(again) && !wanted_on(off));
+        // The off request's stop doesn't touch a daemon a newer start owns.
+        stop_for(off);
+        want(false);
     }
 
     #[test]

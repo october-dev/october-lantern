@@ -413,20 +413,28 @@ pub fn run() -> Result<()> {
                     next_scan = Instant::now() + Duration::from_millis(1500);
                 }
                 Ok(Request::ComputerPrepare { enabled, restart }) => {
+                    // Each request supersedes the ones before it: an earlier start still downloading
+                    // or starting gives up instead of turning the driver on after an off.
+                    let generation = crate::computer::want(enabled);
                     std::thread::spawn(move || {
+                        use crate::computer::{self, Started};
                         if !enabled || restart {
-                            crate::computer::stop();
+                            computer::stop_for(generation);
                         }
                         if !enabled {
-                            crate::computer::stop();
-                            return emit(&crate::computer::status_json("off", None));
+                            if computer::latest(generation) {
+                                emit(&computer::status_json("off", None));
+                            }
+                            return;
                         }
-                        if !crate::computer::ready() {
-                            emit(&crate::computer::status_json("installing", None));
+                        if !computer::ready() {
+                            emit(&computer::status_json("installing", None));
                         }
-                        match crate::computer::start() {
-                            Ok(()) => emit(&crate::computer::status_json("ready", None)),
-                            Err(e) => emit(&crate::computer::status_json("failed", Some(format!("{e:#}")))),
+                        match computer::start(generation) {
+                            Ok(Started::Ready) => emit(&computer::status_json("ready", None)),
+                            Ok(Started::Superseded) => {}
+                            Err(e) if computer::latest(generation) => emit(&computer::status_json("failed", Some(format!("{e:#}")))),
+                            Err(_) => {}
                         }
                     });
                 }
