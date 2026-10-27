@@ -222,7 +222,7 @@ fn claudes_question_is_answered_by_its_option_or_number_key_but_not_while_typing
     let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
     let (_, actions) = render(&ctx, &assets, &mut f, vec![ctrl(egui::Key::Num3)]);
     assert!(actions.is_empty(), "a newly arrived question never steals a shortcut");
-    render(&ctx, &assets, &mut f, vec![key(egui::Key::Num3, false)]);
+    // Keep Num3 held while deliberately focusing the card; egui derives repeat from held-key state.
     assert!(click(&ctx, &assets, &mut f, text_rect(&output, "Use number keys").center()).is_empty());
     let repeated =
         egui::Event::Key { key: egui::Key::Num3, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::COMMAND };

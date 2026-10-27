@@ -826,6 +826,12 @@ pub fn launch(
         }
         LaunchEnv::default()
     };
+    // tmux may predate this debug engine, so it does not inherit its private profile. Keep the
+    // fixture profile scoped to this launch and its MCP children, never the shared server.
+    #[cfg(debug_assertions)]
+    if let Some(profile) = std::env::var_os("LANTERN_TEST_PROFILE").filter(|p| Path::new(p).is_absolute()) {
+        extra.env.push(("LANTERN_TEST_PROFILE".into(), profile.to_string_lossy().into_owned()));
+    }
     // Only files the app saved in the screenshots folder, so a request can't hand an agent anything else.
     let images: Vec<&Path> = screenshot.into_iter().chain(extras.images.iter().map(PathBuf::as_path)).collect();
     for s in &images {
