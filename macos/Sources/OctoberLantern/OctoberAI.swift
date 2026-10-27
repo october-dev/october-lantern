@@ -24,6 +24,8 @@ enum OctoberAI {
         var context: String
         /// "chat" for the assistant (its own prompt on the server); nil for Point & Ask.
         var mode: String? = nil
+        /// Show me (mode "show"): the controls on screen and the guide's round, from the engine.
+        var guidance: [String: Any]? = nil
     }
 
     enum Failure: LocalizedError {
@@ -73,6 +75,12 @@ enum OctoberAI {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
                     var request = request
+                    // Show me has no fallback: without its mode there's nothing to point at.
+                    if request.mode == "show" {
+                        try await ask(request, token: token, into: continuation)
+                        continuation.finish()
+                        return
+                    }
                     if let mode = request.mode, unsupportedModes.withLock({ $0.contains(mode) }) { request.mode = nil }
                     do {
                         do {
@@ -114,6 +122,9 @@ enum OctoberAI {
         /// agent and project only when the user named them. `to` names a running agent (its
         /// handle) to send it to instead of starting one.
         case task(prompt: String, agent: String?, project: String?, to: String?)
+        /// Show me's answer: where to point (October's `guidance`, or nil when it gave none) and the
+        /// guide's goal id.
+        case guide(guidance: [String: Any]?, goalId: String?)
     }
 
     /// "18 free questions left today" from a free account's `done` event.
@@ -165,6 +176,7 @@ enum OctoberAI {
         if !r.context.isEmpty { json["context"] = capped(r.context, 6000) }
         if let mode = r.mode { json["mode"] = mode }
         if let image = r.image { json["image"] = image.base64EncodedString() }
+        if let guidance = r.guidance { json["guidance"] = guidance }
         var req = URLRequest(url: askURL)
         req.httpMethod = "POST"
         req.timeoutInterval = 90
@@ -197,8 +209,13 @@ enum OctoberAI {
                         to: t["to"] as? String
                     ))
                 }
+                if r.mode == "show" {
+                    continuation.yield(.guide(guidance: event["guidance"] as? [String: Any], goalId: event["goalId"] as? String))
+                }
                 if let note = note(done: event) { continuation.yield(.note(note)) }
                 return
+            case "error":
+                throw Failure.unavailable(event["message"] as? String ?? "The answer stopped partway. Try again.")
             default: continue
             }
         }

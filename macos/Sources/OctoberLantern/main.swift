@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         case .text(let t): print(t, terminator: "")
                         case .note(let n): print("\n[note] \(n)")
                         case .task(let prompt, let agent, let project, let to): print("\n[task] agent=\(agent ?? "-") project=\(project ?? "-") to=\(to ?? "-") prompt=\(prompt)")
+                        case .guide(let g, let goal): print("\n[guide] \(g ?? [:]) goal=\(goal ?? "-")")
                         }
                         fflush(stdout)
                     }

@@ -220,6 +220,8 @@ enum EngineMessage: Decodable {
     case history(requestId: String, agentId: String, supported: Bool, messages: [ChatMessage], busy: Bool)
     case october(OctoberLink)
     case phone(PhoneModel.State)
+    /// Show me (engine/src/show): take a picture, ask October, or where the guide is.
+    case show(ShowMessage)
     case other
 
     /// The models an agent can start with (see engine/src/models.rs). `choosable` is false for
@@ -309,6 +311,8 @@ enum EngineMessage: Decodable {
             self = .harness(try HarnessStatus(from: decoder))
         case "computer":
             self = .computer(try ComputerStatus(from: decoder))
+        case "showCapture", "showQuery", "showState":
+            self = .show(try ShowMessage(from: decoder))
         case "launchResult", "attachResult":
             let id = try c.decode(String.self, forKey: .requestId)
             let ok = try c.decode(Bool.self, forKey: .ok)
@@ -346,5 +350,43 @@ enum AgentAnswer: Hashable {
     var json: [String: Any] {
         if case .picks(let picks) = self { return ["kind": kind, "picks": picks] }
         return ["kind": kind]
+    }
+}
+
+/// What the engine says about a Show me guide (protocol/README.md, "Show me").
+struct ShowMessage: Decodable {
+    enum Kind: String, Decodable { case showCapture, showQuery, showState }
+    let type: Kind
+    let runId: String
+    let step: Int
+    /// showQuery: the round, its capture, the guide's goal (after the first round), the controls to
+    /// send (`[id, kind, label, [x, y, w, h]]`, image pixels) and the steps already shown.
+    let round: Int?
+    let captureId: String?
+    let goalId: String?
+    let elements: [ShowElement]?
+    let shown: [String]?
+    /// showState: looking, asking, showing, notVisible, finished, changed, failed or ended.
+    let phase: String?
+    /// showing: the target in the picture's pixels, and whether Lantern's cursor points at it.
+    let target: Target?
+    let live: Bool?
+    let reason: String?
+    let message: String?
+
+    struct Target: Decodable { let image: [Double] }
+}
+
+/// One control in a showQuery: `[id, kind, label, [x, y, w, h]]`, kept as the JSON October takes.
+struct ShowElement: Decodable {
+    let json: [Any]
+
+    init(from decoder: Decoder) throws {
+        var c = try decoder.unkeyedContainer()
+        let id = try c.decode(Int.self)
+        let kind = try c.decode(String.self)
+        let label = try c.decodeIfPresent(String.self)
+        let box = try c.decode([Double].self)
+        json = [id, kind, label as Any? ?? NSNull(), box]
     }
 }

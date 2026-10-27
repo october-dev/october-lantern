@@ -90,6 +90,9 @@ struct SettingsView: View {
                 Text("Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source) and Lantern's Accessibility and Screen Recording permissions.")
                     .font(.caption).foregroundStyle(.secondary)
                 if prefs.computerUse { computerStatus }
+                Toggle("Show me", isOn: $prefs.showMe)
+                Text("Point & Ask and Ask Lantern can point at what you asked about, on your screen, step by step. Each step sends a picture of the whole screen and the names of the buttons and menus on it (never what's typed in fields) to October's AI; nothing is kept. Pointing on screen uses Cua Driver (above); without it, the place is marked on a picture instead.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Ask before agents act", isOn: $prefs.askFirst)
                 Text("Off: agents Lantern starts work without stopping to ask (Claude Code, Codex and others in their auto-approve mode), so tasks finish on their own. On: each agent asks you before it runs commands or changes files.")
                     .font(.caption).foregroundStyle(.secondary)

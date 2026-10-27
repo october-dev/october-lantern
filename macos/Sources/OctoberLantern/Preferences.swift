@@ -30,6 +30,8 @@ final class Preferences: ObservableObject {
     /// The agent new sessions and assistant tasks start with (an AgentKind raw value), or empty to
     /// choose: your own signed-in plan first, then October. See `AppModel.defaultAgentKind`.
     @Published var defaultAgent: String { didSet { d.set(defaultAgent, forKey: "defaultAgent") } }
+    /// Show me: Lantern points at things on your screen (it sends a picture of the screen to October).
+    @Published var showMe: Bool { didSet { d.set(showMe, forKey: "showMe") } }
 
     private init() {
         d.register(defaults: ["notificationsEnabled": true, "notifyOnFinish": true])
@@ -46,6 +48,8 @@ final class Preferences: ObservableObject {
         computerUse = d.bool(forKey: "computerUse")
         askFirst = d.bool(forKey: "askFirst")
         defaultAgent = d.string(forKey: "defaultAgent") ?? ""
+        d.register(defaults: ["showMe": true])
+        showMe = d.bool(forKey: "showMe")
     }
 
     func counts(_ kind: AgentKind) -> Bool { !mutedKinds.contains(kind.rawValue) }

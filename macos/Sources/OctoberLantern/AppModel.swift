@@ -168,6 +168,8 @@ final class AppModel: ObservableObject {
         }
         engine.onPhone = { state in PhoneModel.shared.receive(state) }
         PhoneModel.shared.engine = engine
+        engine.onShow = { message in ShowMe.shared.receive(message) }
+        ShowMe.shared.send = { [weak self] type, fields in self?.engine.show(type, fields) ?? false }
         engine.onModels = { [weak self] list in self?.models[list.kind.rawValue] = list }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
@@ -208,7 +210,11 @@ final class AppModel: ObservableObject {
                 if let self, self.prefs.busForSessions { self.engine.prepareBus() }
             }
         }
-        engine.onStopped = { [weak self] message in self?.engineStopped(message) }
+        engine.onStopped = { [weak self] message in
+            // A guide lives in the engine: it ended with it.
+            ShowMe.shared.stop()
+            self?.engineStopped(message)
+        }
         engine.onHealth = { [weak self] health in
             if case .failed = health { Analytics.shared.capture("engine_failed") }
             self?.engineHealth = health

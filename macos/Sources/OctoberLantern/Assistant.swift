@@ -420,6 +420,7 @@ final class Assistant: ObservableObject {
                         } else {
                             propose(prompt: prompt, agent: agent, project: project, turn: id)
                         }
+                    case .guide: break
                     }
                 }
                 if let i = turns.firstIndex(where: { $0.id == id }), turns[i].answer.isEmpty {
@@ -453,6 +454,16 @@ final class Assistant: ObservableObject {
     /// Point & Ask decided its question is work: a new conversation here with that question and
     /// answer, starting the task with the selection's screenshot. October's prompt is used as it
     /// is: it says what the screenshot shows, which the user's own words ("move these") don't.
+    /// Show me for an answer: Lantern's panel closes so the screen is clear, and Lantern points the
+    /// way on the display under the pointer.
+    func showMe(_ question: String) {
+        model?.panel = nil
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        // Let the panel close before the picture is taken.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { ShowMe.shared.start(question: question, on: screen) }
+    }
+
     func adopt(question: String, answer: String, prompt: String, agent: String?, project: String?, screenshot: URL?, context: String?) {
         clear()
         let turn = Turn(question: question, answer: answer)
@@ -877,6 +888,13 @@ private struct TurnView: View {
                 Label(started, systemImage: "play.circle.fill").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.green)
             }
             if let note = turn.note { Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted) }
+            if !turn.answer.isEmpty, !turn.failed, turn.task == nil, turn.started == nil, Preferences.shared.showMe {
+                Button { Assistant.shared.showMe(turn.question) } label: {
+                    Label("Show me on screen", systemImage: "hand.point.up.left").font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.amber)
+                .help("Lantern points at it on your screen, step by step")
+            }
             if let problem = turn.taskProblem {
                 Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
             }

@@ -173,6 +173,33 @@ enum Request {
     },
     #[serde(rename = "phone.stop")]
     PhoneStop,
+    // MARK: Show me (see show.rs)
+    #[serde(rename = "show.start", rename_all = "camelCase")]
+    ShowStart {
+        run_id: String,
+    },
+    #[serde(rename = "show.captured")]
+    ShowCaptured(crate::show::Captured),
+    #[serde(rename = "show.result", rename_all = "camelCase")]
+    ShowResult {
+        run_id: String,
+        round: u32,
+        capture_id: String,
+        result: Value,
+    },
+    #[serde(rename = "show.next", rename_all = "camelCase")]
+    ShowNext {
+        run_id: String,
+        step: u32,
+    },
+    #[serde(rename = "show.again", rename_all = "camelCase")]
+    ShowAgain {
+        run_id: String,
+    },
+    #[serde(rename = "show.stop", rename_all = "camelCase")]
+    ShowStop {
+        run_id: String,
+    },
 }
 
 fn yes() -> bool {
@@ -286,6 +313,7 @@ pub fn run() -> Result<()> {
     let mut last_emit = Instant::now() - HEARTBEAT;
     let mut next_scan = Instant::now();
     let mut phone: Option<crate::mobile::host::MobileHost> = None;
+    let show = crate::show::start(emit);
 
     loop {
         if Instant::now() >= next_scan {
@@ -416,6 +444,10 @@ pub fn run() -> Result<()> {
                     // Each request supersedes the ones before it: an earlier start still downloading
                     // or starting gives up instead of turning the driver on after an off.
                     let generation = crate::computer::want(enabled);
+                    if !enabled || restart {
+                        // Show me lets go of the driver before it stops.
+                        let _ = show.send(crate::show::Cmd::DriverOff);
+                    }
                     std::thread::spawn(move || {
                         use crate::computer::{self, Started};
                         if !enabled || restart {
@@ -585,6 +617,24 @@ pub fn run() -> Result<()> {
                     if let Some(p) = phone.take() {
                         p.send(crate::mobile::host::Cmd::Stop);
                     }
+                }
+                Ok(Request::ShowStart { run_id }) => {
+                    let _ = show.send(crate::show::Cmd::Start { run_id });
+                }
+                Ok(Request::ShowCaptured(c)) => {
+                    let _ = show.send(crate::show::Cmd::Captured(c));
+                }
+                Ok(Request::ShowResult { run_id, round, capture_id, result }) => {
+                    let _ = show.send(crate::show::Cmd::Result { run_id, round, capture_id, result });
+                }
+                Ok(Request::ShowNext { run_id, step }) => {
+                    let _ = show.send(crate::show::Cmd::Next { run_id, step });
+                }
+                Ok(Request::ShowAgain { run_id }) => {
+                    let _ = show.send(crate::show::Cmd::Again { run_id });
+                }
+                Ok(Request::ShowStop { run_id }) => {
+                    let _ = show.send(crate::show::Cmd::Stop { run_id });
                 }
                 // The line itself isn't logged: some requests carry an access token.
                 Err(e) => eprintln!("lantern-engine: bad request ({e})"),

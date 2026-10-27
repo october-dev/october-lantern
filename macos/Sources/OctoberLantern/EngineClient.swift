@@ -26,6 +26,7 @@ final class EngineClient {
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
     var onPhone: ((PhoneModel.State) -> Void)?
+    var onShow: ((ShowMessage) -> Void)?
     /// Launch and attach results: (requestId, ok, message).
     var onActionResult: ((String, Bool, String?) -> Void)?
     /// A session started on Lantern's tmux server, by tmux session name.
@@ -280,6 +281,15 @@ final class EngineClient {
         send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
 
+    // MARK: Show me (see ShowMe)
+
+    /// A Show me request: `show.start`, `show.captured`, `show.result`, `show.next`, `show.again` or
+    /// `show.stop`, with its fields.
+    @discardableResult
+    func show(_ type: String, _ fields: [String: Any]) -> Bool {
+        send(fields.merging(["type": type]) { _, new in new })
+    }
+
     // MARK: Phone (see PhoneModel)
 
     /// The current October access token: the engine starts hosting for the phone app, or hands a
@@ -345,6 +355,7 @@ final class EngineClient {
                     if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
+                case .show(let message): onShow?(message)
                 case .launchResult(let id, let ok, let message, let session):
                     onActionResult?(id, ok, message)
                     if ok, let session { onLaunched?(session) }

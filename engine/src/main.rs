@@ -31,6 +31,7 @@ mod report;
 mod run;
 mod scanner;
 mod serve;
+mod show;
 mod sqlite;
 mod subscriptions;
 #[cfg(test)]
