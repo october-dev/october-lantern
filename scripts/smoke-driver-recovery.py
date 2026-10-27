@@ -4,12 +4,13 @@ Usage: python3 scripts/smoke-driver-recovery.py path/to/debug/lantern-engine pat
 Use the pinned Cua binary already checksum-verified by Lantern. The driver permissions gate
 is disabled only in this metadata/lifecycle fixture, so this does not qualify desktop access.
 """
-import hashlib,json,os,pathlib,queue,shutil,sqlite3,subprocess,sys,tempfile,threading,time
+import hashlib,json,os,pathlib,queue,shutil,sqlite3,subprocess,sys,tempfile,threading,time,uuid
 if os.name == 'nt' or len(sys.argv) != 3:
     raise SystemExit(__doc__)
 engine=str(pathlib.Path(sys.argv[1]).resolve())
 driver=str(pathlib.Path(sys.argv[2]).resolve())
 folder=tempfile.mkdtemp(prefix='lantern-crash-',dir='/tmp')
+passed=False
 try:
     profile=pathlib.Path(folder)
     env=dict(os.environ,LANTERN_TEST_PROFILE=folder,LANTERN_CUA_BIN=driver,CUA_DRIVER_RS_PERMISSIONS_GATE='0')
@@ -31,6 +32,13 @@ try:
             if predicate(event):return event
         raise AssertionError('Protocol timeout')
     def send(host,request):host.stdin.write(json.dumps(request)+'\n');host.stdin.flush()
+    def exited(pid):
+        end=time.monotonic()+8
+        while time.monotonic()<end:
+            try:os.kill(pid,0)
+            except ProcessLookupError:return
+            time.sleep(.1)
+        raise AssertionError('The actual orphan daemon process survived confirmed stopping')
     daemon=None
     try:
         host,events=start()
@@ -54,20 +62,31 @@ try:
         held=until(events,lambda e:e.get('type')=='computerHold' and e.get('message','').startswith('App access is paused.'))
         assert held['held'] is True
         assert subprocess.run([driver,'status','--socket',str(profile/'cua-driver.sock'),'--pid-file',str(profile/'cua-driver.pid')],capture_output=True).returncode!=0
-        end=time.monotonic()+8
-        while time.monotonic()<end:
-            try:os.kill(daemon,0)
-            except ProcessLookupError:break
-            time.sleep(.1)
-        else:raise AssertionError('The actual orphan daemon process survived restored pause confirmation')
+        exited(daemon)
         assert db.execute('SELECT held FROM computer_hold WHERE id=1').fetchone()[0]==1
         send(restored,dict(type='computer.prepare',enabled=True))
         off=until(events,lambda e:e.get('type')=='computer' and e.get('status')=='off')
         assert 'paused' in off['message']
+        # The Settings Off route must recover an orphan even when no task hold was saved.
+        request=str(uuid.uuid4())
+        send(restored,dict(type='task.control',requestId=request,action='continue'))
+        continued=until(events,lambda e:e.get('type')=='controlResult' and e.get('requestId')==request)
+        assert continued['ok'],continued
+        daemon=int((profile/'cua-driver.pid').read_text().strip())
+        assert db.execute('SELECT held FROM computer_hold WHERE id=1').fetchone()[0]==0
+        restored.kill();restored.wait(timeout=10)
+        off_host,off_events=start()
+        until(off_events,lambda e:e.get('type')=='routines')
+        send(off_host,dict(type='computer.prepare',enabled=False))
+        stopped=until(off_events,lambda e:e.get('type')=='computer' and e.get('status') in ['off','failed'])
+        assert stopped['status']=='off',stopped
+        exited(daemon)
+        assert subprocess.run([driver,'status','--socket',str(profile/'cua-driver.sock'),'--pid-file',str(profile/'cua-driver.pid')],capture_output=True).returncode!=0
         db.close()
-        record=dict(kind='Real engine SIGKILL/restart, pinned Cua metadata-only daemon; no model/UI input',checks=['second engine left the live owner driver untouched','driver survived engine SIGKILL in durable-hold/revocation gap','restored hold stopped actual orphan daemon before paused confirmation','new driver start refused while held'],engineSha256=hashlib.sha256(pathlib.Path(engine).read_bytes()).hexdigest())
+        record=dict(kind='Real engine SIGKILL/restart, pinned Cua metadata-only daemon; no model/UI input',checks=['second engine left the live owner driver untouched','driver survived engine SIGKILL in durable-hold/revocation gap','restored hold stopped actual orphan daemon before paused confirmation','new driver start refused while held','Settings Off stopped an orphan after a second real crash with no saved hold'],engineSha256=hashlib.sha256(pathlib.Path(engine).read_bytes()).hexdigest())
         print(json.dumps(record,indent=2))
         print('PASS: actual engine crash gap, orphan Cua shutdown before pause confirmation, and held restart fencing')
+        passed=True
     finally:
         for host in hosts:
             if host.poll() is None:
@@ -84,4 +103,5 @@ finally:
         try:os.kill(daemon,0)
         except ProcessLookupError:pass
         else:raise RuntimeError(f'QA daemon exit unconfirmed; private profile retained at {folder}')
-    shutil.rmtree(folder)
+    if passed:shutil.rmtree(folder)
+    else:print(f'QA diagnostic files retained privately at {folder}',file=sys.stderr)

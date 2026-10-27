@@ -517,8 +517,16 @@ pub fn run() -> Result<()> {
                     }
                     std::thread::spawn(move || {
                         use crate::computer::{self, Started};
-                        if !enabled || restart {
-                            computer::stop_for(generation);
+                        if (!enabled || restart)
+                            && let Err(error) = computer::stop_for(generation)
+                        {
+                            if computer::latest(generation) {
+                                emit(&computer::status_json("failed", Some(format!("App-access stopping is unconfirmed: {error:#}"))));
+                            }
+                            return;
+                        }
+                        if !computer::latest(generation) {
+                            return;
                         }
                         if !enabled {
                             if computer::latest(generation) {

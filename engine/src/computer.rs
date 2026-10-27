@@ -294,15 +294,7 @@ pub fn complete_continue(generation: u64) -> bool {
 pub fn revoke_and_stop() -> Result<bool> {
     let taken = DAEMON.lock().unwrap().take();
     let Some(mut daemon) = taken else {
-        // A killed engine loses its Child handle, but can leave its daemon alive. The profile's
-        // OS lock is the authority to recover that endpoint; never touch a live engine's driver.
-        std::fs::create_dir_all(support_dir())?;
-        let _owner = claim(&support_dir().join("cua-driver.lock"))?.context("Another engine owns app access; stopping is unconfirmed")?;
-        if endpoint_absent(&socket())? {
-            return Ok(true);
-        }
-        let bin = binary().context("The previous driver is reachable but its program is missing; stopping is unconfirmed")?;
-        return stop_previous(&bin, &socket());
+        return recover_previous_driver();
     };
     let revoked = binary().is_some_and(|bin| {
         crate::run::output(driver(&bin).args(["revoke", "--all", "--socket", &socket()]), Duration::from_secs(5))
@@ -313,6 +305,18 @@ pub fn revoke_and_stop() -> Result<bool> {
     }
     daemon.child.wait()?;
     Ok(revoked)
+}
+
+fn recover_previous_driver() -> Result<bool> {
+    // A killed engine loses its Child handle, but can leave its daemon alive. The profile's
+    // OS lock is the authority to recover that endpoint; never touch a live engine's driver.
+    std::fs::create_dir_all(support_dir())?;
+    let _owner = claim(&support_dir().join("cua-driver.lock"))?.context("Another engine owns app access; stopping is unconfirmed")?;
+    if endpoint_absent(&socket())? {
+        return Ok(true);
+    }
+    let bin = binary().context("The previous driver is reachable but its program is missing; stopping is unconfirmed")?;
+    stop_previous(&bin, &socket())
 }
 
 /// An absent/refused local endpoint is different from an RPC, authorization or timeout error.
@@ -397,7 +401,7 @@ fn start_internal(generation: u64, continuing: bool) -> Result<Started> {
         daemon.take()
     };
     if let Some(previous) = previous {
-        shut(previous);
+        shut(previous)?;
     }
     // Only the engine holding the lock may stop, replace or start the driver. Another copy of
     // Lantern (or a development preview) keeps it: replacing it would cut off its agents mid-task.
@@ -472,37 +476,48 @@ fn start_internal(generation: u64, continuing: bool) -> Result<Started> {
 
 /// Stops Lantern's daemon for the request `generation`, unless a later request came in (a newer
 /// start's daemon isn't this request's to stop).
-pub fn stop_for(generation: u64) {
+pub fn stop_for(generation: u64) -> Result<()> {
     let taken = {
         let mut daemon = DAEMON.lock().unwrap();
         if !latest(generation) {
-            return;
+            return Ok(());
         }
-        daemon.take()
+        match daemon.take() {
+            Some(daemon) => daemon,
+            None => {
+                // Keep DAEMON locked until recovery finishes, so an earlier Off cannot take a
+                // newer start's child between its generation check and endpoint shutdown.
+                recover_previous_driver()?;
+                return Ok(());
+            }
+        }
     };
-    if let Some(d) = taken {
-        shut(d);
-    }
+    shut(taken)
 }
 
 /// Stops Lantern's daemon, whatever was asked last (the engine is exiting, or uninstalling).
 pub fn stop() {
     let taken = DAEMON.lock().unwrap().take();
-    if let Some(d) = taken {
-        shut(d);
+    if let Some(d) = taken
+        && let Err(error) = shut(d)
+    {
+        eprintln!("lantern-engine: driver cleanup unconfirmed: {error:#}");
     }
 }
 
-fn shut(mut d: Daemon) {
+fn shut(mut d: Daemon) -> Result<()> {
     if let Some(bin) = binary() {
         let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(3));
     }
     let deadline = Instant::now() + Duration::from_secs(3);
-    while d.child.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+    while d.child.try_wait()?.is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(100));
     }
-    let _ = d.child.kill();
-    let _ = d.child.wait();
+    if d.child.try_wait()?.is_none() {
+        d.child.kill()?;
+    }
+    d.child.wait()?;
+    Ok(())
 }
 
 /// Stops whichever engine's daemon is running (uninstalling: one started by an engine that was
@@ -566,7 +581,14 @@ mod tests {
         let first = claim(&path).unwrap().expect("a free lock is taken");
         assert!(claim(&path).unwrap().is_none(), "a second claim waits while the first holds it");
         drop(first);
-        assert!(claim(&path).unwrap().is_some(), "it's free again once the holder lets go");
+        // Parallel helper spawns may briefly inherit the descriptor until exec closes it.
+        // File::unlock's contract includes inherited handles; runtime handover also waits.
+        // https://doc.rust-lang.org/std/fs/struct.File.html#method.unlock
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while claim(&path).unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the released lock did not become available");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -582,7 +604,7 @@ mod tests {
         let again = want(true);
         assert!(wanted_on(again, false) && !wanted_on(off, false));
         // The off request's stop doesn't touch a daemon a newer start owns.
-        stop_for(off);
+        stop_for(off).unwrap();
         want(false);
     }
 
