@@ -302,6 +302,8 @@ agent as separate arguments, with no shell quoting.
 
 ## Local control and routines
 
+The durable hold is restored before card IPC begins accepting calls. Restoring it cancels old waits and stops an orphaned private driver only after acquiring the profile's ownership lock. Cua shutdown must acknowledge endpoint release; failed status/session calls do not prove stopping. Unknown outcomes keep dispatch held and publish an unconfirmed message. Driver PID files are profile-local; Windows endpoints are `\\.\pipe\october-lantern-cua-<profile-hash>`.
+
 `{"type":"task.control","requestId":"<uuid>","action":"pause|continue|stop","launchId":"<optional launch uuid>"}` returns `controlResult` with the same request ID, `ok` and `message`. `stop` requires the launch. `computerHold` publishes `held` and a message. The hold gates Lantern app access, not arbitrary background shell work. Continue uses a fresh owned driver and does not replay old actions or answers.
 
 `routine` requests use `action: "list"`, `"save"`, `"change"`, or `"run"`. Mutations carry `requestId`; editing/changing/running an existing routine also carries `id` and `revision`. Save carries `draft: {name,prompt,cwd,kind,model?,timezone,cadence,hour,minute,weekday,preferences}`. Change uses `change: "pause|enable|delete"`. Snapshots are `routines {items,error?}`; mutation receipts are `routineResult {requestId,ok,message?}`. `items` include the draft, enabled flag, revision, nextRun and lastRun. The cards SQLite store also owns occurrence admissions and the last scheduler tick.

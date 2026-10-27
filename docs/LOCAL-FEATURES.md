@@ -18,6 +18,8 @@ Live tasks expose **Pause app access**, **Continue app access**, and **Stop sess
 
 These controls do **not** prove that arbitrary shell children or other same-user automation stopped. They do not establish protected takeover, observation protection, or the stronger “you're in control” guarantee. Those S2 requirements remain open and need an enforced execution boundary. A missing discovery scan is not treated as proof that a session ended.
 
+After an engine crash, a saved hold blocks dispatch before card IPC opens. Lantern cancels old waits and checks the previous private driver under its ownership lock. It confirms app-access pause only after shutdown and endpoint release; a failed or unreachable check remains unconfirmed. A second engine cannot stop a live owner's driver.
+
 ## Routines
 
 Open **Routines** from Lantern's menu. Create a local schedule with a task, existing project folder, October/Claude Code/Codex, an IANA timezone, a daily/weekdays/weekly time and preferences. Review and confirm it explicitly. An agent's suggestion opens the same form and cannot create a schedule itself. Each run uses that agent's account and may use credits. Routines use the harness's one-shot mode, rather than leaving a terminal waiting after its turn. Claude retains native permission rules; Codex exec uses its workspace-write sandbox.
@@ -37,3 +39,5 @@ No endpoint/mode fallback changes a guide into an ordinary answer, and no text-o
 See [the implementation evidence and remaining gates](LOCAL-VALIDATION.md).
 
 Run `scripts/check.sh` (Mac/Linux), `scripts/check.ps1` (Windows), and `scripts/check-windows-types.sh` for a cross-target type check. The latter does not execute Windows code. `scripts/smoke-local-cards.py` exercises card transport, cancellation, routine editing and Show me cancellation against a private debug profile without starting a paid model. Native UI/model tests must also be recorded separately.
+
+On Mac/Linux, `python3 scripts/smoke-driver-recovery.py path/to/debug/lantern-engine path/to/cached/cua-driver` additionally exercises an actual engine crash against the pinned driver already verified by Lantern's installer. It uses no models, screenshots or UI input and does not qualify desktop permissions.

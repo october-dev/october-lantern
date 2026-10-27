@@ -133,8 +133,10 @@ pub fn ensure_installed() -> Result<PathBuf> {
 /// Windows.
 pub fn socket() -> String {
     if cfg!(windows) {
-        let user: String = std::env::var("USERNAME").unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric()).take(32).collect();
-        format!(r"\\.\pipe\october-lantern-cua-{user}")
+        use sha2::{Digest, Sha256};
+        let profile = support_dir().to_string_lossy().to_lowercase();
+        let hash: String = Sha256::digest(profile.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+        format!(r"\\.\pipe\october-lantern-cua-{hash}")
     } else {
         support_dir().join("cua-driver.sock").to_string_lossy().into_owned()
     }
@@ -291,7 +293,17 @@ pub fn complete_continue(generation: u64) -> bool {
 /// Revoke on the owned endpoint, then reap the exact child handle. Never stops another engine.
 pub fn revoke_and_stop() -> Result<bool> {
     let taken = DAEMON.lock().unwrap().take();
-    let Some(mut daemon) = taken else { return Ok(true) };
+    let Some(mut daemon) = taken else {
+        // A killed engine loses its Child handle, but can leave its daemon alive. The profile's
+        // OS lock is the authority to recover that endpoint; never touch a live engine's driver.
+        std::fs::create_dir_all(support_dir())?;
+        let _owner = claim(&support_dir().join("cua-driver.lock"))?.context("Another engine owns app access; stopping is unconfirmed")?;
+        if endpoint_absent(&socket())? {
+            return Ok(true);
+        }
+        let bin = binary().context("The previous driver is reachable but its program is missing; stopping is unconfirmed")?;
+        return stop_previous(&bin, &socket());
+    };
     let revoked = binary().is_some_and(|bin| {
         crate::run::output(driver(&bin).args(["revoke", "--all", "--socket", &socket()]), Duration::from_secs(5))
             .is_ok_and(|out| out.status.success())
@@ -300,6 +312,41 @@ pub fn revoke_and_stop() -> Result<bool> {
         daemon.child.kill()?;
     }
     daemon.child.wait()?;
+    Ok(revoked)
+}
+
+/// An absent/refused local endpoint is different from an RPC, authorization or timeout error.
+/// Never infer successful stopping merely because `status` or `sessions` failed.
+fn endpoint_absent(endpoint: &str) -> Result<bool> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let result = runtime.block_on(async {
+        #[cfg(unix)]
+        let result = tokio::time::timeout(Duration::from_secs(1), tokio::net::UnixStream::connect(endpoint))
+            .await
+            .context("The app-access endpoint probe timed out; stopping is unconfirmed")?;
+        #[cfg(windows)]
+        let result = tokio::net::windows::named_pipe::ClientOptions::new().open(endpoint);
+        Ok::<_, anyhow::Error>(result.map(drop))
+    })?;
+    match result {
+        Ok(()) => Ok(false),
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) => Ok(true),
+        Err(e) => Err(e).context("Cannot verify that the app-access endpoint stopped"),
+    }
+}
+
+/// Called only while holding the profile's driver lock. Cua's stop command acknowledges shutdown
+/// and waits for endpoint release; an additional transport probe must confirm that release.
+fn stop_previous(bin: &PathBuf, endpoint: &str) -> Result<bool> {
+    if endpoint_absent(endpoint)? {
+        return Ok(true);
+    }
+    let revoked = crate::run::output(driver(bin).args(["revoke", "--all", "--socket", endpoint]), Duration::from_secs(5))
+        .is_ok_and(|out| out.status.success());
+    let stopped = crate::run::output(driver(bin).args(["stop", "--socket", endpoint]), Duration::from_secs(5))?;
+    if !stopped.status.success() || !endpoint_absent(endpoint)? {
+        bail!("The previous app-access driver did not confirm stopping; app access remains held");
+    }
     Ok(revoked)
 }
 
@@ -339,7 +386,7 @@ fn start_internal(generation: u64, continuing: bool) -> Result<Started> {
     if !wanted_on(generation, continuing) {
         return Ok(Started::Superseded);
     }
-    {
+    let previous = {
         let mut daemon = DAEMON.lock().unwrap();
         if let Some(d) = daemon.as_mut()
             && d.child.try_wait().ok().flatten().is_none()
@@ -347,7 +394,10 @@ fn start_internal(generation: u64, continuing: bool) -> Result<Started> {
         {
             return Ok(Started::Ready);
         }
-        *daemon = None;
+        daemon.take()
+    };
+    if let Some(previous) = previous {
+        shut(previous);
     }
     // Only the engine holding the lock may stop, replace or start the driver. Another copy of
     // Lantern (or a development preview) keeps it: replacing it would cut off its agents mid-task.
@@ -368,13 +418,21 @@ fn start_internal(generation: u64, continuing: bool) -> Result<Started> {
         std::thread::sleep(Duration::from_millis(250));
     };
     // A daemon left by an earlier engine (Lantern quit without stopping it): ours to replace.
-    let _ = crate::run::output(driver(&bin).args(["stop", "--socket", &socket()]), Duration::from_secs(5));
+    stop_previous(&bin, &socket())?;
     if !cfg!(windows) {
         let _ = std::fs::remove_file(socket());
     }
     let log = std::fs::File::create(support_dir().join("cua-driver.log")).ok();
     let mut cmd = driver(&bin);
-    cmd.args(["serve", "--socket", &socket(), "--grant", "existing-profile"]);
+    cmd.args([
+        "serve",
+        "--socket",
+        &socket(),
+        "--pid-file",
+        &support_dir().join("cua-driver.pid").to_string_lossy(),
+        "--grant",
+        "existing-profile",
+    ]);
     if cfg!(target_os = "macos") {
         cmd.args(["--embedded", "--host-bundle-id", "dev.october.lantern"]);
     }
@@ -464,6 +522,41 @@ pub fn status_json(status: &str, message: Option<String>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn local_probe_distinguishes_live_missing_and_stale_endpoints() {
+        let folder = PathBuf::from("/tmp").join(format!("lantern-cua-probe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let endpoint = folder.join("driver.sock");
+        let path = endpoint.to_str().unwrap();
+        assert!(endpoint_absent(path).unwrap());
+        let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+        assert!(!endpoint_absent(path).unwrap());
+        drop(listener);
+        assert!(endpoint.exists(), "A closed listener leaves a stale socket file");
+        assert!(endpoint_absent(path).unwrap());
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn neither_a_failed_cli_nor_a_false_stop_receipt_confirms_driver_release() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = PathBuf::from("/tmp").join(format!("lantern-cua-stop-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&folder).unwrap();
+        let endpoint = folder.join("driver.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+        let program = folder.join("fixture-driver");
+        for exit in [0, 1] {
+            std::fs::write(&program, format!("#!/bin/sh\nexit {exit}\n")).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(stop_previous(&program, endpoint.to_str().unwrap()).is_err());
+            assert!(!endpoint_absent(endpoint.to_str().unwrap()).unwrap());
+        }
+        drop(listener);
+        std::fs::remove_dir_all(folder).unwrap();
+    }
 
     #[test]
     fn one_holder_of_the_driver_lock_at_a_time() {

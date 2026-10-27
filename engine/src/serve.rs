@@ -317,6 +317,10 @@ pub fn run() -> Result<()> {
     std::thread::spawn(crate::toolkit::refresh_if_stale);
 
     // Cards: the app gets every change as a `cards` event.
+    let control_db = crate::control::open();
+    if control_db.is_err() {
+        crate::computer::hold();
+    }
     let cards = crate::cards::start();
     if let Some(c) = cards {
         let changed = tx.clone();
@@ -325,7 +329,7 @@ pub fn run() -> Result<()> {
         });
     }
     let show = crate::show::start(emit);
-    let control = crate::control::worker(show.clone(), emit);
+    let control = crate::control::worker(control_db, show.clone(), emit);
     let routines = crate::routines::worker(emit);
     let _ = routines.try_send(crate::routines::Command::List);
     let mut last_cards = String::new();

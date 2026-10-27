@@ -13,29 +13,53 @@ pub struct Command {
     pub launch_id: Option<String>,
 }
 
-pub fn worker(show: crate::show::Handle, emit: fn(&Value)) -> std::sync::mpsc::SyncSender<Command> {
+/// Restore the dispatch gate before exposing card IPC, not just before processing UI commands.
+pub fn open() -> Result<Connection> {
+    crate::bus::create_private_dir(&crate::cards::dir())?;
+    let db = Connection::open(crate::cards::dir().join("cards.db"))?;
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS computer_hold(id INTEGER PRIMARY KEY CHECK(id=1),held INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS control_receipts(id TEXT PRIMARY KEY,body TEXT NOT NULL,result TEXT NOT NULL);",
+    )?;
+    let held: bool = db.query_row("SELECT held FROM computer_hold WHERE id=1", [], |r| r.get(0)).optional()?.unwrap_or(false);
+    if held {
+        crate::computer::hold();
+    }
+    Ok(db)
+}
+
+pub fn worker(opened: Result<Connection>, show: crate::show::Handle, emit: fn(&Value)) -> std::sync::mpsc::SyncSender<Command> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<Command>(16);
     if crate::cards::service().is_none() {
         drop(rx);
-        emit(&json!({"type":"computerHold","held":false,"message":"This engine does not own the task service; control is unavailable."}));
+        emit(
+            &json!({"type":"computerHold","held":crate::computer::held(),"message":"This engine does not own the task service; control is unavailable."}),
+        );
         return tx;
     }
-    // Restore the durable gate before accepting any driver-start requests.
-    let database = crate::cards::dir().join("cards.db");
     let opened = (|| -> Result<Connection> {
-        let db = Connection::open(database)?;
-        db.busy_timeout(std::time::Duration::from_secs(5))?;
-        db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS computer_hold(id INTEGER PRIMARY KEY CHECK(id=1),held INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS control_receipts(id TEXT PRIMARY KEY,body TEXT NOT NULL,result TEXT NOT NULL);",
-        )?;
-        let held: bool = db.query_row("SELECT held FROM computer_hold WHERE id=1", [], |r| r.get(0)).optional()?.unwrap_or(false);
+        let db = opened?;
+        let held = crate::computer::held();
         if held {
             crate::computer::hold();
+            emit(
+                &json!({"type":"computerHold","held":true,"message":"Checking the previous app-access driver. New starts and replies are held."}),
+            );
+            if let Some(cards) = crate::cards::service() {
+                cards.cancel_waits()?;
+            }
+            let message = match crate::computer::revoke_and_stop() {
+                Ok(true) => "App access is paused. Background commands may still run.".to_string(),
+                Ok(false) => {
+                    "The app-access endpoint stopped, but session revocation was unconfirmed. Background commands may still run.".into()
+                }
+                Err(error) => format!("New starts and replies are held. The previous driver's stop is unconfirmed: {error:#}"),
+            };
+            emit(&json!({"type":"computerHold","held":true,"message":message}));
+        } else {
+            emit(&json!({"type":"computerHold","held":false,"message":null}));
         }
-        emit(
-            &json!({"type":"computerHold","held":held,"message":if held {Some("App access is paused. Background commands may still run.")}else{None}}),
-        );
         Ok(db)
     })();
     std::thread::spawn(move || {
@@ -82,7 +106,7 @@ pub fn worker(show: crate::show::Handle, emit: fn(&Value)) -> std::sync::mpsc::S
                         } else if revoked {
                             "App access is paused. Background commands may still run; this is not protected takeover.".into()
                         } else {
-                            "Lantern's driver exited, but revocation could not be confirmed. Background commands may still run.".into()
+                            "Lantern's app-access endpoint stopped, but revocation could not be confirmed. Background commands may still run.".into()
                         }
                     }
                     "continue" => {

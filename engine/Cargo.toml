@@ -23,7 +23,7 @@ ureq = { version = "3.4.2", features = ["json"] }
 uuid = { version = "1.26.1", features = ["v4"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "limits"] }
 rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-io", "client", "transport-child-process"] }
-tokio = { version = "1", features = ["rt", "time", "io-std", "sync", "process", "macros"] }
+tokio = { version = "1", features = ["rt", "time", "io-std", "sync", "process", "macros", "net"] }
 url = "2.5.8"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"

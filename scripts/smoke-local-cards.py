@@ -115,6 +115,26 @@ with tempfile.TemporaryDirectory(prefix='lantern-local-', dir='/tmp') as folder:
         assert db.execute('SELECT held FROM computer_hold').fetchone()[0] == 1
         assert not ipc('ask', **dict(ask,operationId=str(uuid.uuid4())))['ok']
         print('Control: durable app-access hold and refused card creation while held passed')
+
+        host.stdin.close()
+        host.wait(timeout=10)
+        events = queue.Queue()
+        host = subprocess.Popen([str(ENGINE), 'serve'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=errors, env=env, text=True, bufsize=1)
+        threading.Thread(target=read, daemon=True).start()
+        retry = dict(ask, operationId=str(uuid.uuid4()))
+        end = time.monotonic() + 10
+        while True:
+            try:
+                reply = ipc('ask', **retry)
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                assert time.monotonic() < end, 'Restarted task service did not listen'
+                time.sleep(.01)
+        assert not reply['ok'], 'Card IPC admitted a question before restoring the durable hold'
+        held = until(lambda v: v.get('type') == 'computerHold' and v.get('held') is True)
+        assert held
+        print('Control restart: the persisted hold fences card IPC from its first accepted request')
     finally:
         host.stdin.close()
         try: host.wait(timeout=10)
