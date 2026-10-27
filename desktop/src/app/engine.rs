@@ -119,6 +119,7 @@ impl Lantern {
         // "Sent" stays on a question's card only while the agent is still on it.
         let prompts: HashSet<String> = agents.iter().filter_map(|agent| agent.prompt_id.clone()).collect();
         self.model.answered.retain(|prompt, _| prompts.contains(prompt));
+        self.model.answer_delivery.retain(|prompt, _| prompts.contains(prompt));
         self.model.agents = agents;
         self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
         self.refresh_folders();
@@ -198,11 +199,17 @@ impl Lantern {
                 let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());
                 self.show(format!("@{handle}: {}", text(event, "message").unwrap_or_else(|| "not sent".into())));
             }
+            Some(Pending::Keys { prompt_id: Some(prompt_id), .. }) if ok => {
+                self.model.answer_delivery.insert(prompt_id, crate::model::AnswerDelivery::Sent);
+            }
             Some(Pending::Keys { agent_id, prompt_id }) if !ok => {
-                if event["error"] != "uncertain"
-                    && let Some(prompt_id) = prompt_id
-                {
-                    self.model.answered.remove(&prompt_id);
+                if let Some(prompt_id) = prompt_id {
+                    if event["error"] == "uncertain" {
+                        self.model.answer_delivery.insert(prompt_id, crate::model::AnswerDelivery::Unconfirmed);
+                    } else {
+                        self.model.answered.remove(&prompt_id);
+                        self.model.answer_delivery.remove(&prompt_id);
+                    }
                 }
                 let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());
                 self.show(format!("@{handle}: {}", text(event, "message").unwrap_or_else(|| "couldn't answer".into())));

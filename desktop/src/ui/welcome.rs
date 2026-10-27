@@ -303,11 +303,9 @@ fn setup(ui: &mut Ui, cx: &mut Ctx) {
     // Only when analytics is built in, like the Mac's `Analytics.available`.
     if crate::analytics::available() {
         let mut share = crate::analytics::enabled();
-        setup_row(ui, Icon::Layers, "Share anonymous usage counts", super::settings::USAGE_DETAIL, |ui| {
+        setup_row(ui, Icon::Layers, "Share usage counts", super::settings::USAGE_DETAIL, |ui| {
             let response = sessions::switch(ui, "", &mut share);
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), share, "Share anonymous usage counts")
-            });
+            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), share, "Share usage counts"));
             if response.changed() {
                 cx.emit(UiAction::SetShareUsage(share));
             }

@@ -246,8 +246,8 @@ struct WelcomeView: View {
                 }
             }
             if Analytics.shared.available {
-                SetupRow(symbol: "chart.bar", title: "Share anonymous usage counts",
-                         detail: "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folders. If you sign in to October, counts are linked to your account.") {
+                SetupRow(symbol: "chart.bar", title: "Share usage counts",
+                         detail: "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folders. If you sign in to October, counts are linked to your October account and email.") {
                     Toggle("", isOn: $shareUsage).toggleStyle(.switch).labelsHidden()
                         .onChange(of: shareUsage) { _, on in Analytics.shared.enabled = on }
                 }

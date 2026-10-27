@@ -183,6 +183,18 @@ impl Lantern {
         if question.is_empty() {
             question = images_question(images.len());
         }
+        // October sees the first image; an agent this starts gets them all. A picture that can't be
+        // prepared stops the question here, rather than going without it.
+        let image = match images.first() {
+            Some(first) => match super::images::jpeg_for_october(std::path::Path::new(first)) {
+                Some(jpeg) => Some(jpeg),
+                None => {
+                    self.model.assistant.attach_problem = Some("Lantern couldn't read that picture. Remove it and add it again.".into());
+                    return;
+                }
+            },
+            None => None,
+        };
         self.inputs.assistant.clear();
         self.model.assistant.attachments.clear();
         self.model.assistant.attach_problem = None;
@@ -198,15 +210,8 @@ impl Lantern {
         });
         self.model.assistant.asking = true;
         let context = with_images(agent_summary(&self.model.agents, &question, self.model.caps.platform), images.len());
-        // October sees the first image; an agent this starts gets them all.
-        let request = october_ai::Request {
-            turns: earlier,
-            question,
-            image: images.first().and_then(|first| super::images::jpeg_for_october(std::path::Path::new(first))),
-            context,
-            mode: Some("chat".into()),
-            platform: self.model.caps.platform,
-        };
+        let request =
+            october_ai::Request { turns: earlier, question, image, context, mode: Some("chat".into()), platform: self.model.caps.platform };
         crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));
         let generation = self.asking.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.asking.generation.clone();
@@ -276,19 +281,23 @@ impl Lantern {
             agent_id: Some(agent.id.clone()),
             images: images.clone(),
             sent: true,
+            send_key: Some(uuid::Uuid::new_v4().to_string()),
+            sent_at: time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).ok(),
             ..Default::default()
         });
+        let key = turns[i].task.as_ref().and_then(|t| t.send_key.clone());
         turns[i].started = Some(format!("Sent to @{}", agent.handle));
         crate::analytics::capture(
             "assistant_sent",
             json!({"kind": agent.kind.as_str(), "route": agent.route.as_ref().map_or("none", |r| r.via.as_str()), "bus": agent.bus_id.is_some()}),
         );
-        self.send_task_message(&agent.id, prompt + &super::images::image_lines(&images), turn);
+        self.send_task_message(&agent.id, prompt + &super::images::image_lines(&images), key, turn);
     }
 
-    /// Asks the engine to send it (`send`: October Bus with a nudge, else typed in).
-    fn send_task_message(&mut self, agent_id: &str, text: String, turn: u64) {
-        if let Some(id) = self.request(json!({"type": "send", "agentId": agent_id, "text": text})) {
+    /// Asks the engine to send it (`send`: October Bus with a nudge, else typed in). `key` names the
+    /// send, so trying again never leaves the Bus a second copy.
+    fn send_task_message(&mut self, agent_id: &str, text: String, key: Option<String>, turn: u64) {
+        if let Some(id) = self.request(json!({"type": "send", "agentId": agent_id, "text": text, "key": key})) {
             self.pending.insert(id, Pending::Send { turn });
         } else if let Some(task) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn).and_then(|t| t.task.as_mut()) {
             task.error = Some("Lantern's engine isn't running.".into());
@@ -415,8 +424,9 @@ impl Lantern {
         if let Some(link) = t.task.as_mut().filter(|link| link.sent) {
             link.error = None;
             let (agent_id, text) = (link.agent_id.clone(), link.prompt.clone() + &super::images::image_lines(&link.images));
+            let key = link.send_key.clone();
             match agent_id.filter(|id| self.model.agent(id).is_some_and(|a| a.is_live())) {
-                Some(agent_id) => self.send_task_message(&agent_id, text, turn),
+                Some(agent_id) => self.send_task_message(&agent_id, text, key, turn),
                 None => {
                     if let Some(link) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn).and_then(|t| t.task.as_mut()) {
                         link.error = Some("that agent isn't running anymore.".into());

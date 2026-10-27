@@ -487,6 +487,14 @@ pub struct AssistantTurn {
     pub images: Vec<String>,
 }
 
+/// What became of an answer to an agent's question: on its way, typed in, or not sure it went in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerDelivery {
+    Sending,
+    Sent,
+    Unconfirmed,
+}
+
 /// An agent Ask Lantern started (Swift `Assistant.TaskLink`): found by its Lantern session (tmux
 /// on Linux, ConPTY on Windows), then by its id. Its last messages are kept, so the conversation
 /// still shows what it did after it ends.
@@ -511,6 +519,10 @@ pub struct TaskLink {
     pub sent: bool,
     /// How it reached that agent ("Sent through October Bus"), once the engine says.
     pub delivery: Option<String>,
+    /// This send's own id, the same when it's tried again (October Bus keeps one copy), and when
+    /// it was first sent (RFC 3339): what the agent said before then isn't its answer.
+    pub send_key: Option<String>,
+    pub sent_at: Option<String>,
 }
 
 /// A saved Ask Lantern conversation (Swift `Assistant.Conversation`).
@@ -967,6 +979,9 @@ pub struct Model {
     /// What was sent for each question (by prompt id), shown as "Sent" on its card until the
     /// agent moves on.
     pub answered: std::collections::HashMap<String, AgentAnswer>,
+    /// What became of each answer, by prompt id (Swift `AppModel.answerDelivery`).
+    #[serde(skip)]
+    pub answer_delivery: std::collections::HashMap<String, AnswerDelivery>,
     pub assistant: AssistantModel,
     pub new_session: NewSessionModel,
     pub point_ask: PointAskModel,

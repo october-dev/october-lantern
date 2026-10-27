@@ -249,6 +249,7 @@ impl Lantern {
         let request = json!({"type": "answer", "agentId": agent_id, "promptId": prompt_id, "answer": answer});
         if let Some(id) = self.request(request) {
             self.model.answered.insert(prompt_id.into(), answer);
+            self.model.answer_delivery.insert(prompt_id.into(), crate::model::AnswerDelivery::Sending);
             self.pending.insert(id, Pending::Keys { agent_id: agent_id.into(), prompt_id: Some(prompt_id.into()) });
         }
     }

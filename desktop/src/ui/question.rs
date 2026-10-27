@@ -16,9 +16,10 @@ pub fn question_card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, keys: bool) {
         return;
     };
     let sent = cx.model.answered.get(&prompt_id).cloned();
-    // Typing a reply: numbers are text. An empty box still answers, as the terminal does.
-    let typing = ui.ctx().egui_wants_keyboard_input() && !(cx.inputs.drafts.text().is_empty() && cx.inputs.assistant.is_empty());
-    let pressed = if keys && sent.is_none() && !typing { number_pressed(ui) } else { None };
+    let delivery = cx.model.answer_delivery.get(&prompt_id).copied();
+    // A text box has the keyboard (empty or not): plain digits are text there; Ctrl+1–9 still answer.
+    let typing = ui.ctx().egui_wants_keyboard_input();
+    let pressed = if keys && sent.is_none() { number_pressed(ui, typing) } else { None };
     let answer = egui::Frame::new()
         .fill(t::opacity(t::AMBER, 0.10))
         .stroke(Stroke::new(1.0, t::opacity(t::AMBER, 0.22)))
@@ -27,11 +28,21 @@ pub fn question_card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, keys: bool) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 6.0;
-            match agent.question_kind.as_deref() {
+            let answer = match agent.question_kind.as_deref() {
                 Some("choice") => choice_questions(ui, cx, agent, &prompt_id, sent.as_ref(), pressed),
                 Some("plan") => plan(ui, cx, agent, sent.as_ref(), pressed),
                 _ => permission(ui, cx, agent, sent.as_ref(), pressed),
+            };
+            if sent.is_some() {
+                // Sent only once the keys went in; until then, or when that's unclear, it says so.
+                let (text, color) = match delivery {
+                    Some(crate::model::AnswerDelivery::Sent) => ("Sent", t::GREEN),
+                    Some(crate::model::AnswerDelivery::Unconfirmed) => ("Not sure it went in. Check its terminal.", t::AMBER),
+                    _ => ("Sending…", t::MUTED),
+                };
+                c::label(ui, text, 11.0, Weight::Semibold, color);
             }
+            answer
         })
         .inner;
     // Answered already: its options still take clicks (so they don't open the chat behind), but
@@ -194,10 +205,10 @@ fn choice_questions(
     answer
 }
 
-/// The question, with "Sent" at its right once answered.
+/// The question; once answered, a check at its right (what became of the answer is said below).
 fn heading(ui: &mut Ui, text: &str, sent: bool) {
     ui.horizontal_top(|ui| {
-        let width = (ui.available_width() - if sent { 52.0 } else { 0.0 }).max(40.0);
+        let width = (ui.available_width() - if sent { 18.0 } else { 0.0 }).max(40.0);
         ui.allocate_ui_with_layout(egui::vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
             ui.set_max_width(width);
             ui.add(egui::Label::new(c::text(text, 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
@@ -205,7 +216,6 @@ fn heading(ui: &mut Ui, text: &str, sent: bool) {
         if sent {
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                c::label(ui, "Sent", 11.0, Weight::Semibold, t::GREEN);
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(11.0, 14.0), Sense::hover());
                 c::paint_icon(ui.painter(), egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(11.0)), Icon::Check, t::GREEN);
             });
@@ -287,7 +297,8 @@ fn option_row(
 
 /// A number key pressed on its own: 0 for 1. The key and the digit it would type are both taken,
 /// so an empty reply box doesn't get it too.
-fn number_pressed(ui: &mut Ui) -> Option<usize> {
+/// Ctrl+1–9 always; a plain digit only when no text box has the keyboard (`typing`).
+fn number_pressed(ui: &mut Ui, typing: bool) -> Option<usize> {
     const KEYS: [egui::Key; 9] = [
         egui::Key::Num1,
         egui::Key::Num2,
@@ -299,6 +310,12 @@ fn number_pressed(ui: &mut Ui) -> Option<usize> {
         egui::Key::Num8,
         egui::Key::Num9,
     ];
+    if let Some(i) = KEYS.iter().position(|key| ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, *key))) {
+        return Some(i);
+    }
+    if typing {
+        return None;
+    }
     let i = KEYS.iter().position(|key| c::consume_plain_key(ui, *key))?;
     let digit = (i + 1).to_string();
     ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Text(text) if *text == digit)));

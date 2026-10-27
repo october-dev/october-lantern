@@ -237,7 +237,7 @@ pub enum UiAction {
         url: String,
         from: &'static str,
     },
-    /// "Share anonymous usage counts".
+    /// "Share usage counts".
     SetShareUsage(bool),
     /// Download October Harness again after a failed install (Welcome's Try again).
     PrepareHarness,

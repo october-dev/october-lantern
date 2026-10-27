@@ -66,7 +66,11 @@ fn main() -> Result<()> {
         }
         // Posts one message as Lantern's Bus identity, under `october-bus agent run` (see bus.rs);
         // run by the engine, not by people.
-        Some("bus-post") => bus::post(args.get(1).map(String::as_str).unwrap_or(""), args.get(2).map(String::as_str).unwrap_or("")),
+        Some("bus-post") => bus::post(
+            args.get(1).map(String::as_str).unwrap_or(""),
+            args.get(2).map(String::as_str).unwrap_or(""),
+            args.get(3).map(String::as_str).unwrap_or(""),
+        ),
         Some("agents") | None => {
             let agents = scanner::Scanner::new().scan();
             println!("{}", serde_json::to_string_pretty(&agents)?);

@@ -26,9 +26,13 @@ pub enum Op {
         prompt: Option<String>,
     },
     Focus,
-    /// A message for the agent through October Bus, then a nudge in its terminal to read it;
-    /// typed in directly when it isn't on the Bus or the Bus doesn't take it.
-    Bus(String),
+    /// A message for the agent through October Bus, then a nudge in its terminal to read it; typed
+    /// in directly when it isn't on the Bus or the Bus definitely didn't take it. `key` names the
+    /// send: a retry with the same key is the same message to the Bus, never a second one.
+    Bus {
+        text: String,
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,17 +202,36 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
             }
             result
         }
-        Op::Bus(text) => {
-            let on_bus = agent.bus_id.as_deref().map(|id| crate::bus::send_as_you(id, &text));
-            if let Some(Err(e)) = &on_bus {
-                eprintln!("lantern: October Bus didn't take a message for @{}, typing it instead: {e:#}", agent.handle);
-            }
-            match on_bus {
-                Some(Ok(())) => match deliver::send_text(agent, crate::bus::NUDGE) {
+        Op::Bus { text, key } => {
+            use crate::bus::Posted;
+            let posted = match agent.bus_id.as_deref() {
+                Some(id) => crate::bus::send_as_you(id, &text, &key, deadline),
+                None => Posted::NotSent(anyhow::anyhow!("not on October Bus")),
+            };
+            match posted {
+                // In its inbox: tell it so, unless time ran out (then no typing at all).
+                Posted::Accepted if Instant::now() >= deadline => Err(Outcome::Uncertain(
+                    "it's in its October Bus inbox, but time ran out before Lantern could tell it. Try again to tell it.".into(),
+                )),
+                Posted::Accepted => match deliver::send_text(agent, crate::bus::NUDGE) {
                     Ok(()) => return Outcome::OnBus,
-                    Err(e) => Err(Outcome::Uncertain(format!("it's in its October Bus inbox, but Lantern couldn't tell it so ({e:#})"))),
+                    Err(e) => Err(Outcome::Uncertain(format!(
+                        "it's in its October Bus inbox, but Lantern couldn't tell it so ({e:#}). Try again to tell it."
+                    ))),
                 },
-                _ => deliver::send_text(agent, &text).map_err(classify),
+                // Nothing reached the Bus: typing it in is the only copy it gets.
+                Posted::NotSent(e) => {
+                    if Instant::now() >= deadline {
+                        return Outcome::failed("expired", "Lantern couldn't get to it in time. Nothing was sent.");
+                    }
+                    eprintln!("lantern: October Bus didn't take a message for @{}, typing it instead: {e:#}", agent.handle);
+                    deliver::send_text(agent, &text).map_err(classify)
+                }
+                // It may be in the inbox: never send a second copy another way.
+                Posted::Unknown(e) => Err(Outcome::Uncertain(format!(
+                    "Lantern couldn't confirm October Bus took it ({e:#}). Try again: if it did, it won't arrive twice."
+                ))),
+                Posted::Expired => return Outcome::failed("expired", "Lantern couldn't get to it in time. Nothing was sent."),
             }
         }
         Op::Focus => match link.focus(agent) {

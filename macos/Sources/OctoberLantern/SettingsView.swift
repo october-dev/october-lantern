@@ -210,9 +210,9 @@ struct SettingsView: View {
             }
             if Analytics.shared.available {
                 Section {
-                    Toggle("Share anonymous usage counts", isOn: $shareUsage)
+                    Toggle("Share usage counts", isOn: $shareUsage)
                         .onChange(of: shareUsage) { _, on in Analytics.shared.enabled = on }
-                    Text("How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your account.")
+                    Text("How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your October account and email.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

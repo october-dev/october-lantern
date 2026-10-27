@@ -122,6 +122,9 @@ enum Request {
         request_id: String,
         agent_id: String,
         text: String,
+        /// The send's own id, the same when it's tried again (defaults to the request id).
+        #[serde(default)]
+        key: Option<String>,
     },
     /// Answers the question an agent is asking (a permission, Claude's own question, its plan) with
     /// what the person chose; the engine presses the terminal's keys for it (see `answer_keys`).
@@ -516,9 +519,10 @@ pub fn run() -> Result<()> {
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);
                 }
-                Ok(Request::Send { request_id, agent_id, text }) => {
+                Ok(Request::Send { request_id, agent_id, text, key }) => {
+                    let key = key.filter(|k| !k.is_empty() && k.len() <= 64).unwrap_or_else(|| request_id.clone());
                     match reachable(&agents, &agent_id) {
-                        Ok(agent) => executor.submit(app_action(agent, Op::Bus(text), "sendResult", request_id)),
+                        Ok(agent) => executor.submit(app_action(agent, Op::Bus { text, key }, "sendResult", request_id)),
                         Err(o) => emit(&result_json("sendResult", &request_id, &o)),
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);

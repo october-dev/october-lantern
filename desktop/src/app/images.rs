@@ -30,6 +30,11 @@ pub fn save_file(path: &Path, dir: &Path) -> Result<PathBuf> {
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     let ext = if ext == "jpeg" { "jpg".to_string() } else { ext };
     let size = std::fs::metadata(path).with_context(|| format!("reading {}", path.display()))?.len();
+    // Only a picture that can be read: one that can't would be added, then silently left out of
+    // the question.
+    image::ImageReader::open(path).and_then(|r| r.with_guessed_format()).ok().and_then(|r| r.into_dimensions().ok()).with_context(
+        || format!("{} isn't a picture Lantern can read.", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()),
+    )?;
     if size <= KEPT_BYTES {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         return write(dir, &ext, &bytes);
@@ -113,11 +118,28 @@ mod tests {
     #[test]
     fn image_files_are_copied_and_other_files_refused() {
         let dir = temp();
+        let picture = |format: image::ImageFormat| {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(image::RgbaImage::new(3, 3)).write_to(&mut bytes, format).unwrap();
+            bytes.into_inner()
+        };
         let source = dir.join("Shot.JPEG");
-        std::fs::write(&source, b"jpeg bytes").unwrap();
+        let jpeg = picture(image::ImageFormat::Jpeg);
+        std::fs::write(&source, &jpeg).unwrap();
         let saved = save_file(&source, &dir.join("screenshots")).unwrap();
         assert!(saved.starts_with(dir.join("screenshots")) && saved.extension().unwrap() == "jpg", "{}", saved.display());
-        assert_eq!(std::fs::read(&saved).unwrap(), b"jpeg bytes");
+        assert_eq!(std::fs::read(&saved).unwrap(), jpeg);
+        // GIF and WebP are read and sent to October like PNG and JPEG.
+        for (name, format) in [("a.gif", image::ImageFormat::Gif), ("a.webp", image::ImageFormat::WebP)] {
+            let path = dir.join(name);
+            std::fs::write(&path, picture(format)).unwrap();
+            let saved = save_file(&path, &dir.join("screenshots")).unwrap();
+            assert!(jpeg_for_october(&saved).is_some(), "{name} is sent, not dropped");
+        }
+        // Something named like a picture that isn't one is refused when added.
+        let fake = dir.join("fake.png");
+        std::fs::write(&fake, b"not a picture").unwrap();
+        assert!(save_file(&fake, &dir).is_err());
         let text = dir.join("notes.txt");
         std::fs::write(&text, b"hi").unwrap();
         assert!(save_file(&text, &dir).is_err());

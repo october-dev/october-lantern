@@ -444,9 +444,10 @@ final class AppModel: ObservableObject {
     /// can't type into get it copied, and their app comes forward.
     /// Ask Lantern's message for a running agent: through October Bus when it's on it (with a
     /// nudge in its terminal), else typed in.
-    func sendFromAssistant(_ text: String, to agent: Agent, report: @escaping (_ ok: Bool, _ uncertain: Bool, _ message: String?) -> Void) {
+    /// `key` names the send: trying it again with the same key never leaves October Bus a second copy.
+    func sendFromAssistant(_ text: String, to agent: Agent, key: String?, report: @escaping (_ ok: Bool, _ uncertain: Bool, _ message: String?) -> Void) {
         let id = request("s")
-        track(id, .send(agentId: agent.id, report: report), sent: engine.send(requestId: id, agentId: agent.id, text: text))
+        track(id, .send(agentId: agent.id, report: report), sent: engine.send(requestId: id, agentId: agent.id, text: text, key: key))
     }
 
     func sendDirect(_ text: String, to agent: Agent) {
@@ -464,6 +465,9 @@ final class AppModel: ObservableObject {
     /// What was sent for each question (by prompt id), shown as "Sent" on its card until the agent
     /// moves on. Cleared again when the engine couldn't press the keys.
     @Published var answered: [String: AgentAnswer] = [:]
+    /// What became of each answer, by prompt id: on its way, typed in, or not sure it went in.
+    enum AnswerDelivery { case sending, sent, unconfirmed }
+    @Published var answerDelivery: [String: AnswerDelivery] = [:]
     private var answering: [String: String] = [:]
 
     /// Answers an agent's question from its card. The engine refuses if the question on screen is
@@ -476,10 +480,14 @@ final class AppModel: ObservableObject {
         )
         let id = request("k")
         answered[promptId] = answer
+        answerDelivery[promptId] = .sending
         answering[id] = promptId
         let sent = engine.answer(requestId: id, agentId: agent.id, promptId: promptId, answer: answer)
         track(id, .keys(agentId: agent.id), sent: sent)
-        if !sent { answered[promptId] = nil }
+        if !sent {
+            answered[promptId] = nil
+            answerDelivery[promptId] = nil
+        }
     }
 
     func send() {
@@ -901,7 +909,16 @@ final class AppModel: ObservableObject {
         case .send(_, let report):
             report(ok, uncertain, message)
         case .keys(let agentId), .direct(let agentId):
-            if let promptId = answering.removeValue(forKey: requestId), !ok, !uncertain { answered[promptId] = nil }
+            if let promptId = answering.removeValue(forKey: requestId) {
+                if ok {
+                    answerDelivery[promptId] = .sent
+                } else if uncertain {
+                    answerDelivery[promptId] = .unconfirmed
+                } else {
+                    answered[promptId] = nil
+                    answerDelivery[promptId] = nil
+                }
+            }
             if ok {
                 show("\(message ?? "Sent") to @\(handle(agentId))")
             } else if uncertain {

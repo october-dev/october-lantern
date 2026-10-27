@@ -1334,7 +1334,17 @@ fn answers_become_the_terminals_keys() {
 #[ignore]
 fn a_message_reaches_an_agent_through_a_real_bus() {
     let to = std::env::var("LANTERN_BUS_E2E_TO").expect("LANTERN_BUS_E2E_TO");
-    crate::bus::send_as_you(&to, "Create a file called from-lantern.txt containing the word hello.").unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let text = "Create a file called from-lantern.txt containing the word hello.";
+    assert!(matches!(crate::bus::send_as_you(&to, text, "e2e-1", deadline), crate::bus::Posted::Accepted));
+    // The same send again is the same message: the Bus keeps one.
+    assert!(matches!(crate::bus::send_as_you(&to, text, "e2e-1", deadline), crate::bus::Posted::Accepted));
+}
+
+#[test]
+fn a_send_that_waited_too_long_posts_nothing() {
+    let past = std::time::Instant::now();
+    assert!(matches!(crate::bus::send_as_you("lantern-x", "hi", "k", past), crate::bus::Posted::Expired));
 }
 
 #[test]

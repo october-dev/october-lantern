@@ -301,7 +301,7 @@ fn question(ui: &mut Ui, turn: &AssistantTurn) {
 fn task_messages<'a>(link: &'a TaskLink, live: Option<&'a [ChatMessage]>) -> &'a [ChatMessage] {
     let all = live.unwrap_or(&link.transcript);
     if link.sent {
-        return after_sent(&link.prompt, all);
+        return after_sent(&link.prompt, link.sent_at.as_deref(), all);
     }
     match all.first() {
         Some(first) if first.role == Role::User && chat::without_lantern_notes(&first.text).trim() == link.prompt => &all[1..],
@@ -309,11 +309,26 @@ fn task_messages<'a>(link: &'a TaskLink, live: Option<&'a [ChatMessage]>) -> &'a
     }
 }
 
-/// What an agent it was sent to said after it (Swift `Assistant.after(sent:in:)`): from its last
-/// message that is the one sent, or Lantern's nudge to read it on October Bus. Nothing until then.
-fn after_sent<'a>(prompt: &str, messages: &'a [ChatMessage]) -> &'a [ChatMessage] {
+/// What an agent it was sent to said after it (Swift `Assistant.after(sent:since:in:)`): from its
+/// last message that is the one sent, or Lantern's nudge to read it on October Bus, made after
+/// `since`. A nudge counts only with a time that shows it's this send's: every send's nudge has the
+/// same words. Nothing until then.
+fn after_sent<'a>(prompt: &str, since: Option<&str>, messages: &'a [ChatMessage]) -> &'a [ChatMessage] {
+    use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
     let start: String = prompt.trim().chars().take(60).collect();
-    match messages.iter().rposition(|m| m.role == Role::User && (m.text.contains(&start) || m.text.contains("message on October Bus"))) {
+    let since = since.and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok());
+    // A little slack for the two clocks (the agent's transcript and this app).
+    let fresh = |m: &ChatMessage| -> Option<bool> {
+        let at = OffsetDateTime::parse(m.at.as_deref()?, &Rfc3339).ok()?;
+        Some(at >= since? - Duration::seconds(2))
+    };
+    let matches = |m: &ChatMessage| {
+        if m.text.contains(&start) {
+            return fresh(m).unwrap_or(true);
+        }
+        m.text.contains("message on October Bus") && fresh(m) == Some(true)
+    };
+    match messages.iter().rposition(|m| m.role == Role::User && matches(m)) {
         Some(i) => &messages[i + 1..],
         None => &[],
     }
@@ -644,6 +659,22 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn an_older_nudge_doesnt_pass_for_a_new_send() {
+        use crate::model::{ChatMessage, Role};
+        let msg = |role, text: &str, at: Option<&str>| ChatMessage { role, text: text.into(), at: at.map(String::from) };
+        let nudge = "I sent you a message on October Bus. Check your inbox (check_inbox) and do what it asks.";
+        let sent = Some("2026-10-26T12:00:00Z");
+        let old = [msg(Role::User, nudge, Some("2026-10-26T11:50:00Z")), msg(Role::Agent, "I finished OLD TASK.", None)];
+        assert!(super::after_sent("New task", sent, &old).is_empty());
+        let untimed = [msg(Role::User, nudge, None), msg(Role::Agent, "I finished OLD TASK.", None)];
+        assert!(super::after_sent("New task", sent, &untimed).is_empty());
+        let now = [msg(Role::User, nudge, Some("2026-10-26T12:00:01Z")), msg(Role::Agent, "On it.", None)];
+        assert_eq!(super::after_sent("New task", sent, &now).len(), 1);
+        let typed = [msg(Role::User, "New task", None), msg(Role::Agent, "On it.", None)];
+        assert_eq!(super::after_sent("New task", sent, &typed).len(), 1);
+    }
     use super::super::{Assets, Env, Provider, UiState};
     use super::*;
     use crate::model::{Inputs, Model};

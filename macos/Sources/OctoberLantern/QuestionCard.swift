@@ -126,9 +126,18 @@ struct QuestionCard: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
-            if first, sent != nil {
-                Label("Sent", systemImage: "checkmark")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.green)
+            if first, sent != nil, let promptId = agent.promptId {
+                // Sent only once the keys went in; until then, or when that's unclear, it says so.
+                switch model.answerDelivery[promptId] {
+                case .sent:
+                    Label("Sent", systemImage: "checkmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.green)
+                case .unconfirmed:
+                    Label("Not sure it went in", systemImage: "questionmark.circle")
+                        .font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.amber)
+                        .help("Check the agent's terminal")
+                default:
+                    Text("Sending…").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                }
             }
         }
     }
@@ -232,6 +241,7 @@ struct OptionRow: View {
         }
         // Answered, it still takes clicks (so they don't open the chat behind) and does nothing.
         .buttonStyle(.plain)
+        .help(tick ? "" : "Press ⌘\(number) to choose this")
         .onHover { hover = $0 }
         .accessibilityLabel(tick ? label : "\(number). \(label)")
     }
@@ -243,7 +253,7 @@ private final class ClickThrough: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Number keys for the card in this window, except while there's text being typed in a box.
+/// Number keys for the card in this window: ⌘1–⌘9 always, a plain digit only when no text box has the keyboard.
 private struct NumberKeys: NSViewRepresentable {
     let enabled: Bool
     let press: (Int) -> Bool
@@ -286,11 +296,13 @@ private struct NumberKeys: NSViewRepresentable {
 
         private func handle(_ event: NSEvent) -> Bool {
             guard let press, let window = view?.window, event.window === window,
-                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
-                  // Typing a reply: numbers are text. An empty box still answers, as the terminal does.
-                  (window.firstResponder as? NSText)?.string.isEmpty ?? true,
                   let chars = event.charactersIgnoringModifiers, let n = Int(chars), (1...9).contains(n)
             else { return false }
+            let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            // ⌘1–⌘9 answer even while typing. A plain digit is text whenever a text box has the
+            // keyboard, empty or not (typing "1 invoice is missing" must not approve anything).
+            if mods == .command { return press(n) }
+            guard mods.isEmpty, !(window.firstResponder is NSText) else { return false }
             return press(n)
         }
     }

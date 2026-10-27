@@ -62,6 +62,10 @@ final class Assistant: ObservableObject {
         var sent: Bool?
         /// How it reached that agent ("Sent through October Bus"), once the engine says.
         var delivery: String?
+        /// This send's own id, the same when it's tried again (so October Bus keeps one copy), and
+        /// when it was first sent (what the agent said before then isn't its answer).
+        var sendKey: String?
+        var sentAt: Date?
     }
 
     struct Conversation: Identifiable, Codable {
@@ -502,9 +506,11 @@ final class Assistant: ObservableObject {
         var link = TaskLink(kind: agent.kind.rawValue, folder: agent.cwd ?? NSHomeDirectory(), prompt: own, agentId: agent.id)
         link.sent = true
         link.images = turns[i].images
+        link.sendKey = UUID().uuidString
+        link.sentAt = Date()
         turns[i].task = link
         turns[i].started = "Sent to @\(agent.handle)"
-        model.sendFromAssistant(own + Self.imageLines(images), to: agent) { [weak self] ok, uncertain, message in
+        model.sendFromAssistant(own + Self.imageLines(images), to: agent, key: link.sendKey) { [weak self] ok, uncertain, message in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }), self.turns[i].task != nil else { return }
             if ok {
                 self.turns[i].task?.delivery = message ?? "Sent"
@@ -516,11 +522,26 @@ final class Assistant: ObservableObject {
     }
 
     /// What an agent it was sent to said after it: from its last message that is the one sent, or
-    /// Lantern's nudge to read it on October Bus. Nothing until that shows up.
-    static func after(sent prompt: String, in messages: [ChatMessage]) -> [ChatMessage] {
+    /// Lantern's nudge to read it on October Bus, made after `since` (when it was sent). A nudge
+    /// counts only with a time that shows it's this send's: every send's nudge has the same words.
+    /// Nothing until that shows up.
+    static func after(sent prompt: String, since: Date?, in messages: [ChatMessage]) -> [ChatMessage] {
         let start = String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-        guard let i = messages.lastIndex(where: {
-            $0.role == .user && ($0.text.contains(start) || $0.text.contains("message on October Bus"))
+        func at(_ m: ChatMessage) -> Date? {
+            guard let s = m.at else { return nil }
+            let f = ISO8601DateFormatter()
+            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+        }
+        // A little slack for the two clocks (the agent's transcript and this app).
+        let fresh = { (m: ChatMessage) -> Bool? in
+            guard let since, let when = at(m) else { return nil }
+            return when >= since.addingTimeInterval(-2)
+        }
+        guard let i = messages.lastIndex(where: { m in
+            guard m.role == .user else { return false }
+            if m.text.contains(start) { return fresh(m) ?? true }
+            return m.text.contains("message on October Bus") && fresh(m) == true
         }) else { return [] }
         return Array(messages[(i + 1)...])
     }
@@ -534,7 +555,7 @@ final class Assistant: ObservableObject {
         guard let model, let i = turns.firstIndex(where: { $0.id == turn }) else { return }
         turns[i].task?.error = nil
         let images = (link.images ?? []).map(URL.init(fileURLWithPath:))
-        model.sendFromAssistant(link.prompt + Self.imageLines(images), to: agent) { [weak self] ok, uncertain, message in
+        model.sendFromAssistant(link.prompt + Self.imageLines(images), to: agent, key: link.sendKey) { [weak self] ok, uncertain, message in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
             if ok { self.turns[i].task?.delivery = message ?? "Sent" } else { self.turns[i].task?.error = message ?? "It didn't go in." }
         }
@@ -726,7 +747,7 @@ private struct TaskCard: View {
     private var messages: [ChatMessage] {
         let live = latest && agent != nil && agent?.id == model.watchedAgentId && !model.watchedMessages.isEmpty
         let all = live ? model.watchedMessages : link.transcript
-        if link.sent == true { return Assistant.after(sent: link.prompt, in: all) }
+        if link.sent == true { return Assistant.after(sent: link.prompt, since: link.sentAt, in: all) }
         guard let first = all.first, first.role == .user,
               Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
         return Array(all.dropFirst())

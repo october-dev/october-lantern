@@ -159,8 +159,8 @@ fn caption(ui: &mut Ui, text: &str) {
     ui.add_space(10.0);
 }
 
-/// What "Share anonymous usage counts" sends (Swift SettingsView).
-pub(super) const USAGE_DETAIL: &str = "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your account.";
+/// What "Share usage counts" sends (Swift SettingsView).
+pub(super) const USAGE_DETAIL: &str = "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your October account and email.";
 
 fn toggle(ui: &mut Ui, cx: &mut Ctx, title: &str, current: bool, change: impl FnOnce(bool) -> SettingChange) {
     if let Some(on) = setting_switch(ui, title, current, None) {
@@ -507,7 +507,7 @@ fn about(ui: &mut Ui, cx: &mut Ctx) {
     });
     if crate::analytics::available() {
         group(ui, None, |ui| {
-            if let Some(on) = setting_switch(ui, "Share anonymous usage counts", crate::analytics::enabled(), None) {
+            if let Some(on) = setting_switch(ui, "Share usage counts", crate::analytics::enabled(), None) {
                 cx.emit(UiAction::SetShareUsage(on));
             }
             caption(ui, USAGE_DETAIL);
