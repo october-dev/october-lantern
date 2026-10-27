@@ -10,7 +10,7 @@ use super::{
 use crate::model::{Card, CardAnswer, CardLaunch};
 use eframe::egui::{self, Stroke, Ui};
 
-/// A session's cards. With `keys`, number keys pick an option of its first waiting question.
+/// A session's cards. With `keys`, a waiting question can explicitly claim number-key focus.
 pub fn launch_cards(ui: &mut Ui, cx: &mut Ctx, launch: &CardLaunch, keys: bool) {
     ui.spacing_mut().item_spacing.y = 8.0;
     if launch.ended_at.is_none() {

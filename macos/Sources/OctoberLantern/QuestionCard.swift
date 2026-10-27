@@ -3,7 +3,7 @@ import SwiftUI
 
 /// An agent's question, answered right here: a permission (Yes / Always / No), Claude's own
 /// questions (their options, numbered as in the terminal) or its plan (start / keep planning).
-/// With `keys`, pressing a number picks too, unless you're typing something in a text box.
+/// With `keys`, explicitly focus Use number keys before answering with a fresh number press.
 struct QuestionCard: View {
     let agent: Agent
     @ObservedObject var model: AppModel
@@ -249,7 +249,7 @@ struct OptionRow: View {
         }
         // Answered, it still takes clicks (so they don't open the chat behind) and does nothing.
         .buttonStyle(.plain)
-        .help(tick ? "" : "Press ⌘\(number) to choose this")
+        .help(tick ? "" : "Click to choose this option")
         .onHover { hover = $0 }
         .accessibilityLabel(tick ? label : "\(number). \(label)")
     }
@@ -261,7 +261,7 @@ private final class ClickThrough: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// Number keys for the card in this window: ⌘1–⌘9 always, a plain digit only when no text box has the keyboard.
+/// Shortcuts belong only to the explicitly focused card; text editors keep their keys.
 struct NumberKeys: NSViewRepresentable {
     let enabled: Bool
     let press: (Int) -> Bool
