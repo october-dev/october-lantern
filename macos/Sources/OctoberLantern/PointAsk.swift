@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import Combine
 import LanternCore
 import ScreenCaptureKit
@@ -7,8 +6,7 @@ import SwiftUI
 
 /// Point & Ask: press the shortcut (⌃⌥P by default) or the pill's selection button, drag a box
 /// around what you mean (or click a window), then say or type your question. A card beside the
-/// selection shows the screenshot, the app and window, the page's address in a browser and any
-/// selected text.
+/// selection shows the screenshot and, when one window contains the selection, its app and title.
 ///
 /// - **Ask** answers right in the card with one call to October's AI (needs October sign-in).
 /// - **Send to agent** hands it to a coding agent instead, like a reply.
@@ -23,19 +21,13 @@ final class PointAsk: ObservableObject {
 
     struct Context {
         var app: String?
-        var bundleId: String?
         var window: String?
-        var document: URL?
-        var url: String?
-        var selection: String?
+        var pid: pid_t?
 
         /// The context as lines of text, for the model or an agent.
         var lines: [String] {
             var out: [String] = []
             if let app { out.append("App: \(app)" + (window.map { ", window \"\($0)\"" } ?? "")) }
-            if let document { out.append("Document: \(document.path)") }
-            if let url { out.append("Page: \(url)") }
-            if let selection, !selection.isEmpty { out.append("Selected text:\n\(String(selection.prefix(2000)))") }
             return out
         }
     }
@@ -69,10 +61,8 @@ final class PointAsk: ObservableObject {
     private var askTask: Task<Void, Never>?
     private var resize: AnyCancellable?
     private var captureTask: Task<Void, Never>?
-    private var contextTask: Task<Void, Never>?
     private var sendTask: Task<Void, Never>?
     private var selections = Attempts()
-    private var conversations = Attempts()
     @Published private(set) var capturing = false
     @Published private(set) var saving = false
     /// Nothing is in flight. The screenshot is optional (Screen Recording may be off, or the
@@ -121,7 +111,6 @@ final class PointAsk: ObservableObject {
 
     private func start(listen: Bool) {
         invalidateSelection()
-        let conversation = conversations.begin()
         cardShown = false
         panel?.orderOut(nil)
         text = ""
@@ -130,12 +119,8 @@ final class PointAsk: ObservableObject {
         shot = nil
         turns = []
         asking = false
-        // Read the app you're in before anything of Lantern's takes the keyboard.
-        AppContext.shared.capture()
-        let t = AppContext.shared.target
-        context = Context(app: t?.name, bundleId: t?.bundleId, window: t?.windowTitle, document: t?.document)
+        context = Context()
         recipientId = defaultRecipient()?.id
-        contextTask = Task { await readPageAndSelection(pid: t?.pid, bundleId: t?.bundleId, conversation: conversation) }
         if listen { dictation.start(prefix: "", owner: "point-ask", ask: false) }
         select()
     }
@@ -151,6 +136,11 @@ final class PointAsk: ObservableObject {
                 return
             }
             self.selection = (chosen.0, chosen.1)
+            let quartz = CGRect(x: chosen.0.minX, y: (NSScreen.screens.first?.frame.maxY ?? 0) - chosen.0.maxY,
+                                width: chosen.0.width, height: chosen.0.height)
+            let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+            self.context = Self.context(for: quartz, windows: windows, ownPID: ProcessInfo.processInfo.processIdentifier)
+            if !self.cardShown { self.recipientId = self.defaultRecipient()?.id }
             let attempt = self.beginCapture()
             self.showCard()
             self.captureTask = Task { await self.capture(chosen.0, on: chosen.1, attempt: attempt) }
@@ -159,8 +149,6 @@ final class PointAsk: ObservableObject {
 
     func cancel() {
         invalidateSelection()
-        conversations.cancel()
-        contextTask?.cancel()
         overlay.cancel()
         dictation.stop()
         panel?.orderOut(nil)
@@ -225,7 +213,7 @@ final class PointAsk: ObservableObject {
         let index = turns.count - 1
         let turnID = turns[index].id
         let request = OctoberAI.Request(
-            turns: turns.dropLast().map { ($0.question, $0.answer) }, question: question,
+            turns: turns.dropLast().filter { !$0.failed }.map { ($0.question, $0.answer) }, question: question,
             image: shot.flatMap(Self.jpeg), context: context.lines.joined(separator: "\n"), mode: "point_task"
         )
         askTask = Task {
@@ -251,14 +239,15 @@ final class PointAsk: ObservableObject {
             } catch is CancellationError {
             } catch {
                 if !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
-                    turns[index].answer = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    turns[index].answer += (turns[index].answer.isEmpty ? "" : "\n\n") + message
                     turns[index].failed = true
                     turns[index].upgrade = (error as? OctoberAI.Failure)?.upgradeURL
                 }
             }
             guard !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID else { return }
             asking = false
-            Analytics.shared.capture("point_ask_asked", ["follow_up": index > 0, "had_url": context.url != nil])
+            Analytics.shared.capture("point_ask_asked", ["follow_up": index > 0])
         }
     }
 
@@ -334,33 +323,47 @@ final class PointAsk: ObservableObject {
             if let answer { lines.append("October's quick answer, for reference:\n\(String(answer.prefix(3000)))") }
             model.sendDirect(lines.joined(separator: "\n"), to: agent)
             Analytics.shared.capture("point_ask_sent", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none",
-                "had_url": capturedContext.url != nil, "had_selection": !(capturedContext.selection ?? "").isEmpty, "after_ask": answer != nil])
+                "after_ask": answer != nil])
             cancel()
         }
     }
 
     // MARK: Who it goes to
 
-    /// The agent working on what's in front: the open document's project, a project named in the
-    /// window title, an agent in the terminal in front; otherwise the composer's agent.
+    /// A project named in the selected window, an agent in that terminal, or the composer's agent.
     private func defaultRecipient() -> Agent? {
         guard let model else { return nil }
         let live = model.agents.filter(\.isLive)
-        if let doc = context.document?.path,
-           let a = live.filter({ $0.cwd.map { doc.hasPrefix($0 + "/") } ?? false }).max(by: { ($0.cwd?.count ?? 0) < ($1.cwd?.count ?? 0) }) {
-            return a
-        }
         if let title = context.window,
            let a = live.first(where: { $0.project.map { !$0.isEmpty && title.localizedCaseInsensitiveContains($0) } ?? false }) {
             return a
         }
-        if let pid = AppContext.shared.target?.pid, let a = live.first(where: { $0.host?.pid == pid }) {
+        if let pid = context.pid, let a = live.first(where: { $0.host?.pid == pid }) {
             return a
         }
         return model.target ?? live.first
     }
 
     // MARK: Context
+
+    /// WindowServer lists visible windows front to back in Quartz coordinates. Only name a
+    /// window if it contains the whole selection and no earlier window overlaps it. A selection
+    /// across apps has no single owner; the picture is still useful without a guessed caption.
+    static func context(for rect: CGRect, windows: [[String: Any]], ownPID: pid_t) -> Context {
+        guard rect.width > 0, rect.height > 0 else { return Context() }
+        for window in windows {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
+                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let dictionary = window[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: dictionary), bounds.intersects(rect) else { continue }
+            // Floating windows and system overlays count too; do not look through them to name
+            // an unrelated normal window behind them.
+            guard bounds.contains(rect) else { return Context() }
+            return Context(app: window[kCGWindowOwnerName as String] as? String,
+                           window: window[kCGWindowName as String] as? String, pid: pid)
+        }
+        return Context()
+    }
 
     /// A screenshot of the selected area (global AppKit coordinates), Lantern's windows left out.
     private func capture(_ rect: NSRect, on screen: NSScreen, attempt: Int) async {
@@ -413,56 +416,10 @@ final class PointAsk: ObservableObject {
         return nil
     }
 
-    /// The page's address in a browser (AppleScript, asked once per browser) and the selected text
-    /// (Accessibility, when allowed).
-    private func readPageAndSelection(pid: pid_t?, bundleId: String?, conversation: Int) async {
-        guard conversations.isCurrent(conversation), !Task.isCancelled else { return }
-        if AXIsProcessTrusted() {
-            let system = AXUIElementCreateSystemWide()
-            var focused: CFTypeRef?
-            if AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-               let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID() {
-                var selected: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element as! AXUIElement, kAXSelectedTextAttribute as CFString, &selected) == .success {
-                    context.selection = (selected as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-            }
-        }
-        if let bundleId, let script = Self.urlScript(bundleId) {
-            let url = await Task.detached { () -> String? in
-                let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                p.arguments = ["-e", script]
-                let out = Pipe()
-                p.standardOutput = out
-                p.standardError = Pipe()
-                guard (try? p.run()) != nil else { return nil }
-                let deadline = Date().addingTimeInterval(3)
-                while p.isRunning && Date() < deadline { usleep(20_000) }
-                if p.isRunning { p.terminate(); return nil }
-                let s = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                return s?.isEmpty == false ? s : nil
-            }.value
-            guard conversations.isCurrent(conversation), !Task.isCancelled else { return }
-            context.url = url
-        }
-    }
-
-    private static func urlScript(_ bundleId: String) -> String? {
-        switch bundleId {
-        case "com.apple.Safari": "tell application id \"com.apple.Safari\" to return URL of current tab of front window"
-        case "com.google.Chrome", "com.brave.Browser", "company.thebrowser.Browser", "com.microsoft.edgemac":
-            "tell application id \"\(bundleId)\" to return URL of active tab of front window"
-        default: nil
-        }
-    }
-
     /// Fills the card with sample content, for `--snapshot`.
     func demo(answered: Bool) {
         image = Assets.image("october/hero-palace.jpg") ?? Assets.logo
-        context = Context(app: "Safari", window: "Checkout · Stripe", url: "https://dashboard.stripe.com/test/payments",
-                          selection: nil)
+        context = Context(app: "Safari", window: "Checkout · Stripe")
         turns = answered ? [Turn(question: "Why is this payment failing?", answer: "The card was **declined by the issuer** (`card_declined`). In test mode that's the `4000 0000 0000 0002` card.\n\n- Use `4242 4242 4242 4242` to see a success\n- Or handle `card_declined` in your checkout and show the message to the customer")] : []
         text = answered ? "" : "Why is this payment failing?"
     }
@@ -617,15 +574,9 @@ struct PointAskCard: View {
 
     @ViewBuilder private var contextLines: some View {
         let c = point.context
-        if c.app != nil || c.url != nil || !(c.selection ?? "").isEmpty {
-            VStack(alignment: .leading, spacing: 3) {
-                if let app = c.app {
-                    Label([app, c.window].compactMap { $0 }.joined(separator: " · "), systemImage: "macwindow").lineLimit(1)
-                }
-                if let url = c.url { Label(url, systemImage: "link").lineLimit(1).truncationMode(.middle) }
-                if let sel = c.selection, !sel.isEmpty { Label("“\(sel)”", systemImage: "text.cursor").lineLimit(2) }
-            }
-            .font(.system(size: 11)).foregroundStyle(Theme.muted)
+        if let app = c.app {
+            Label([app, c.window].compactMap { $0 }.joined(separator: " · "), systemImage: "macwindow")
+                .lineLimit(1).font(.system(size: 11)).foregroundStyle(Theme.muted)
         }
     }
 

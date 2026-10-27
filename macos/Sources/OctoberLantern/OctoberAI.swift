@@ -7,8 +7,8 @@ import Foundation
 /// answer streams back. A refused mode or image fails explicitly; the app does not change the
 /// request into a different capability or drop pictures.
 ///
-/// What's sent: the question, the screenshot of the selected area, and the app, window title,
-/// page address and selected text shown on the card. Nothing else.
+/// Point & Ask sends the question, the selected screenshot and the identified window's app/title
+/// shown on the card. It does not attach the foreground browser's URL or selected text.
 enum OctoberAI {
 
     struct Request {
@@ -19,7 +19,7 @@ enum OctoberAI {
         var image: Data?
         /// Several pictures (Ask Lantern): what was attached, then earlier ones in the conversation.
         var images: [Data] = []
-        /// The app, window, page and selection, as lines of text.
+        /// The displayed context, as lines of text.
         var context: String
         /// "chat" for the assistant (its own prompt on the server); nil for Point & Ask.
         var mode: String? = nil

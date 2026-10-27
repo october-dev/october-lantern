@@ -32,6 +32,10 @@ New sessions and routines share a searchable model picker. With an October app s
 
 Unix launches put their environment and first message into a private single-use file, removed before the agent executes. The terminal/login shell and tmux receive its path, keeping the app access token out of their arguments and tmux's retained start command. This is credential handling, not an execution sandbox.
 
+## Point & Ask
+
+Select an area, then ask about its picture or send it to an agent. On Mac the caption and recipient matching use the selected window, rather than the foreground app. Selections spanning or overlapping windows have no guessed caption. Windows/Linux use the picture without automatic app metadata. Point & Ask does not collect a foreground browser URL, document path or selected text. Reselect keeps the recipient the person chose. Interrupted answers retain their received text with an explicit error; failed turns are excluded from follow-up history.
+
 ## Show me
 
 Ask Lantern, Point & Ask and a task's **Show me** hand-off use the same guide. Each look uploads a picture of the whole selected display and a bounded list of visible controls to October's dedicated guidance endpoint. Lantern's own windows are excluded. Control-list field values are omitted; the picture can still contain visible sensitive content. Pictures are held in memory by the guide and discarded on cancellation.

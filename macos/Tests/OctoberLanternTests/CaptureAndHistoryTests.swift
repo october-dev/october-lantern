@@ -5,6 +5,40 @@ import XCTest
 
 @MainActor
 final class CaptureAndHistoryTests: XCTestCase {
+    private func window(pid: pid_t, name: String, bounds: CGRect, alpha: Double = 1, layer: Int = 0) -> [String: Any] {
+        [kCGWindowOwnerPID as String: pid, kCGWindowOwnerName as String: name,
+         kCGWindowName as String: "\(name) window", kCGWindowBounds as String: bounds.dictionaryRepresentation,
+         kCGWindowAlpha as String: alpha, kCGWindowLayer as String: layer]
+    }
+
+    func testPointAskNamesTheSelectedWindowInsteadOfTheForegroundApp() {
+        let selected = CGRect(x: 500, y: 50, width: 100, height: 100)
+        let windows = [window(pid: 1, name: "Unrelated browser", bounds: CGRect(x: 0, y: 0, width: 400, height: 500)),
+                       window(pid: 2, name: "Selected app", bounds: CGRect(x: 450, y: 0, width: 400, height: 500))]
+        let context = PointAsk.context(for: selected, windows: windows, ownPID: 99)
+        XCTAssertEqual(context.app, "Selected app")
+        XCTAssertEqual(context.window, "Selected app window")
+        XCTAssertEqual(context.pid, 2)
+        XCTAssertEqual(context.lines, ["App: Selected app, window \"Selected app window\""])
+        let acrossBoth = CGRect(x: 300, y: 50, width: 300, height: 100)
+        XCTAssertTrue(PointAsk.context(for: acrossBoth, windows: windows, ownPID: 99).lines.isEmpty,
+                      "A selection across windows must not be attributed to either app")
+    }
+
+    func testPointAskRespectsFloatingWindowsAndSkipsItsOwnOverlay() {
+        let whole = CGRect(x: -900, y: -200, width: 800, height: 700)
+        let selection = CGRect(x: -800, y: -100, width: 100, height: 100)
+        let windows = [window(pid: 99, name: "Lantern overlay", bounds: whole, layer: 1000),
+                       window(pid: 1, name: "Invisible", bounds: whole, alpha: 0),
+                       window(pid: 2, name: "Floating app", bounds: whole, layer: 24),
+                       window(pid: 3, name: "Background app", bounds: whole)]
+        XCTAssertEqual(PointAsk.context(for: selection, windows: windows, ownPID: 99).app, "Floating app")
+        let occluded = [window(pid: 4, name: "Partial cover", bounds: CGRect(x: -810, y: -110, width: 50, height: 50))] + windows
+        XCTAssertTrue(PointAsk.context(for: selection, windows: occluded, ownPID: 99).lines.isEmpty,
+                      "Do not name the background app through a partially overlapping window")
+        XCTAssertTrue(PointAsk.context(for: selection, windows: [], ownPID: 99).lines.isEmpty)
+    }
+
     private func image() -> CGImage {
         CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 8,
                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!

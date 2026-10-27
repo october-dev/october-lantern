@@ -87,15 +87,17 @@ impl Lantern {
         }
     }
 
-    /// A new conversation: read the app you're in, then show the selection overlay.
+    /// A new conversation. The foreground app need not own the area selected afterwards.
     fn begin_point_ask(&mut self) {
         self.invalidate_selection();
         self.pointing.conversation.fetch_add(1, Ordering::SeqCst);
         self.pointing.card_shown = false;
         self.inputs.point_ask.clear();
-        let context = crate::os::foreground_app();
-        let recipient = default_recipient(&self.model.agents, context.as_ref(), self.inputs.drafts.recipient());
-        self.model.point_ask = PointAskModel { phase: PointAskPhase::Selecting, context, recipient, ..Default::default() };
+        // The portable capture APIs return pixels, not a verified owning window. In particular,
+        // XWayland cannot see native Wayland windows. Use the picture and question without
+        // attaching metadata from a possibly unrelated foreground app.
+        let recipient = default_recipient(&self.model.agents, self.inputs.drafts.recipient());
+        self.model.point_ask = PointAskModel { phase: PointAskPhase::Selecting, recipient, ..Default::default() };
         if std::mem::take(&mut self.pointing.listen) {
             // Another draft's dictation ends: this one is about what you point at.
             if self.model.dictating {
@@ -264,7 +266,8 @@ impl Lantern {
         }
         let question = if words.is_empty() { "What is this?".to_string() } else { words };
         self.inputs.point_ask.clear();
-        let earlier: Vec<(String, String)> = self.model.point_ask.turns.iter().map(|t| (t.question.clone(), t.answer.clone())).collect();
+        let earlier: Vec<(String, String)> =
+            self.model.point_ask.turns.iter().filter(|t| !t.failed).map(|t| (t.question.clone(), t.answer.clone())).collect();
         self.model.point_ask.turns.push(AskTurn { question: question.clone(), ..Default::default() });
         self.model.point_ask.asking = true;
         let turn = self.model.point_ask.turns.len() - 1;
@@ -313,9 +316,13 @@ impl Lantern {
         if let Some(t) = self.model.point_ask.turns.get_mut(turn) {
             match error {
                 Some(error) => {
-                    t.answer = error.to_string();
+                    if !t.answer.is_empty() {
+                        t.answer.push_str("\n\n");
+                    }
+                    t.answer.push_str(&error.to_string());
                     t.failed = true;
                     t.upgrade = error.upgrade().map(str::to_string);
+                    self.pointing.work = None;
                 }
                 None if t.answer.is_empty() => {
                     t.answer = "No answer came back. Try again.".into();
@@ -477,66 +484,31 @@ pub fn context_lines(context: Option<&AppContext>) -> Vec<String> {
         let window = context.window.as_ref().map_or(String::new(), |w| format!(", window \"{w}\""));
         lines.push(format!("App: {}{window}", context.name));
     }
-    if let Some(document) = &context.document {
-        lines.push(format!("Document: {}", document.display()));
-    }
-    if let Some(url) = &context.url {
-        lines.push(format!("Page: {url}"));
-    }
-    if let Some(selected) = context.selected_text.as_ref().filter(|s| !s.is_empty()) {
-        lines.push(format!("Selected text:\n{}", selected.chars().take(2000).collect::<String>()));
-    }
     lines
 }
 
-/// Who "Send to" goes to (Swift `defaultRecipient`): the agent working on the open document's
-/// project (deepest folder), one whose project the window title names, the agent in the terminal
-/// in front, else the composer's agent, else the first live one.
-pub fn default_recipient(agents: &[crate::model::Agent], context: Option<&AppContext>, composer: Option<&str>) -> Option<String> {
+/// Portable capture supplies no verified window: use the composer's agent, else the first live
+/// one. The card's recipient picker lets the person choose explicitly.
+pub fn default_recipient(agents: &[crate::model::Agent], composer: Option<&str>) -> Option<String> {
     let live: Vec<_> = agents.iter().filter(|agent| agent.is_live()).collect();
-    if let Some(document) = context.and_then(|c| c.document.as_ref()).map(|d| d.to_string_lossy().into_owned()) {
-        let within = |cwd: &String| document.starts_with(&format!("{cwd}/")) || document.starts_with(&format!("{cwd}\\"));
-        if let Some(agent) =
-            live.iter().filter(|a| a.cwd.as_ref().is_some_and(within)).max_by_key(|a| a.cwd.as_ref().map_or(0, String::len))
-        {
-            return Some(agent.id.clone());
-        }
-    }
-    if let Some(title) = context.and_then(|c| c.window.as_ref()).map(|t| t.to_lowercase())
-        && let Some(agent) = live.iter().find(|a| a.project.as_ref().is_some_and(|p| !p.is_empty() && title.contains(&p.to_lowercase())))
-    {
-        return Some(agent.id.clone());
-    }
-    if let Some(pid) = context.and_then(|c| c.pid)
-        && let Some(agent) = live.iter().find(|a| a.host.as_ref().is_some_and(|host| host.pid == pid))
-    {
-        return Some(agent.id.clone());
-    }
     composer.filter(|id| live.iter().any(|a| a.id == *id)).map(str::to_string).or_else(|| live.first().map(|a| a.id.clone()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Agent, AgentKind, HostApp};
+    use crate::model::{Agent, AgentKind};
 
     fn agent(id: &str, cwd: &str, project: &str) -> Agent {
         Agent { id: id.into(), cwd: Some(cwd.into()), project: Some(project.into()), ..Default::default() }
     }
 
     #[test]
-    fn recipient_follows_document_then_title_then_terminal_then_composer() {
+    fn recipient_follows_the_composer_only_while_it_is_live() {
         let agents = vec![agent("a", "/w/site", "site"), agent("b", "/w/site/docs", "docs"), agent("c", "/w/api", "api")];
-        let doc = AppContext { document: Some("/w/site/docs/intro.md".into()), ..Default::default() };
-        assert_eq!(default_recipient(&agents, Some(&doc), None).as_deref(), Some("b"), "the deepest folder wins");
-        let title = AppContext { window: Some("API — Firefox".into()), ..Default::default() };
-        assert_eq!(default_recipient(&agents, Some(&title), None).as_deref(), Some("c"));
-        let mut hosted = agent("d", "/x", "x");
-        hosted.host = Some(HostApp { pid: 77, ..Default::default() });
-        let terminal = AppContext { pid: Some(77), ..Default::default() };
-        assert_eq!(default_recipient(&[agents[0].clone(), hosted], Some(&terminal), None).as_deref(), Some("d"));
-        assert_eq!(default_recipient(&agents, None, Some("c")).as_deref(), Some("c"));
-        assert_eq!(default_recipient(&agents, None, Some("gone")).as_deref(), Some("a"));
+        assert_eq!(default_recipient(&agents, Some("c")).as_deref(), Some("c"));
+        assert_eq!(default_recipient(&agents, Some("gone")).as_deref(), Some("a"));
+        assert_eq!(default_recipient(&[], Some("gone")), None);
     }
 
     #[test]
@@ -550,8 +522,8 @@ mod tests {
         };
         let lines = context_lines(Some(&context));
         assert_eq!(lines[0], "App: Firefox, window \"Checkout\"");
-        assert_eq!(lines[1], "Page: https://x.test");
-        assert_eq!(lines[2].len(), "Selected text:\n".len() + 2000);
+        assert_eq!(lines.len(), 1, "No page or selected text from an unverified focused app");
+        assert!(context_lines(None).is_empty());
     }
 
     fn lantern() -> Lantern {
@@ -588,6 +560,25 @@ mod tests {
         lantern.point_ask_piece(generation - 1, 0, Piece::Text("stale".into()));
         lantern.point_ask_piece(generation, 0, Piece::Text("fresh".into()));
         assert_eq!(lantern.model.point_ask.turns[0].answer, "fresh");
+    }
+
+    #[test]
+    fn an_interrupted_answer_keeps_its_text_and_cannot_start_work() {
+        let mut lantern = lantern();
+        lantern.begin_point_ask();
+        lantern.model.point_ask.phase = PointAskPhase::Card;
+        lantern.model.point_ask.asking = true;
+        lantern.model.point_ask.turns.push(AskTurn { question: "q".into(), ..Default::default() });
+        let generation = lantern.pointing.conversation.load(Ordering::SeqCst);
+        lantern.point_ask_piece(generation, 0, Piece::Text("Partial answer.".into()));
+        lantern.point_ask_piece(generation, 0, Piece::Task { prompt: "work".into(), agent: None, project: None, to: None });
+        lantern.point_ask_done(generation, 0, Some(Failure::Unavailable("Answer interrupted. Try again.".into())));
+        assert_eq!(lantern.model.point_ask.turns[0].answer, "Partial answer.\n\nAnswer interrupted. Try again.");
+        assert!(lantern.model.point_ask.turns[0].failed);
+        assert!(!lantern.model.point_ask.asking);
+        assert!(lantern.pointing.work.is_none());
+        assert_eq!(lantern.model.point_ask.phase, PointAskPhase::Card);
+        assert!(lantern.model.assistant.pending_task.is_none());
     }
 
     #[test]

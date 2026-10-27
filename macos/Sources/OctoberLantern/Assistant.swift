@@ -446,7 +446,8 @@ final class Assistant: ObservableObject {
             } catch is CancellationError {
             } catch {
                 if let i = turns.firstIndex(where: { $0.id == id }) {
-                    turns[i].answer = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    turns[i].answer += (turns[i].answer.isEmpty ? "" : "\n\n") + message
                     turns[i].failed = true
                     turns[i].upgrade = (error as? OctoberAI.Failure)?.upgradeURL
                 }

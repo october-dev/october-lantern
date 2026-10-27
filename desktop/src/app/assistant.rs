@@ -251,7 +251,10 @@ impl Lantern {
         if let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) {
             match error {
                 Some(error) => {
-                    t.answer = error.to_string();
+                    if !t.answer.is_empty() {
+                        t.answer.push_str("\n\n");
+                    }
+                    t.answer.push_str(&error.to_string());
                     t.failed = true;
                     t.upgrade = error.upgrade().map(str::to_string);
                 }
