@@ -272,6 +272,8 @@ pub struct Attach {
     pub on_bus: bool,
     /// The agent got Cua Driver's MCP tools.
     pub computer: bool,
+    /// The agent got Lantern's card tools (see `cards`).
+    pub cards: bool,
 }
 
 /// A new Bus identity for an agent Lantern is starting.
@@ -287,18 +289,23 @@ pub fn takes_mcp(kind: Kind) -> bool {
 /// An MCP server: (command, arguments).
 pub type Server = (String, Vec<String>);
 
-/// The MCP server name Cua Driver gets in an agent's config.
+/// The MCP server names Cua Driver and Lantern's card tools get in an agent's config.
 const COMPUTER: &str = "cua_driver";
+const CARDS: &str = "lantern";
 
-/// Prepares one launch: on October Bus when `on_bus`, and with Cua Driver's MCP server when
-/// `computer` is given (command, arguments). Writes the agent's MCP file, when it needs one, in
-/// Lantern's support folder.
-pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&Server>) -> Result<Attach> {
+/// Prepares one launch: on October Bus when `on_bus`, with Cua Driver's MCP server when
+/// `computer` is given (command, arguments), and with Lantern's card tools when `cards` is. Writes
+/// the agent's MCP file, when it needs one, in Lantern's support folder.
+pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&Server>, cards: Option<&Server>) -> Result<Attach> {
     let computer = computer.filter(|_| takes_mcp(kind));
-    let mut a = Attach { id: id.into(), name: name.into(), on_bus, computer: computer.is_some(), ..Default::default() };
-    if !on_bus && computer.is_none() {
+    let cards = cards.filter(|_| crate::cards::supported(kind));
+    let mut a =
+        Attach { id: id.into(), name: name.into(), on_bus, computer: computer.is_some(), cards: cards.is_some(), ..Default::default() };
+    if !on_bus && computer.is_none() && cards.is_none() {
         return Ok(a);
     }
+    // The card tools wait for the person: their calls may take as long as `cards::TOOL_TIMEOUT`.
+    let wait_ms = crate::cards::TOOL_TIMEOUT.as_millis() as u64;
     if on_bus {
         // The agent's Bus connection finds Lantern's daemon where it keeps its run file.
         a.env.push((RUNTIME_ENV.into(), runtime_dir().to_string_lossy().into_owned()));
@@ -306,29 +313,37 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
     let bin = if on_bus { binary().context("October Bus isn't downloaded yet")?.to_string_lossy().into_owned() } else { String::new() };
     let dir = support_dir().join("bus");
     std::fs::create_dir_all(&dir)?;
-    // The Bus's config for `host` when on the Bus, else `empty`; then Cua Driver added by `add`.
-    let config = |host: &str, file: &PathBuf, empty: serde_json::Value, add: &dyn Fn(&mut serde_json::Value, &Server)| -> Result<()> {
-        let _ = std::fs::remove_file(file);
-        let mut v = if on_bus {
-            let out = bus(
-                &["harness", "config", host, "--scope", SCOPE, "--agent", id, "--name", name, "--output", &file.to_string_lossy()],
-                Duration::from_secs(5),
-            )?;
-            if !out.status.success() {
-                bail!("October Bus couldn't prepare {host}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    // The Bus's config for `host` when on the Bus, else `empty`; then Cua Driver and the card
+    // tools added by `add` (config, server name, server).
+    let config =
+        |host: &str, file: &PathBuf, empty: serde_json::Value, add: &dyn Fn(&mut serde_json::Value, &str, &Server)| -> Result<()> {
+            let _ = std::fs::remove_file(file);
+            let mut v = if on_bus {
+                let out = bus(
+                    &["harness", "config", host, "--scope", SCOPE, "--agent", id, "--name", name, "--output", &file.to_string_lossy()],
+                    Duration::from_secs(5),
+                )?;
+                if !out.status.success() {
+                    bail!("October Bus couldn't prepare {host}: {}", String::from_utf8_lossy(&out.stderr).trim());
+                }
+                serde_json::from_slice(&std::fs::read(file)?).context("October Bus wrote an unreadable config file")?
+            } else {
+                empty
+            };
+            if let Some(c) = computer {
+                add(&mut v, COMPUTER, c);
             }
-            serde_json::from_slice(&std::fs::read(file)?).context("October Bus wrote an unreadable config file")?
-        } else {
-            empty
+            if let Some(c) = cards {
+                add(&mut v, CARDS, c);
+            }
+            crate::hooks::write_atomic(file, &serde_json::to_vec_pretty(&v)?)?;
+            Ok(())
         };
-        if let Some(c) = computer {
-            add(&mut v, c);
+    let stdio = |v: &mut serde_json::Value, server: &str, (command, args): &Server| {
+        v["mcpServers"][server] = serde_json::json!({"type": "stdio", "command": command, "args": args});
+        if server == CARDS {
+            v["mcpServers"][server]["timeout"] = wait_ms.into();
         }
-        crate::hooks::write_atomic(file, &serde_json::to_vec_pretty(&v)?)?;
-        Ok(())
-    };
-    let stdio = |v: &mut serde_json::Value, (command, args): &Server| {
-        v["mcpServers"][COMPUTER] = serde_json::json!({"type": "stdio", "command": command, "args": args});
     };
     match kind {
         Kind::Claude => {
@@ -345,6 +360,10 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
             if let Some((command, args)) = computer {
                 servers.push((COMPUTER, command.clone(), args.clone()));
             }
+            if let Some((command, args)) = cards {
+                servers.push((CARDS, command.clone(), args.clone()));
+                a.args.extend(["-c".into(), word(&format!("mcp_servers.{CARDS}.tool_timeout_sec={}", wait_ms / 1000))]);
+            }
             for (server, command, args) in servers {
                 let toml_args = format!("[{}]", args.iter().map(|s| toml_string(s)).collect::<Vec<_>>().join(","));
                 for kv in [
@@ -359,17 +378,17 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
         }
         Kind::Opencode => {
             let file = dir.join(format!("{id}.opencode.json"));
-            config("opencode", &file, serde_json::json!({"mcp": {}}), &|v, (command, args)| {
+            config("opencode", &file, serde_json::json!({"mcp": {}}), &|v, server, (command, args)| {
                 let mut words = vec![command.clone()];
                 words.extend(args.iter().cloned());
-                v["mcp"][COMPUTER] = serde_json::json!({"type": "local", "command": words, "enabled": true});
+                v["mcp"][server] = serde_json::json!({"type": "local", "command": words, "enabled": true});
             })?;
             a.env.push(("OPENCODE_CONFIG".into(), file.to_string_lossy().into_owned()));
         }
         Kind::Copilot => {
             let file = dir.join(format!("{id}.copilot.json"));
-            config("copilot-cli", &file, serde_json::json!({"mcpServers": {}}), &|v, (command, args)| {
-                v["mcpServers"][COMPUTER] = serde_json::json!({"type": "local", "command": command, "args": args, "tools": ["*"]});
+            config("copilot-cli", &file, serde_json::json!({"mcpServers": {}}), &|v, server, (command, args)| {
+                v["mcpServers"][server] = serde_json::json!({"type": "local", "command": command, "args": args, "tools": ["*"]});
             })?;
             a.args = vec!["--additional-mcp-config".into(), word(&format!("@{}", file.to_string_lossy()))];
         }
@@ -381,8 +400,8 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
                 (false, true) => ("qwen-code", "QWEN_CODE_SYSTEM_SETTINGS_PATH", r"C:\ProgramData\qwen-code\settings.json"),
             };
             let file = dir.join(format!("{id}.{host}.json"));
-            config(host, &file, serde_json::json!({"mcpServers": {}}), &|v, (command, args)| {
-                v["mcpServers"][COMPUTER] = serde_json::json!({"command": command, "args": args});
+            config(host, &file, serde_json::json!({"mcpServers": {}}), &|v, server, (command, args)| {
+                v["mcpServers"][server] = serde_json::json!({"command": command, "args": args});
             })?;
             // These read one system settings file; keep whatever the computer's own one says.
             let existing = std::env::var_os(var).map(PathBuf::from).unwrap_or_else(|| PathBuf::from(system));
@@ -409,9 +428,20 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
         }
         Kind::October => {
             // The harness talks to the Bus natively; it uses Cua Driver through its command
-            // (`computer::note`).
-            a.wrap = vec![word(&bin), "agent".into(), "run".into(), "--scope".into(), SCOPE.into(), "--id".into(), word(id)];
-            a.wrap.extend(["--name".into(), word(name), "--".into()]);
+            // (`computer::note`). The card tools come through its MCP adapter (pi-mcp-adapter, one
+            // of October's default packages): `--mcp-config`, connected at start, each tool listed
+            // directly.
+            if on_bus {
+                a.wrap = vec![word(&bin), "agent".into(), "run".into(), "--scope".into(), SCOPE.into(), "--id".into(), word(id)];
+                a.wrap.extend(["--name".into(), word(name), "--".into()]);
+            }
+            if let Some((command, args)) = cards {
+                let file = dir.join(format!("{id}.october.json"));
+                let v = serde_json::json!({"mcpServers": {CARDS: {"command": command, "args": args, "lifecycle": "eager",
+                    "directTools": true, "requestTimeoutMs": wait_ms}}});
+                crate::hooks::write_atomic(&file, &serde_json::to_vec_pretty(&v)?)?;
+                a.args = vec!["--mcp-config".into(), word(&file.to_string_lossy())];
+            }
         }
         _ => bail!("October Bus isn't set up for this agent yet"),
     }
@@ -594,8 +624,8 @@ pub fn post(to: &str, file: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
-/// The Bus refuses a runtime folder others can read.
-fn create_private_dir(dir: &std::path::Path) -> Result<()> {
+/// A folder only this user can read (the Bus refuses a runtime folder others can read).
+pub(crate) fn create_private_dir(dir: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
@@ -669,21 +699,49 @@ mod computer_tests {
 
     #[test]
     fn cua_driver_is_added_per_launch_without_the_bus() {
-        let codex = attach(Kind::Codex, "id", "Codex · p", false, Some(&driver())).unwrap();
+        let codex = attach(Kind::Codex, "id", "Codex · p", false, Some(&driver()), None).unwrap();
         assert!(codex.computer && !codex.on_bus);
         let joined = codex.args.join(" ");
         assert!(joined.contains("mcp_servers.cua_driver.command="), "{joined}");
         assert!(joined.contains("cua.sock"), "{joined}");
         assert!(!joined.contains("october_bus"), "{joined}");
 
-        let goose = attach(Kind::Goose, "id", "Goose · p", false, Some(&driver())).unwrap();
+        let goose = attach(Kind::Goose, "id", "Goose · p", false, Some(&driver()), None).unwrap();
         assert_eq!(goose.args[..2], ["session".to_string(), "--with-extension".to_string()]);
 
         // The October harness has no per-launch MCP: it's told the command instead.
-        let october = attach(Kind::October, "id", "October · p", false, Some(&driver())).unwrap();
+        let october = attach(Kind::October, "id", "October · p", false, Some(&driver()), None).unwrap();
         assert!(!october.computer && october.wrap.is_empty());
-        let none = attach(Kind::Codex, "id", "Codex · p", false, None).unwrap();
+        let none = attach(Kind::Codex, "id", "Codex · p", false, None, None).unwrap();
         assert!(none.args.is_empty() && !none.computer);
+    }
+
+    #[test]
+    fn card_tools_come_without_the_bus_and_wait_long_enough() {
+        let cards = ("/x/lantern-engine".to_string(), vec!["cards-mcp".to_string(), "launch-1".to_string()]);
+        let wait = crate::cards::TOOL_TIMEOUT.as_millis() as u64;
+        assert!(wait > crate::cards::WAIT_LIMIT.as_millis() as u64);
+
+        let claude = attach(Kind::Claude, "cards-claude", "Claude Code · p", false, None, Some(&cards)).unwrap();
+        assert!(claude.cards && !claude.on_bus);
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(claude.args[1].trim_matches('\'')).unwrap()).unwrap();
+        assert_eq!(file["mcpServers"]["lantern"]["args"][0], "cards-mcp");
+        assert_eq!(file["mcpServers"]["lantern"]["timeout"], wait);
+
+        let codex = attach(Kind::Codex, "cards-codex", "Codex · p", false, None, Some(&cards)).unwrap().args.join(" ");
+        assert!(codex.contains("mcp_servers.lantern.command=") && codex.contains(&format!("tool_timeout_sec={}", wait / 1000)), "{codex}");
+
+        // The default October harness, on the Bus or not, through its MCP adapter.
+        let october = attach(Kind::October, "cards-october", "October · p", false, None, Some(&cards)).unwrap();
+        assert!(october.cards && october.wrap.is_empty());
+        assert_eq!(october.args[0], "--mcp-config");
+        let file: serde_json::Value = serde_json::from_slice(&std::fs::read(october.args[1].trim_matches('\'')).unwrap()).unwrap();
+        let server = &file["mcpServers"]["lantern"];
+        assert_eq!((server["lifecycle"].as_str(), server["directTools"].as_bool()), (Some("eager"), Some(true)));
+        assert_eq!(server["requestTimeoutMs"], wait);
+
+        // Agents whose tool timeout Lantern can't raise don't get them.
+        assert!(!attach(Kind::Goose, "cards-goose", "Goose · p", false, None, Some(&cards)).unwrap().cards);
     }
 
     #[test]

@@ -155,6 +155,16 @@ enum Request {
         agent_id: String,
     },
 
+    /// The person's answer to a card: one of its options, their own words, or for a hand-off
+    /// whether they did it. `revision` is the card's revision they saw. Answered with `cardResult`.
+    #[serde(rename = "card.answer", rename_all = "camelCase")]
+    CardAnswer {
+        request_id: String,
+        card_id: String,
+        revision: i64,
+        answer: crate::cards::Answer,
+    },
+
     // MARK: Phone (see engine/src/mobile)
     /// The user's current October access token: starts hosting for the phone app, or hands a
     /// running host the refreshed token.
@@ -204,6 +214,8 @@ pub enum Incoming {
     Deliver(Deliver),
     Scanned(Vec<Agent>),
     LaunchFinished(Value),
+    /// A card or a launch's status changed (see `cards`).
+    CardsChanged,
     HistoryRead {
         request_id: String,
         agent_id: String,
@@ -265,6 +277,27 @@ pub fn run() -> Result<()> {
     // The toolkit list is kept, not rebuilt before each start: refresh it now if it's old.
     std::thread::spawn(crate::toolkit::refresh_if_stale);
 
+    // Cards: the app gets every change as a `cards` event.
+    let cards = crate::cards::start();
+    if let Some(c) = cards {
+        let changed = tx.clone();
+        c.on_change(move || {
+            let _ = changed.send(Incoming::CardsChanged);
+        });
+    }
+    let mut last_cards = String::new();
+    let emit_cards = move |last: &mut String| {
+        if let Some(c) = cards {
+            let launches = c.snapshot();
+            let summary = launches.to_string();
+            if summary != *last {
+                emit(&json!({"type": "cards", "launches": launches}));
+                *last = summary;
+            }
+        }
+    };
+    emit_cards(&mut last_cards);
+
     let link = october_link::start();
     let mut executor = Executor::new(link.clone());
     let mut last_october = String::new();
@@ -310,11 +343,16 @@ pub fn run() -> Result<()> {
                 launch_pending = false;
                 emit(&result);
             }
+            Ok(Incoming::CardsChanged) => emit_cards(&mut last_cards),
             Ok(Incoming::Scanned(mut fresh)) => {
                 scan_pending = false;
                 october_link::merge(&mut fresh, &link.snapshot());
                 if let Some(p) = &phone {
                     p.update_agents(&fresh.iter().filter(|a| a.live).cloned().collect::<Vec<_>>());
+                }
+                if let Some(c) = cards {
+                    c.bind(&fresh);
+                    c.sweep();
                 }
                 if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
                     agents = fresh;
@@ -394,6 +432,7 @@ pub fn run() -> Result<()> {
                             bus_note: None,
                             computer,
                             computer_note: None,
+                            cards_note: None,
                             ask_first,
                         };
                         let result = match launch::launch(
@@ -406,7 +445,7 @@ pub fn run() -> Result<()> {
                             deadline,
                         ) {
                             Ok(l) => json!({
-                                "type": "launchResult", "requestId": request_id, "ok": true, "session": l.session,
+                                "type": "launchResult", "requestId": request_id, "ok": true, "session": l.session, "launch": l.launch,
                                 "warning": l.bus_problem.map(|p| format!("Started without October Bus: {p}"))
                             }),
                             Err(e) => json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}),
@@ -555,6 +594,14 @@ pub fn run() -> Result<()> {
                         _ => Err("agent is not in a tmux session".to_string()),
                     };
                     emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
+                }
+                Ok(Request::CardAnswer { request_id, card_id, revision, answer }) => {
+                    let result = match cards {
+                        Some(c) => c.answer(&card_id, revision, &answer, "app").map_err(|e| format!("{e:#}")),
+                        None => Err("Cards aren't available.".to_string()),
+                    };
+                    emit(&json!({"type": "cardResult", "requestId": request_id, "cardId": card_id, "ok": result.is_ok(),
+                        "message": result.err()}));
                 }
                 // MARK: Phone
                 Ok(Request::PhoneToken { access_token }) => match &phone {

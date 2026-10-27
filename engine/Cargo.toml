@@ -22,6 +22,10 @@ tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 ureq = { version = "3.4.2", features = ["json"] }
 uuid = { version = "1.26.1", features = ["v4"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "limits"] }
+# `cards-mcp`: the MCP server each launch's agent gets (cards/mcp.rs).
+rmcp = { version = "3.8.0", default-features = false, features = ["server", "transport-io"] }
+tokio = { version = "1", features = ["rt", "time", "io-std"] }
+url = "2.5.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.189"
@@ -33,6 +37,7 @@ windows-sys = { version = "0.61", features = [
     "Wdk_System_Threading",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Diagnostics_ToolHelp",

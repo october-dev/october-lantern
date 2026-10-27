@@ -11,6 +11,7 @@
 mod actions;
 mod apps;
 mod bus;
+mod cards;
 mod computer;
 mod console;
 mod deliver;
@@ -71,6 +72,8 @@ fn main() -> Result<()> {
             args.get(2).map(String::as_str).unwrap_or(""),
             args.get(3).map(String::as_str).unwrap_or(""),
         ),
+        // The card tools for one launch's agent (see cards/mcp.rs); run by agents, not by people.
+        Some("cards-mcp") => cards::mcp::run(args.get(1).map(String::as_str).unwrap_or("")),
         Some("agents") | None => {
             let agents = scanner::Scanner::new().scan();
             println!("{}", serde_json::to_string_pretty(&agents)?);

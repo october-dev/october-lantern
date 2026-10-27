@@ -240,6 +240,8 @@ pub struct Launched {
     pub session: Option<String>,
     /// Why the agent started without October Bus, when it was asked for.
     pub bus_problem: Option<String>,
+    /// Its id for cards (see `cards`), when it got the card tools.
+    pub launch: Option<String>,
 }
 
 /// How a harness takes its first message on the command line: as the last argument (after
@@ -286,6 +288,8 @@ pub struct Extras<'a> {
     pub computer: bool,
     /// What the first message says about Cua Driver (set by `launch`).
     pub computer_note: Option<&'a str>,
+    /// What the first message says about Lantern's card tools (set by `launch`).
+    pub cards_note: Option<&'a str>,
     /// The agent asks before acting, as it does on its own (see `hands_free_args`).
     pub ask_first: bool,
 }
@@ -359,6 +363,9 @@ pub fn first_message(prompt: Option<&str>, extras: Extras) -> Option<String> {
         out.push_str(&format!("\n\n{n}"));
     }
     if let Some(n) = extras.computer_note {
+        out.push_str(&format!("\n\n{n}"));
+    }
+    if let Some(n) = extras.cards_note {
         out.push_str(&format!("\n\n{n}"));
     }
     if let Some(t) = extras.toolkit.map(str::trim).filter(|t| !t.is_empty()) {
@@ -734,7 +741,7 @@ fn launch_session(
     if let Some(p) = prompt.filter(|_| !takes_prompt_arg(kind)) {
         type_first_prompt_in_session(&session, kind, p).context("the session started, but its first message wasn't sent")?;
     }
-    Ok(Launched { session: Some(session), bus_problem })
+    Ok(Launched { session: Some(session), bus_problem, launch: None })
 }
 
 /// `type_first_prompt` for a Lantern session: once the agent runs in it and its screen settles.
@@ -850,23 +857,42 @@ pub fn launch(
                 false
             }
         };
-    let bus = if on_bus || (server.is_some() && crate::bus::takes_mcp(kind)) {
-        let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    // Lantern's card tools: registered before the agent starts, whatever the Bus and Cua switches.
+    let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let title =
+        prompt.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).unwrap_or_else(|| format!("{} in {project}", agent_name(kind)));
+    let cards = crate::cards::register(kind, cwd, &title);
+    let bus = if on_bus || (server.is_some() && crate::bus::takes_mcp(kind)) || cards.is_some() {
         let name = format!("{} · {project}", display_name(kind));
         let id = crate::bus::new_id(kind);
-        match crate::bus::attach(kind, &id, &name, on_bus, server.as_ref()) {
+        let card_server = cards.as_ref().map(|c| &c.server);
+        match crate::bus::attach(kind, &id, &name, on_bus, server.as_ref(), card_server) {
             Ok(a) => Some(a),
             Err(e) => {
                 bus_problem = Some(format!("{e:#}"));
-                None
+                // Without the Bus, the agent still gets Cua Driver and the card tools.
+                crate::bus::attach(kind, &id, &name, false, server.as_ref(), card_server).ok()
             }
         }
     } else {
         None
     };
+    let cards = match cards {
+        Some(c) if bus.as_ref().is_some_and(|b| b.cards) => Some(c),
+        Some(c) => {
+            crate::cards::forget(&c.id);
+            None
+        }
+        None => None,
+    };
     let note = bus.as_ref().filter(|b| b.on_bus).map(|b| crate::bus::note(&b.name));
     let computer_note = if computer { crate::computer::note(bus.as_ref().is_some_and(|b| b.computer)) } else { None };
-    let extras = Extras { bus_note: note.as_deref(), computer_note: computer_note.as_deref(), ..extras };
+    let extras = Extras {
+        bus_note: note.as_deref(),
+        computer_note: computer_note.as_deref(),
+        cards_note: cards.as_ref().map(|_| crate::cards::note()),
+        ..extras
+    };
     let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), extras).map(|m| with_guidance(m, cwd));
     let prompt = message.as_deref();
 
@@ -874,7 +900,7 @@ pub fn launch(
     let launched = launch_tmux(kind, cwd, prompt, &images, model, bus, bus_problem, &extra, mode, deadline);
     #[cfg(windows)]
     let launched = launch_session(kind, cwd, prompt, &images, model, bus, bus_problem, &extra, mode, deadline);
-    launched
+    crate::cards::launched(cards, launched)
 }
 
 /// A tmux session on Lantern's own server, or (without tmux) the agent in a new terminal window.
@@ -905,7 +931,7 @@ fn launch_tmux(
         if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
             crate::bus::link_when_ready(b.id.clone());
         }
-        return Ok(Launched { session: None, bus_problem });
+        return Ok(Launched { session: None, bus_problem, launch: None });
     }
 
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
@@ -936,7 +962,7 @@ fn launch_tmux(
         let pane = TmuxPane { socket: Some(LANTERN_SOCKET.into()), target: session.clone(), pane_id: format!("{session}:0.0") };
         type_first_prompt(&pane, kind, p).context("the session started, but its first message wasn't sent")?;
     }
-    Ok(Launched { session: Some(session), bus_problem })
+    Ok(Launched { session: Some(session), bus_problem, launch: None })
 }
 
 pub(crate) fn check_launch_deadline(deadline: Instant) -> Result<()> {
