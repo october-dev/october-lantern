@@ -261,7 +261,7 @@ impl Routines {
 
     pub fn snapshot(&self) -> Result<Value> {
         let db = self.db.lock().unwrap();
-        let mut q = db.prepare("SELECT id,revision,draft,enabled,changed FROM routines ORDER BY changed DESC LIMIT 100")?;
+        let mut q = db.prepare("SELECT id,revision,draft,enabled,changed FROM routines ORDER BY changed DESC")?;
         let rows = q.query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?, r.get::<_, bool>(3)?, r.get::<_, i64>(4)?))
         })?;
@@ -446,6 +446,27 @@ mod tests {
         let mut changed = draft();
         changed.prompt = "A different job".into();
         assert!(r.create(&operation, changed).is_err());
+    }
+
+    #[test]
+    fn every_saved_routine_is_scheduled_beyond_the_first_hundred() {
+        let path = std::env::temp_dir().join(format!("lantern-routine-many-{}.db", uuid::Uuid::new_v4()));
+        let cards = crate::cards::Cards::open(&path).unwrap();
+        let routines = Routines::open(&path).unwrap();
+        for _ in 0..101 {
+            routines.create(&uuid::Uuid::new_v4().to_string(), draft()).unwrap();
+        }
+        routines.db.lock().unwrap().execute("UPDATE routines SET changed=0", []).unwrap();
+        let previous = "2027-02-01T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2027-02-02T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        routines.tick(now, previous).unwrap();
+        let snapshot = routines.snapshot().unwrap();
+        let items = snapshot.as_array().unwrap();
+        assert_eq!(items.len(), 101);
+        assert!(items.iter().all(|item| item["lastRun"]["state"] == "missed"));
+        drop(routines);
+        drop(cards);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

@@ -11,17 +11,18 @@ Work branch: `local-product`. The integration starts at `68289e5`, with native f
 - Show me capture/run/round cancellation fences, read-only Cua observation, native Mac ring with an independent renderer expiry, captured-picture mode for portable clients.
 - Windows Core runtime discovery and IPC peer-user verification; remove obsolete AI gateway/mode/text-only fallbacks.
 - Keychain restoration off the main thread, with generation fencing and a regression test. Standalone forms remain open on outside clicks to preserve input.
+- Routine drafts use the computer's IANA timezone (an undetectable zone requires a choice). Scheduling covers every saved routine. Recent-history limits cannot hide live launches or unresolved cards/receipts.
 
 ## Evidence
 
-- `scripts/check.sh`: engine formatting/lints, **135 passed, 1 ignored**; Mac build and **48 tests passed**; script syntax passed.
+- `scripts/check.sh`: engine formatting/lints, **137 passed, 1 ignored**; Mac build and **48 tests passed**; script syntax passed.
 - `scripts/check-windows-types.sh`: engine/desktop cross-target types and lints passed. This does not execute a Windows desktop.
 - `scripts/smoke-local-cards.py`: real private-profile IPC/stdio, card retry/body/revision fencing, cancellation/late-answer refusal, routine create/pause/delete, guide Stop versus late capture, durable app-access hold. No model or user terminal involved.
 - Two actual 25-minute MCP waits: approximately 1500 seconds each, question expired without permission and late approval refused. These were MCP protocol fixtures, not Claude/Codex/October model turns.
 - Native Cua: built/signed Mac app launched; actual routine create, agent selection, save/edit and schedule pause observed; clipped form found and fixed; native time picker and run cards rendered. Graceful app quit stopped the exact private driver, verified twice before restarting. A waiting fixture card remained visible after an engine restart.
 - Cua later refused input to a floating panel with `element_outside_target_window` / `off_space_or_ax_unresolved`. Those attempts are **not** successful keyboard, answer-delivery, Stop/Continue or completed-result UI evidence. Disposable fixture calls/sessions and schedules were cancelled/removed afterwards.
 - A real October launch loaded all nine Lantern tools (`tools=true`). Its existing CLI model was `(openrouter) moonshotai/kimi-k2.6`; that provider rejected its stored key as expired. The harness model selection was left unchanged. The signed test app could not restore its paid October login while macOS waited for the login Keychain password. No real October answer/result round trip is claimed.
-- All three native CI jobs passed for `cc58275`: [run 40471491773](https://github.com/october-dev/october-lantern/actions/runs/40471491773). This proves that revision only. Later commits require their own green run; consult branch CI rather than carrying this result forward.
+- All three native CI jobs passed for `bbddeb8`: [run 40476472341](https://github.com/october-dev/october-lantern/actions/runs/40476472341). This proves that revision only. Later commits require their own green run; consult branch CI rather than carrying this result forward.
 
 QA logs, screenshots and fixture data are private under `/private/tmp/lantern-qa` and `/private/tmp/lantern-*.log`. They are not committed. The original `cards` checkout and existing `show-me` worktree were preserved.
 

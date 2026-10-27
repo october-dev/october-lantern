@@ -921,6 +921,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hmac",
+ "iana-time-zone",
  "libc",
  "rmcp",
  "rusqlite",

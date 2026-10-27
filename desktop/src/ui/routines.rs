@@ -31,7 +31,7 @@ pub struct Form {
 }
 impl Default for Form {
     fn default() -> Self {
-        Self {name:String::new(),prompt:String::new(),cwd:String::new(),kind:"october".into(),model:None,timezone:"UTC".into(),cadence:"daily".into(),hour:9,minute:0,weekday:0,preferences:"Ask before spending money, sending messages, deleting files outside the project, installing apps or changing system settings.".into(),open:false,id:None,revision:None,operation:None}
+        Self {name:String::new(),prompt:String::new(),cwd:String::new(),kind:"october".into(),model:None,timezone:iana_time_zone::get_timezone().unwrap_or_default(),cadence:"daily".into(),hour:9,minute:0,weekday:0,preferences:"Ask before spending money, sending messages, deleting files outside the project, installing apps or changing system settings.".into(),open:false,id:None,revision:None,operation:None}
     }
 }
 
@@ -85,6 +85,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         if form.cadence=="weekly" {egui::ComboBox::from_label("Day").selected_text(["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"][form.weekday.min(6) as usize]).show_ui(ui,|ui|{for (i,day) in ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].iter().enumerate(){ui.selectable_value(&mut form.weekday,i as u32,*day);}});}
         ui.horizontal(|ui|{ui.label("Time");ui.add(egui::DragValue::new(&mut form.hour).range(0..=23));ui.label(":");ui.add(egui::DragValue::new(&mut form.minute).range(0..=59));});
         ui.add(egui::TextEdit::singleline(&mut form.timezone).hint_text("IANA timezone, e.g. America/Los_Angeles"));
+        if form.timezone.trim().is_empty(){ui.colored_label(t::AMBER,"Choose your timezone before saving.");}
         ui.add(egui::TextEdit::multiline(&mut form.preferences).hint_text("Preferences").desired_rows(3));
         ui.small("Preferences are instructions, not enforced restrictions. Runs use the selected agent's account and credits. No overlapping runs. Repeated DST times run once; nonexistent times are skipped.");
         ui.horizontal(|ui|{

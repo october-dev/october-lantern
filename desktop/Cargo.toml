@@ -27,6 +27,7 @@ resvg = { version = "0.48.1", default-features = false }
 # CommonMark inline parsing for chat Markdown (already in the tree through egui_commonmark).
 pulldown-cmark = { version = "0.13.4", default-features = false }
 time = { version = "0.3", features = ["formatting", "parsing"] }
+iana-time-zone = "0.1.65"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }

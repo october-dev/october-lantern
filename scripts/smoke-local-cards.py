@@ -56,7 +56,8 @@ with tempfile.TemporaryDirectory(prefix='lantern-local-', dir='/tmp') as folder:
 
     db = None
     try:
-        until(lambda v: v.get('type') == 'routines')
+        ready = until(lambda v: v.get('type') == 'routines')
+        assert not ready.get('error'), f"Private task service did not start: {ready.get('error')}"
         db = sqlite3.connect(profile/'cards/cards.db', timeout=5)
         launch, key = str(uuid.uuid4()), uuid.uuid4().hex + uuid.uuid4().hex
         db.execute('INSERT INTO launches(id,key,kind,cwd,title,created) VALUES(?,?,?,?,?,?)',

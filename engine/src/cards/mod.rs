@@ -43,7 +43,7 @@ const MAX_WAITING: i64 = 4;
 const MAX_CARDS: i64 = 200;
 /// Launches kept, newest first; older ones are deleted with their cards.
 const KEEP: i64 = 200;
-/// What the app is sent: launches from the last three days, or with a card waiting.
+/// Recent history limits. Live launches and unresolved cards are always projected.
 const SHOWN_FOR_MS: i64 = 3 * 24 * 3600 * 1000;
 const SHOWN_MAX: i64 = 40;
 const SHOWN_CARDS: i64 = 30;
@@ -521,7 +521,7 @@ impl Cards {
                         .lock()
                         .unwrap()
                         .query_row("SELECT kind,cwd FROM launches WHERE id=?1", [launch], |r| Ok((r.get(0)?, r.get(1)?)))?;
-                let draft = json!({"name":name,"prompt":prompt,"cwd":cwd,"kind":kind,"timezone":"UTC","cadence":"daily","hour":9,"minute":0,"weekday":0,"preferences":""});
+                let draft = json!({"name":name,"prompt":prompt,"cwd":cwd,"kind":kind,"timezone":iana_time_zone::get_timezone().unwrap_or_default(),"cadence":"daily","hour":9,"minute":0,"weekday":0,"preferences":""});
                 let card = self.add(launch, &operation_id, "routine", json!({"routine":draft}), false)?;
                 json!({"card":card})
             }
@@ -792,12 +792,16 @@ impl Cards {
         let launches = (|| -> rusqlite::Result<Vec<Value>> {
             let mut q = db.prepare(
                 "SELECT id, kind, cwd, title, agent, tools, created, ended, status, steps, revision FROM launches
-                 WHERE created >= ?1 OR id IN (SELECT launch FROM cards WHERE state = 'waiting')
-                 ORDER BY created DESC LIMIT ?2",
+                 WHERE ended IS NULL
+                    OR id IN (SELECT launch FROM cards WHERE state IN ('waiting','answered','unconfirmed'))
+                    OR id IN (SELECT id FROM launches WHERE created >= ?1 ORDER BY created DESC LIMIT ?2)
+                 ORDER BY created DESC",
             )?;
             let mut cards = db.prepare(
-                "SELECT id, kind, body, state, answer, created, resolved, revision FROM
-                 (SELECT * FROM cards WHERE launch = ?1 ORDER BY created DESC LIMIT ?2) ORDER BY created",
+                "SELECT id, kind, body, state, answer, created, resolved, revision FROM cards
+                 WHERE launch = ?1 AND (state IN ('waiting','answered','unconfirmed')
+                    OR id IN (SELECT id FROM cards WHERE launch = ?1 ORDER BY created DESC LIMIT ?2))
+                 ORDER BY created",
             )?;
             let rows = q
                 .query_map(params![since, SHOWN_MAX], |r| {
@@ -962,6 +966,44 @@ pub fn note() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recent_history_limits_cannot_hide_live_work_or_unresolved_cards() {
+        let cards = Cards::open(Path::new(":memory:")).unwrap();
+        let (launch, key) = cards.register(Kind::October, Path::new("/tmp"), "Older live task", None, None).unwrap();
+        let question = ask(&cards, &launch, &key, &["Yes", "No"]);
+        for _ in 0..SHOWN_CARDS + 1 {
+            cards
+                .handle(
+                    &launch,
+                    &key,
+                    Op::Result {
+                        operation_id: uuid::Uuid::new_v4().to_string(),
+                        summary: "A later report".into(),
+                        outcome: Outcome::Partial,
+                        files: vec![],
+                    },
+                )
+                .unwrap();
+        }
+        cards.db.lock().unwrap().execute("UPDATE cards SET created=1 WHERE id=?1", [&question]).unwrap();
+        cards.db.lock().unwrap().execute("UPDATE launches SET created=0 WHERE id=?1", [&launch]).unwrap();
+        let (unconfirmed, other_key) = cards.register(Kind::October, Path::new("/tmp"), "Unconfirmed receipt", None, None).unwrap();
+        let pending = ask(&cards, &unconfirmed, &other_key, &["Yes"]);
+        cards.answer(&pending, 1, &choice("Yes"), "app").unwrap();
+        cards.db.lock().unwrap().execute("UPDATE cards SET lease=1 WHERE id=?1", [pending]).unwrap();
+        cards.sweep();
+        cards.db.lock().unwrap().execute("UPDATE launches SET created=0,ended=1 WHERE id=?1", [&unconfirmed]).unwrap();
+        for _ in 0..SHOWN_MAX + 1 {
+            let (recent, _) = cards.register(Kind::October, Path::new("/tmp"), "Recent history", None, None).unwrap();
+            cards.session_stopped(&recent).unwrap();
+        }
+        let snapshot = cards.snapshot();
+        let shown = snapshot.as_array().unwrap();
+        let live = shown.iter().find(|item| item["id"] == launch).expect("Live task was hidden");
+        assert!(live["cards"].as_array().unwrap().iter().any(|card| card["id"] == question));
+        assert!(shown.iter().any(|item| item["id"] == unconfirmed), "Unconfirmed receipt was hidden");
+    }
 
     #[test]
     fn a_lost_creation_reply_reuses_the_card_and_rejects_an_altered_body() {

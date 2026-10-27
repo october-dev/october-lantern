@@ -10,6 +10,8 @@ An answer belongs to a particular waiting call and card revision. Creation has a
 
 A hand-off is a request to the person. It does not establish a protected sign-in session. Preferences given to an agent are instructions, not enforced restrictions.
 
+Recent completed card history is bounded; live work and unresolved questions/answer receipts stay visible even beyond those limits.
+
 ## App access controls
 
 Live tasks expose **Pause app access**, **Continue app access**, and **Stop session**. Pause is global to Lantern's driver: it persists a hold, rejects new launches and controlled input, closes waits/guides, revokes the owned driver's sessions, and stops that daemon. Continue starts a fresh driver; it never replays cancelled input or old approvals. Stop also terminates the specific owned tmux/ConPTY session. Driver Off cannot be undone by an earlier start request.
