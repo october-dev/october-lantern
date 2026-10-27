@@ -100,6 +100,14 @@ final class AppModel: ObservableObject {
     /// Requests the engine hasn't answered yet, by request id.
     @Published private(set) var pending: [String: Pending] = [:]
     @Published private(set) var engineHealth: EngineHealth = .starting
+    /// Sessions Lantern started with its card tools, newest first, kept after they exit.
+    @Published private(set) var launches: [CardLaunch] = []
+    /// Cards whose answer is on its way to the engine, and why one was refused.
+    @Published private(set) var cardSending: Set<String> = []
+    @Published private(set) var cardErrors: [String: String] = [:]
+    /// Waiting cards already announced, so each card notifies once.
+    private var announcedCards: Set<String> = []
+    private var firstCards = true
     let dictation = Dictation()
 
     enum Pending {
@@ -138,6 +146,12 @@ final class AppModel: ObservableObject {
         dismissed = Set(UserDefaults.standard.stringArray(forKey: "dismissedTurns") ?? [])
         seen = Set(UserDefaults.standard.stringArray(forKey: "seenTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
+        engine.onCards = { [weak self] launches in self?.cardsChanged(launches) }
+        engine.onCardResult = { [weak self] cardId, ok, message in
+            guard let self else { return }
+            cardSending.remove(cardId)
+            if ok { cardErrors[cardId] = nil } else { cardErrors[cardId] = message ?? "Lantern couldn't save your answer." }
+        }
         engine.onReplyResult = { [weak self] id, ok, error, message in
             self?.replyFinished(id, ok: ok, uncertain: error == "uncertain", message: message)
         }
@@ -223,16 +237,58 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived state
 
-    /// Agents waiting on you (in harnesses you haven't muted), newest first.
+    /// Agents waiting on you (in harnesses you haven't muted), newest first. A card waiting for
+    /// you counts whatever the agent's own state says, and isn't dismissed (only answered).
     var inbox: [Agent] {
         agents
-            .filter { $0.isLive && $0.state.wantsYou && !dismissed.contains($0.turnKey) && prefs.counts($0.kind) }
+            .filter { $0.isLive && prefs.counts($0.kind) && (hasWaitingCard($0) || ($0.state.wantsYou && !dismissed.contains($0.turnKey))) }
             .sorted { ($0.stateSince ?? 0) > ($1.stateSince ?? 0) }
     }
 
     /// Waiting turns you haven't looked at yet. A question for you always counts.
-    var newInbox: [Agent] { inbox.filter { $0.state == .needsInput || !seen.contains($0.turnKey) } }
-    var earlierInbox: [Agent] { inbox.filter { $0.state != .needsInput && seen.contains($0.turnKey) } }
+    var newInbox: [Agent] { inbox.filter { $0.state == .needsInput || hasWaitingCard($0) || !seen.contains($0.turnKey) } }
+    var earlierInbox: [Agent] { inbox.filter { $0.state != .needsInput && !hasWaitingCard($0) && seen.contains($0.turnKey) } }
+
+    // MARK: Cards
+
+    /// The session Lantern started for this agent, with its cards.
+    func launch(forAgent id: String?) -> CardLaunch? {
+        guard let id else { return nil }
+        return launches.first { $0.agentId == id }
+    }
+
+    func hasWaitingCard(_ agent: Agent) -> Bool { !(launch(forAgent: agent.id)?.waiting.isEmpty ?? true) }
+
+    /// Sessions that have ended, with something to look back at (a result, a question).
+    var endedLaunches: [CardLaunch] { launches.filter { $0.endedAt != nil && !$0.cards.isEmpty } }
+
+    private func cardsChanged(_ fresh: [CardLaunch]) {
+        launches = fresh
+        // Every new card that waits for you is its own notification, even mid-turn.
+        let waiting = fresh.flatMap { launch in launch.waiting.map { (launch, $0) } }
+        for (launch, card) in waiting where !announcedCards.contains(card.id) {
+            announcedCards.insert(card.id)
+            if !firstCards, let agent = agents.first(where: { $0.id == launch.agentId }), prefs.counts(agent.kind) {
+                Notifier.shared.post(card: card, agent: agent)
+            }
+        }
+        firstCards = false
+        let open = Set(waiting.map(\.1.id))
+        cardSending.formIntersection(open)
+    }
+
+    /// Answers a card; the engine saves it only if the agent is still waiting for it.
+    func answerCard(_ card: Card, _ answer: CardAnswer) {
+        guard card.isWaiting, !cardSending.contains(card.id) else { return }
+        nextRequest += 1
+        cardErrors[card.id] = nil
+        guard engine.answerCard(requestId: "card-\(nextRequest)", cardId: card.id, revision: card.revision, answer: answer) else {
+            cardErrors[card.id] = "Lantern's engine isn't running. Try again in a moment."
+            return
+        }
+        cardSending.insert(card.id)
+        Analytics.shared.capture("card_answered", ["kind": card.kind])
+    }
 
     var badgeCount: Int { newInbox.count }
 

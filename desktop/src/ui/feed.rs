@@ -42,6 +42,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
                     for agent in &cx.model.agents {
                         row(ui, cx, agent);
                     }
+                    ended(ui, cx);
                 } else {
                     if cx.model.inbox.new.is_empty() && cx.model.inbox.earlier.is_empty() {
                         let detail = if cx.model.agents.is_empty() {
@@ -221,8 +222,11 @@ fn card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, is_new: bool) {
                     if let Some(title) = &agent.title {
                         ui.add(egui::Label::new(c::text(title, 12.0, Weight::Medium, t::white(0.75))).truncate());
                     }
+                    let keys = cx.inputs.drafts.recipient() == Some(agent.id.as_str());
+                    if let Some(launch) = cx.model.launch_for(&agent.id) {
+                        super::task_cards::launch_cards(ui, cx, launch, keys && !agent.is_answerable());
+                    }
                     if agent.is_answerable() {
-                        let keys = cx.inputs.drafts.recipient() == Some(agent.id.as_str());
                         super::question::question_card(ui, cx, agent, keys);
                     } else if let Some(question) = &agent.question {
                         egui::Frame::new().fill(t::opacity(t::AMBER, 0.12)).corner_radius(10).inner_margin(10).show(ui, |ui| {
@@ -390,6 +394,29 @@ fn row(ui: &mut Ui, cx: &mut Ctx, agent: &Agent) {
             ui.close();
         }
     });
+}
+
+/// Sessions Lantern started that have ended: what they asked and reported, kept after the agent
+/// exits (Swift `PanelView.endedList`).
+fn ended(ui: &mut Ui, cx: &mut Ctx) {
+    let model = cx.model;
+    let mut launches = model.ended_launches().peekable();
+    if launches.peek().is_none() {
+        return;
+    }
+    tracking_label(ui, "FINISHED", 10.5, t::MUTED);
+    for launch in launches {
+        egui::Frame::new().fill(t::FAINT).corner_radius(12).inner_margin(10).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(c::text(&launch.title, 12.5, Weight::Medium, t::INK)).truncate());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    c::label(ui, c::time_ago(launch.ended_at, cx.env.now_ms), 10.0, Weight::Regular, t::MUTED);
+                });
+            });
+            super::task_cards::launch_cards(ui, cx, launch, false);
+        });
+    }
 }
 
 fn toggle(values: &mut std::collections::HashSet<String>, key: &str) {

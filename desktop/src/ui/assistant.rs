@@ -358,6 +358,10 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
             if let Some(agent) = agent.filter(|agent| agent.is_answerable()) {
                 super::question::question_card(ui, cx, agent, latest);
             }
+            // Kept after the agent exits: its questions, progress and result.
+            if let Some(launch) = agent.map(|a| a.id.as_str()).or(link.agent_id.as_deref()).and_then(|id| model.launch_for(id)) {
+                super::task_cards::launch_cards(ui, cx, launch, latest && !agent.is_some_and(|a| a.is_answerable()));
+            }
             if let Some(error) = &link.error {
                 let what = if link.sent { "Couldn't send it" } else { "Couldn't start it" };
                 c::label(ui, format!("{what}: {error}"), 11.5, Weight::Regular, t::RED);

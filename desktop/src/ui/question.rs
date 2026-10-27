@@ -225,7 +225,7 @@ fn heading(ui: &mut Ui, text: &str, sent: bool) {
 
 /// One option: its number (the key that picks it), its label and what it means.
 #[allow(clippy::too_many_arguments)]
-fn option_row(
+pub(super) fn option_row(
     ui: &mut Ui,
     id: egui::Id,
     number: usize,
@@ -298,7 +298,7 @@ fn option_row(
 /// A number key pressed on its own: 0 for 1. The key and the digit it would type are both taken,
 /// so an empty reply box doesn't get it too.
 /// Ctrl+1–9 always; a plain digit only when no text box has the keyboard (`typing`).
-fn number_pressed(ui: &mut Ui, typing: bool) -> Option<usize> {
+pub(super) fn number_pressed(ui: &mut Ui, typing: bool) -> Option<usize> {
     const KEYS: [egui::Key; 9] = [
         egui::Key::Num1,
         egui::Key::Num2,

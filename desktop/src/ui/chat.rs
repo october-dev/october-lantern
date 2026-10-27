@@ -41,6 +41,13 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, max_height: f32) {
             super::question::question_card(ui, cx, agent, true);
         });
     }
+    if let Some(launch) = cx.model.launch_for(&agent.id) {
+        egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 10 }).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt(("chat-cards", &agent.id)).max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
+                super::task_cards::launch_cards(ui, cx, launch, !agent.is_answerable());
+            });
+        });
+    }
     divider(ui);
     egui::ScrollArea::vertical().id_salt(("chat",&agent.id)).max_height((max_height-240.0).clamp(180.0,480.0)).min_scrolled_height(0.0)
         .auto_shrink([false,true]).stick_to_bottom(true).show(ui,|ui|{

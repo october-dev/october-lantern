@@ -771,6 +771,10 @@ private struct TaskCard: View {
             if let agent, agent.isAnswerable {
                 QuestionCard(agent: agent, model: model, keys: latest)
             }
+            // Kept after the agent exits: its questions, progress and result.
+            if let launch = model.launch(forAgent: agent?.id ?? link.agentId) {
+                LaunchCards(launch: launch, model: model, keys: latest && agent?.isAnswerable != true)
+            }
             status
             footer
             Color.clear.frame(height: 1).id(latest ? "task-bottom" : "task-\(link.prompt.hashValue)")

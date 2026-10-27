@@ -16,6 +16,7 @@ mod point_ask;
 mod question;
 mod sessions;
 mod settings;
+mod task_cards;
 pub mod theme;
 pub mod welcome;
 
@@ -45,6 +46,9 @@ pub struct UiState {
     #[serde(skip)]
     pub question_picks: std::collections::HashMap<String, std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>>>,
     pub request_details: std::collections::HashSet<String>,
+    /// What's typed into a card's answer or note box, by card id.
+    #[serde(skip)]
+    pub card_words: std::collections::HashMap<String, String>,
     pub expanded_bubbles: std::collections::HashSet<String>,
     pub welcome_step: usize,
     pub settings_tab: usize,
@@ -287,6 +291,14 @@ pub enum UiAction {
     DismissUninstall,
     Copy(String),
     OpenUrl(String),
+    /// Shows a file from a result in the file manager instead of opening it.
+    RevealFile(String),
+    /// Your answer to a card, at the revision you saw (Cards.swift `answerCard`).
+    AnswerCard {
+        card_id: String,
+        revision: i64,
+        answer: crate::model::CardAnswer,
+    },
     /// Ask Lantern's images: the clipboard's (Ctrl+V when it holds no text), dropped files, the
     /// file picker, removing one before sending, and opening one from the conversation.
     PasteAssistantImages,

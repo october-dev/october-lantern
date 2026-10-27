@@ -2,6 +2,7 @@
 //! `ui/` reads it through `&Model` and never mutates it; every change goes through
 //! `app::Lantern::apply`. Engine payloads are typed here (see protocol/README.md).
 
+pub mod cards;
 pub mod drafts;
 pub mod inbox;
 pub mod inputs;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub use cards::{Card, CardAnswer, CardLaunch};
 pub use drafts::Drafts;
 pub use inbox::Inbox;
 pub use inputs::Inputs;
@@ -991,6 +993,13 @@ pub struct Model {
     /// Cua Driver's state, once the engine has reported it.
     pub computer: Option<ComputerStatus>,
     pub engine: EngineHealth,
+    /// Sessions Lantern started with its card tools, newest first (engine `cards`).
+    pub launches: Vec<CardLaunch>,
+    /// Cards whose answer is on its way to the engine, and why one was refused.
+    #[serde(skip)]
+    pub card_sending: std::collections::HashSet<String>,
+    #[serde(skip)]
+    pub card_errors: HashMap<String, String>,
     pub toast: Option<Toast>,
     pub dictation_offer: Option<DictationOffer>,
     /// Bumped to move keyboard focus into the composer or the Ask box.
@@ -1005,6 +1014,18 @@ pub struct Model {
 impl Model {
     pub fn agent(&self, id: &str) -> Option<&Agent> {
         self.agents.iter().find(|agent| agent.id == id)
+    }
+    /// The session Lantern started for this agent, with its cards.
+    pub fn launch_for(&self, agent_id: &str) -> Option<&CardLaunch> {
+        self.launches.iter().find(|launch| launch.agent_id.as_deref() == Some(agent_id))
+    }
+    /// Agents with a card waiting for you.
+    pub fn carded(&self) -> std::collections::HashSet<String> {
+        self.launches.iter().filter(|launch| launch.waiting().next().is_some()).filter_map(|launch| launch.agent_id.clone()).collect()
+    }
+    /// Sessions that have ended, with something to look back at.
+    pub fn ended_launches(&self) -> impl Iterator<Item = &CardLaunch> {
+        self.launches.iter().filter(|launch| launch.ended_at.is_some() && !launch.cards.is_empty())
     }
     pub fn chat_agent(&self) -> Option<&Agent> {
         self.chat.as_ref().and_then(|chat| self.agent(&chat.agent_id))

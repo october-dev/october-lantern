@@ -28,7 +28,7 @@ impl Lantern {
             }
             UiAction::DismissTurns { turn_keys } => {
                 self.turns.dismiss(&turn_keys, &self.model.agents);
-                self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
+                self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs, &self.model.carded());
                 self.save_prefs();
             }
             UiAction::AnswerQuestion { agent_id, prompt_id, answer } => self.answer_question(&agent_id, &prompt_id, answer),
@@ -123,6 +123,12 @@ impl Lantern {
             UiAction::CloseLaunchPreview => self.close_preview(),
             UiAction::RetryPreviewInTerminal => self.retry_preview_in_terminal(),
             UiAction::OpenUrl(url) => self.open_url(&url),
+            UiAction::RevealFile(path) => {
+                if let Err(error) = crate::os::reveal(std::path::Path::new(&path)) {
+                    self.show(format!("Couldn't show {path}: {error:#}"));
+                }
+            }
+            UiAction::AnswerCard { card_id, revision, answer } => self.answer_card(card_id, revision, answer),
             UiAction::PasteAssistantImages => {
                 let dir = super::images::dir();
                 crate::os::task(self.tx.clone(), move || super::images::from_clipboard(&dir), crate::os::Event::AssistantImages);
@@ -186,7 +192,7 @@ impl Lantern {
             self.withdraw_dictation_offer(false);
         }
         if old == Some(PanelMode::Inbox) && self.turns.mark_seen(&self.model.agents, &self.model.prefs) {
-            self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
+            self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs, &self.model.carded());
             self.save_prefs();
         }
     }
@@ -241,6 +247,21 @@ impl Lantern {
 
     /// Answers exactly the question the person saw, once, or nothing. The engine presses the
     /// terminal's keys for it.
+    /// Answers a card; the engine saves it only if the agent is still waiting for it.
+    fn answer_card(&mut self, card_id: String, revision: i64, answer: crate::model::CardAnswer) {
+        let waiting = self.model.launches.iter().flat_map(|l| &l.cards).any(|c| c.id == card_id && c.is_waiting());
+        if !waiting || self.model.card_sending.contains(&card_id) {
+            return;
+        }
+        self.model.card_errors.remove(&card_id);
+        let request = json!({"type": "card.answer", "cardId": card_id, "revision": revision, "answer": answer});
+        if self.request(request).is_some() {
+            self.model.card_sending.insert(card_id);
+        } else {
+            self.model.card_errors.insert(card_id, "Lantern's engine isn't running. Try again in a moment.".into());
+        }
+    }
+
     fn answer_question(&mut self, agent_id: &str, prompt_id: &str, answer: AgentAnswer) {
         let current = self.model.agent(agent_id).filter(|agent| agent.is_answerable() && agent.prompt_id.as_deref() == Some(prompt_id));
         if current.is_none() || self.model.answered.contains_key(prompt_id) {

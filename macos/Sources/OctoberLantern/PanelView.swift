@@ -120,6 +120,29 @@ struct PanelView: View {
                     }
             }
         }
+        endedList
+    }
+
+    /// Sessions Lantern started that have ended: what they asked and what they reported, kept
+    /// after the agent exits.
+    @ViewBuilder private var endedList: some View {
+        if !model.endedLaunches.isEmpty {
+            Text("FINISHED").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4).padding(.top, 6)
+            ForEach(model.endedLaunches) { launch in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(launch.title).font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+                        Spacer()
+                        Text(timeAgo(launch.ended)).font(.system(size: 10)).foregroundStyle(Theme.muted)
+                    }
+                    LaunchCards(launch: launch, model: model)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))
+            }
+        }
     }
 }
 
@@ -257,6 +280,10 @@ struct InboxCard: View {
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
+            }
+
+            if let launch = model.launch(forAgent: agent.id) {
+                LaunchCards(launch: launch, model: model, keys: selected && !agent.isAnswerable)
             }
 
             if let message = agent.lastMessage, !message.isEmpty {

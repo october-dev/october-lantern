@@ -67,7 +67,7 @@ impl Lantern {
                 if muted {
                     prefs.muted.push(kind.0);
                 }
-                self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
+                self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs, &self.model.carded());
             }
         }
         self.save_prefs();
@@ -292,7 +292,7 @@ mod tests {
         let mut lantern = Lantern::new(engine, None);
         lantern.model.agents =
             vec![Agent { id: "a".into(), kind: AgentKind::new("codex"), state: AgentState::Waiting, ..Default::default() }];
-        lantern.model.inbox = lantern.turns.inbox(&lantern.model.agents, &lantern.model.prefs);
+        lantern.model.inbox = lantern.turns.inbox(&lantern.model.agents, &lantern.model.prefs, &lantern.model.carded());
         assert_eq!(lantern.model.badge(), 1);
         lantern.change_setting(SettingChange::AgentMuted { kind: AgentKind::new("codex"), muted: true });
         assert_eq!(lantern.model.badge(), 0);

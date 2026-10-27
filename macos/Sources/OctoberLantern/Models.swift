@@ -220,6 +220,9 @@ enum EngineMessage: Decodable {
     case history(requestId: String, agentId: String, supported: Bool, messages: [ChatMessage], busy: Bool)
     case october(OctoberLink)
     case phone(PhoneModel.State)
+    /// Every session's cards (engine `cards`), newest first.
+    case cards([CardLaunch])
+    case cardResult(requestId: String, cardId: String, ok: Bool, message: String?)
     case other
 
     /// The models an agent can start with (see engine/src/models.rs). `choosable` is false for
@@ -267,7 +270,7 @@ enum EngineMessage: Decodable {
 
     private enum Keys: String, CodingKey {
         case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning, busy,
-            harness
+            harness, launches, cardId
     }
 
     init(from decoder: Decoder) throws {
@@ -307,6 +310,13 @@ enum EngineMessage: Decodable {
             )
         case "harness":
             self = .harness(try HarnessStatus(from: decoder))
+        case "cards":
+            self = .cards(try c.decode([CardLaunch].self, forKey: .launches))
+        case "cardResult":
+            self = .cardResult(
+                requestId: try c.decode(String.self, forKey: .requestId), cardId: try c.decode(String.self, forKey: .cardId),
+                ok: try c.decode(Bool.self, forKey: .ok), message: try c.decodeIfPresent(String.self, forKey: .message)
+            )
         case "computer":
             self = .computer(try ComputerStatus(from: decoder))
         case "launchResult", "attachResult":

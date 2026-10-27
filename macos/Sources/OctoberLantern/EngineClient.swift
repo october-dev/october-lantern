@@ -26,6 +26,9 @@ final class EngineClient {
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
     var onPhone: ((PhoneModel.State) -> Void)?
+    var onCards: (([CardLaunch]) -> Void)?
+    /// An answer to a card: (card id, ok, message).
+    var onCardResult: ((String, Bool, String?) -> Void)?
     /// Launch and attach results: (requestId, ok, message).
     var onActionResult: ((String, Bool, String?) -> Void)?
     /// A session started on Lantern's tmux server, by tmux session name.
@@ -271,6 +274,12 @@ final class EngineClient {
         send(["type": "answer", "requestId": requestId, "agentId": agentId, "promptId": promptId, "answer": answer.json])
     }
 
+    /// Your answer to a card, at the revision you saw (answered with `cardResult`).
+    @discardableResult
+    func answerCard(requestId: String, cardId: String, revision: Int, answer: CardAnswer) -> Bool {
+        send(["type": "card.answer", "requestId": requestId, "cardId": cardId, "revision": revision, "answer": answer.json])
+    }
+
     /// "october.pair", "october.cancelPair" or "october.forget".
     @discardableResult
     func october(_ type: String) -> Bool {
@@ -347,6 +356,8 @@ final class EngineClient {
                     if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
+                case .cards(let launches): onCards?(launches)
+                case .cardResult(_, let cardId, let ok, let message): onCardResult?(cardId, ok, message)
                 case .launchResult(let id, let ok, let message, let session):
                     onActionResult?(id, ok, message)
                     if ok, let session { onLaunched?(session) }

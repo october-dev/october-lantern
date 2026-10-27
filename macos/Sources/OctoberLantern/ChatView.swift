@@ -19,6 +19,11 @@ struct ChatView: View {
                 QuestionCard(agent: agent, model: model, keys: true)
                     .padding(.horizontal, 12).padding(.bottom, 10)
             }
+            if let launch = model.launch(forAgent: agent.id) {
+                ScrollView { LaunchCards(launch: launch, model: model, keys: !agent.isAnswerable) }
+                    .frame(maxHeight: 320).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+            }
             Rectangle().fill(Theme.hairline).frame(height: 1)
             ScrollViewReader { proxy in
                 ScrollView {

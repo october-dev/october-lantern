@@ -65,10 +65,31 @@ October Harness (the `october` agent, npm `@october-dev/october`) is built in: w
 ```
 
 ### `launchResult` / `attachResult`
-`launchResult` comes after the first message has been typed, for agents that take it that way (up to about 30 seconds). Its `session` is the tmux session the agent runs in; the app opens that agent's conversation as soon as it appears. `attachResult` answers `attach` and `focus`.
+`launch` is the session's id in `cards`, when it got the card tools. `launchResult` comes after the first message has been typed, for agents that take it that way (up to about 30 seconds). Its `session` is the tmux session the agent runs in; the app opens that agent's conversation as soon as it appears. `attachResult` answers `attach` and `focus`.
 ```json
-{"type":"launchResult","requestId":"l1","ok":true,"session":"codex-myproj-12345"}
+{"type":"launchResult","requestId":"l1","ok":true,"session":"codex-myproj-12345","launch":"bde61a3f-…"}
 {"type":"attachResult","requestId":"a1","ok":false,"message":"agent is not in a tmux session"}
+```
+
+### `cards`
+Every session Lantern started with its card tools, newest first (from the last three days, or with a card waiting; at most 40, each with its last 30 cards), sent whenever one changes. They're kept in a private database (`cards/cards.db` in Lantern's support folder) and outlive the agent. See **Cards** below.
+```json
+{"type":"cards","launches":[{"id":"bde61a3f-…","kind":"october","cwd":"/Users/me/trip","title":"Book the flight","agentId":"october:4242:1790180000",
+ "tools":true,"createdAt":1793076316073,"endedAt":null,"status":"Comparing prices","revision":4,
+ "steps":[{"id":"search","title":"Search flights","done":true},{"id":"book","title":"Book it","done":false}],
+ "cards":[{"id":"4495…","kind":"ask","state":"waiting","revision":1,"createdAt":1793076366474,"resolvedAt":null,"answer":null,
+           "question":"Morning or evening flight?","details":null,"options":["Morning","Evening"]},
+          {"id":"77a1…","kind":"handOff","state":"delivered","revision":2,"createdAt":…,"resolvedAt":…,"answer":{"done":true},
+           "reason":"signIn","step":"Sign in to airline.example","why":"To see your saved card","instructions":[],"url":"https://airline.example/login"},
+          {"id":"90c2…","kind":"result","state":"shown","revision":1,"createdAt":…,"resolvedAt":null,"answer":null,
+           "summary":"Booked the 7:40 flight.","outcome":"done","files":[{"path":"/Users/me/trip/ticket.pdf","name":"ticket.pdf","folder":false}]}]}]}
+```
+A launch's `agentId` is the agent running in its terminal session, once seen (it stays after the agent exits); `endedAt` is when that agent went away; `tools` is whether the agent's card server started. A card's `kind` is `ask` (`question`, `details?`, `options` of up to 6), `handOff` (`reason`: `signIn`, `verification`, `payment`, `identity`, `physical` or `other`; `step`, `why?` (the agent's words), `instructions` of up to 3, `url?`: an http(s) address, https for `signIn`, never with a user name or password) or `result` (`summary`, `outcome`: `done`, `partial` or `failed`, as the agent reports it; `files`: full paths that existed when reported, symbolic links followed). `state` is `waiting`, `answered` (saved; the agent's call hasn't taken it yet), `delivered` (the agent's call took it), `unconfirmed` (saved, but the call went away before taking it), `expired` (nobody answered within 25 minutes), `stopped` (the agent's call stopped waiting: it exited or was interrupted), `cancelled` (the agent cancelled the call) or `shown` (a result). Only `waiting` cards take an answer; closing a card in the app never answers it.
+
+### `cardResult`
+Answers `card.answer`: whether the answer was saved. `message` says why not (the agent isn't waiting any more, the card changed, the answer doesn't fit it).
+```json
+{"type":"cardResult","requestId":"c1","cardId":"4495…","ok":true}
 ```
 
 ### `historyResult`
@@ -149,6 +170,19 @@ The connection to October Desktop, sent whenever it changes.
 `historyResult` may carry `busy: true` when the bounded reader is occupied; retry later without clearing the displayed conversation. Clients allow one outstanding history request per conversation and match the returned request id before applying it.
 
 `reply` types the text into the agent's terminal (see `route`), then presses Enter. For agents with `route.via == "none"` it returns `not_reachable`, and the app falls back to copying the text and bringing the host app forward. `october.pair` asks October Desktop to allow Lantern (October shows a code to compare), `october.cancelPair` withdraws that, and `october.forget` drops the credential October issued (Lantern then goes back to listing October's terminals read-only).
+
+## Cards
+
+`card.answer` answers a waiting card, at the `revision` the person saw: `answer` is `{"choice": "<one of its options>"}` or `{"text": "…"}` for an `ask` card, and `{"done": true|false, "text"?: "…"}` for a `handOff`. The engine saves it only if the card is still waiting at that revision and the agent's call is still waiting for it; a second answer (another window, a double click) is refused. Then the agent's waiting call takes it.
+```json
+{"type":"card.answer","requestId":"c1","cardId":"4495…","revision":1,"answer":{"choice":"Evening"}}
+```
+
+Every `launch` of Claude Code, Codex or October is registered first (whatever `bus` and `computer` say) and its agent gets one more MCP server, `lantern`: `lantern-engine cards-mcp <launch id>` (the engine's copy in Lantern's support folder), an MCP server over stdio built on the official Rust SDK (rmcp). Claude Code gets it in its `--mcp-config` file with `timeout`, Codex through `-c mcp_servers.lantern.*` with `tool_timeout_sec`, and October through `--mcp-config` (its MCP adapter, `pi-mcp-adapter`, one of October's default packages) with `lifecycle: "eager"`, `directTools: true` and `requestTimeoutMs`. Each is 27 minutes, longer than a card waits. Other agents don't get it yet: Lantern can't raise their tool timeouts per launch. The first message says the tools are there, and the server's MCP instructions say so even when there's no first message. If the Bus can't be used, the agent still gets the card tools and Cua Driver.
+
+Tools: `ask_person(question, details?, options?)` and `hand_off(step, reason, why?, instructions?, url?)` / `need_sign_in(url, why?)` wait for the person (up to 25 minutes) and return their answer, or that nobody answered (never a yes); `set_status(text)`, `set_steps(steps: [{id, title}])` and `step_done(id)` show progress; `show_result(summary, outcome, files?)` shows the result. Text is bounded (a question 500 characters, details 4,000, an option 80, a summary 4,000) and control characters are refused; at most 4 cards wait at once per session.
+
+The card server keeps no state. It reads its launch's key from `cards/keys/<launch id>` (only this user can read it) and sends each request to the engine over a private local connection, one line of JSON each way, one request per connection: a Unix socket at `cards/engine.sock` in Lantern's support folder (the folder is private to the user; when that path is too long for a socket, `/tmp/october-lantern-<uid>/cards.sock`, refused unless it's this user's and private), or the named pipe `\\.\pipe\lantern-cards-<user>` on Windows (only this user and the system can open it; remote clients are refused). One engine serves cards at a time. A call waiting for an answer asks again every 5 seconds, which renews the card's 20-second lease; a card whose lease runs out is `stopped` (or `unconfirmed`, if it was answered), so an answer is never given to a call that has gone, and an old answer is never typed in later. While the engine restarts, a waiting call keeps trying for 15 seconds. The key ties a card to its launch; anything running as the same user can read it, so it doesn't protect cards from the agent's own shell.
 
 ## Hook events (written by `lantern-engine hook <source>`)
 

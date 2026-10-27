@@ -254,7 +254,7 @@ private final class ClickThrough: NSView {
 }
 
 /// Number keys for the card in this window: ⌘1–⌘9 always, a plain digit only when no text box has the keyboard.
-private struct NumberKeys: NSViewRepresentable {
+struct NumberKeys: NSViewRepresentable {
     let enabled: Bool
     let press: (Int) -> Bool
 

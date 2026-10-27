@@ -254,6 +254,15 @@ pub fn prune_screenshots() {
         }
     }
 }
+/// Shows a file in the file manager: Explorer selects it; elsewhere its folder opens.
+pub fn reveal(path: &Path) -> Result<()> {
+    if cfg!(windows) {
+        command("explorer.exe").arg(format!("/select,{}", path.display())).spawn()?;
+        return Ok(());
+    }
+    open(path.parent().unwrap_or(path))
+}
+
 /// A command for a helper program, without a console window flashing up on Windows.
 pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
     #[allow(unused_mut)]

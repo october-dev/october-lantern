@@ -56,6 +56,19 @@ final class Notifier: NSObject, ObservableObject, UNUserNotificationCenterDelega
         center.add(UNNotificationRequest(identifier: agent.turnKey, content: content, trigger: nil))
     }
 
+    /// A card waiting for you: a question or a step only you can do. One notification per card.
+    func post(card: Card, agent: Agent) {
+        guard Preferences.shared.notificationsEnabled, let center else { return }
+        let content = UNMutableNotificationContent()
+        content.title = card.kind == "handOff" ? "@\(agent.handle) needs you to do something" : "@\(agent.handle) has a question"
+        content.subtitle = [agent.project, agent.title].compactMap { $0 }.joined(separator: " · ")
+        content.body = String((card.kind == "handOff" ? card.step : card.question)?.prefix(240) ?? "")
+        content.sound = .default
+        content.userInfo = ["agentId": agent.id]
+        content.threadIdentifier = agent.id
+        center.add(UNNotificationRequest(identifier: card.id, content: content, trigger: nil))
+    }
+
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
     ) async {

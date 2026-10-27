@@ -103,6 +103,23 @@ impl Lantern {
                 }
             }
             "october" => self.model.october = serde_json::from_value::<OctoberLink>(event["october"].clone()).ok(),
+            "cards" => {
+                self.model.launches = serde_json::from_value(event["launches"].clone()).unwrap_or_default();
+                let open: HashSet<String> = self.model.launches.iter().flat_map(|l| l.waiting()).map(|c| c.id.clone()).collect();
+                self.model.card_sending.retain(|id| open.contains(id));
+                self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs, &self.model.carded());
+            }
+            "cardResult" => {
+                if let Some(card) = text(&event, "cardId") {
+                    self.model.card_sending.remove(&card);
+                    if event["ok"] == true {
+                        self.model.card_errors.remove(&card);
+                    } else {
+                        let message = text(&event, "message").unwrap_or_else(|| "Lantern couldn't save your answer.".into());
+                        self.model.card_errors.insert(card, message);
+                    }
+                }
+            }
             "toolkit" => self.toolkit_result(&event),
             _ => {}
         }
@@ -121,7 +138,7 @@ impl Lantern {
         self.model.answered.retain(|prompt, _| prompts.contains(prompt));
         self.model.answer_delivery.retain(|prompt, _| prompts.contains(prompt));
         self.model.agents = agents;
-        self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs);
+        self.model.inbox = self.turns.inbox(&self.model.agents, &self.model.prefs, &self.model.carded());
         self.refresh_folders();
         self.open_launched();
         self.track_tasks();

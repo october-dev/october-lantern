@@ -38,12 +38,19 @@ fn waiting<'a>(agents: &'a [Agent], prefs: &'a Prefs) -> impl Iterator<Item = &'
 }
 
 impl Turns {
-    /// Live waits in harnesses you haven't muted, not dismissed, newest first.
-    pub fn inbox(&self, agents: &[Agent], prefs: &Prefs) -> Inbox {
-        let mut list: Vec<&Agent> = waiting(agents, prefs).filter(|agent| !self.dismissed.contains(&agent.turn_key())).collect();
+    /// Live waits in harnesses you haven't muted, not dismissed, newest first. An agent with a
+    /// card waiting for you (`carded`) is always new, whatever its own state, and isn't dismissed
+    /// (only answered).
+    pub fn inbox(&self, agents: &[Agent], prefs: &Prefs, carded: &HashSet<String>) -> Inbox {
+        let mut list: Vec<&Agent> = agents
+            .iter()
+            .filter(|agent| agent.is_live() && prefs.counts(&agent.kind))
+            .filter(|agent| carded.contains(&agent.id) || (agent.state.wants_you() && !self.dismissed.contains(&agent.turn_key())))
+            .collect();
         list.sort_by(|a, b| b.state_since.unwrap_or(0.0).total_cmp(&a.state_since.unwrap_or(0.0)));
-        let (new, earlier): (Vec<&Agent>, Vec<&Agent>) =
-            list.into_iter().partition(|agent| agent.state == AgentState::NeedsInput || !self.seen.contains(&agent.turn_key()));
+        let (new, earlier): (Vec<&Agent>, Vec<&Agent>) = list.into_iter().partition(|agent| {
+            agent.state == AgentState::NeedsInput || carded.contains(&agent.id) || !self.seen.contains(&agent.turn_key())
+        });
         Inbox { new: new.into_iter().map(|a| a.id.clone()).collect(), earlier: earlier.into_iter().map(|a| a.id.clone()).collect() }
     }
 
@@ -57,7 +64,7 @@ impl Turns {
 
     /// Marks everything in Waiting as seen (leaving Waiting). Returns whether anything changed.
     pub fn mark_seen(&mut self, agents: &[Agent], prefs: &Prefs) -> bool {
-        let inbox = self.inbox(agents, prefs);
+        let inbox = self.inbox(agents, prefs, &HashSet::new());
         let keys: Vec<String> =
             inbox.new.iter().chain(&inbox.earlier).filter_map(|id| agents.iter().find(|a| &a.id == id)).map(Agent::turn_key).collect();
         if keys.iter().all(|key| self.seen.contains(key)) {
@@ -122,9 +129,37 @@ mod tests {
         let mut turns = Turns::default();
         turns.observe(&agents, &prefs, NOW);
         assert!(turns.mark_seen(&agents, &prefs));
-        let inbox = turns.inbox(&agents, &prefs);
+        let inbox = turns.inbox(&agents, &prefs, &HashSet::new());
         assert_eq!(inbox.new, vec!["a"]);
         assert_eq!(inbox.earlier, vec!["b"]);
+    }
+
+    #[test]
+    fn a_waiting_card_is_new_whatever_the_agent_says_and_isnt_dismissed() {
+        let prefs = Prefs::default();
+        // Working, or a turn you dismissed: a card waiting for you still puts it first.
+        let agents = vec![agent("a", AgentState::Working, NOW), agent("b", AgentState::Waiting, NOW - 1.0)];
+        let mut turns = Turns::default();
+        turns.dismiss(&[agents[1].turn_key()], &agents);
+        assert!(turns.inbox(&agents, &prefs, &HashSet::new()).new.is_empty());
+        let carded: HashSet<String> = ["a".to_string(), "b".to_string()].into();
+        turns.mark_seen(&agents, &prefs);
+        let inbox = turns.inbox(&agents, &prefs, &carded);
+        assert_eq!(inbox.new, vec!["a", "b"]);
+        assert!(inbox.earlier.is_empty());
+    }
+
+    #[test]
+    fn the_engines_cards_decode() {
+        let launches: Vec<crate::model::CardLaunch> = serde_json::from_str(
+            r#"[{"id":"l","kind":"october","cwd":"/tmp","title":"Book","agentId":"october:1:2","tools":true,"createdAt":1,
+            "endedAt":null,"status":"Working","steps":[{"id":"a","title":"Search","done":true}],"revision":2,
+            "cards":[{"id":"c","kind":"ask","state":"waiting","revision":1,"createdAt":1,"resolvedAt":null,"answer":null,
+            "question":"Which?","details":null,"options":["A","B"]}]}]"#,
+        )
+        .unwrap();
+        assert_eq!(launches[0].waiting().map(|c| c.options.clone()).next(), Some(Some(vec!["A".to_string(), "B".to_string()])));
+        assert!(launches[0].steps[0].done);
     }
 
     #[test]
@@ -134,12 +169,12 @@ mod tests {
         let mut turns = Turns::default();
         let shown = first[0].turn_key();
         turns.dismiss(std::slice::from_ref(&shown), &first);
-        assert!(turns.inbox(&first, &prefs).new.is_empty());
+        assert!(turns.inbox(&first, &prefs, &HashSet::new()).new.is_empty());
         let next = vec![agent("a", AgentState::Waiting, NOW + 5.0)];
-        assert_eq!(turns.inbox(&next, &prefs).new, vec!["a"]);
+        assert_eq!(turns.inbox(&next, &prefs, &HashSet::new()).new, vec!["a"]);
         // A delayed Dismiss carrying the old key doesn't hide the new turn either.
         turns.dismiss(&[shown], &next);
-        assert_eq!(turns.inbox(&next, &prefs).new, vec!["a"]);
+        assert_eq!(turns.inbox(&next, &prefs, &HashSet::new()).new, vec!["a"]);
     }
 
     #[test]
@@ -151,7 +186,7 @@ mod tests {
         gone.kind = AgentKind::new("codex");
         gone.live = Some(false);
         let agents = vec![agent("a", AgentState::Waiting, NOW), codex, gone];
-        assert_eq!(Turns::default().inbox(&agents, &prefs).new, vec!["c"]);
+        assert_eq!(Turns::default().inbox(&agents, &prefs, &HashSet::new()).new, vec!["c"]);
     }
 
     #[test]
@@ -160,7 +195,7 @@ mod tests {
         let agents = vec![agent("old", AgentState::Waiting, NOW - 3.0 * HOUR), agent("ask", AgentState::NeedsInput, NOW - 3.0 * HOUR)];
         let mut turns = Turns::default();
         assert!(turns.observe(&agents, &prefs, NOW).is_empty());
-        let inbox = turns.inbox(&agents, &prefs);
+        let inbox = turns.inbox(&agents, &prefs, &HashSet::new());
         assert_eq!(inbox.new, vec!["ask"]);
         assert_eq!(inbox.earlier, vec!["old"]);
     }
