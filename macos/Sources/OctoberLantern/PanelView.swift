@@ -9,10 +9,21 @@ struct PanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             EngineBanner(health: model.engineHealth)
+            if model.controlHeld {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(model.controlMessage ?? "App access is paused. Background commands may still run.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.amber)
+                    Button("Continue app access") { model.control("continue", launch: nil) }
+                        .disabled(model.controlSending)
+                }.padding(12)
+            }
             switch model.panel {
             case .newSession:
                 PanelTitle(title: "Start a new agent", model: model)
                 NewSessionView(model: model)
+            case .routines:
+                PanelTitle(title: "Routines", model: model)
+                RoutinesView()
             case .october:
                 PanelTitle(title: "October", model: model)
                 OctoberView(model: model)

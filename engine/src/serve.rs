@@ -165,6 +165,17 @@ enum Request {
         answer: crate::cards::Answer,
     },
 
+    #[serde(rename = "task.control")]
+    Control {
+        #[serde(flatten)]
+        command: crate::control::Command,
+    },
+    #[serde(rename = "routine")]
+    Routine {
+        #[serde(flatten)]
+        command: crate::routines::Command,
+    },
+
     // MARK: Phone (see engine/src/mobile)
     /// The user's current October access token: starts hosting for the phone app, or hands a
     /// running host the refreshed token.
@@ -186,6 +197,33 @@ enum Request {
     },
     #[serde(rename = "phone.stop")]
     PhoneStop,
+    // MARK: Show me (see show.rs)
+    #[serde(rename = "show.start", rename_all = "camelCase")]
+    ShowStart {
+        run_id: String,
+    },
+    #[serde(rename = "show.captured")]
+    ShowCaptured(crate::show::Captured),
+    #[serde(rename = "show.result", rename_all = "camelCase")]
+    ShowResult {
+        run_id: String,
+        round: u32,
+        capture_id: String,
+        result: Value,
+    },
+    #[serde(rename = "show.next", rename_all = "camelCase")]
+    ShowNext {
+        run_id: String,
+        step: u32,
+    },
+    #[serde(rename = "show.again", rename_all = "camelCase")]
+    ShowAgain {
+        run_id: String,
+    },
+    #[serde(rename = "show.stop", rename_all = "camelCase")]
+    ShowStop {
+        run_id: String,
+    },
 }
 
 fn yes() -> bool {
@@ -285,6 +323,10 @@ pub fn run() -> Result<()> {
             let _ = changed.send(Incoming::CardsChanged);
         });
     }
+    let show = crate::show::start(emit);
+    let control = crate::control::worker(show.clone(), emit);
+    let routines = crate::routines::worker(emit);
+    let _ = routines.try_send(crate::routines::Command::List);
     let mut last_cards = String::new();
     let emit_cards = move |last: &mut String| {
         if let Some(c) = cards {
@@ -433,6 +475,7 @@ pub fn run() -> Result<()> {
                             computer,
                             computer_note: None,
                             cards_note: None,
+                            operation_id: None,
                             ask_first,
                         };
                         let result = match launch::launch(
@@ -455,9 +498,17 @@ pub fn run() -> Result<()> {
                     next_scan = Instant::now() + Duration::from_millis(1500);
                 }
                 Ok(Request::ComputerPrepare { enabled, restart }) => {
+                    if enabled && crate::computer::held() {
+                        emit(&crate::computer::status_json("off", Some("App access is paused; choose Continue app access.".into())));
+                        continue;
+                    }
                     // Each request supersedes the ones before it: an earlier start still downloading
                     // or starting gives up instead of turning the driver on after an off.
                     let generation = crate::computer::want(enabled);
+                    if !enabled || restart {
+                        // Show me lets go of the driver before it stops.
+                        let _ = show.send(crate::show::Cmd::DriverOff);
+                    }
                     std::thread::spawn(move || {
                         use crate::computer::{self, Started};
                         if !enabled || restart {
@@ -595,6 +646,26 @@ pub fn run() -> Result<()> {
                     };
                     emit(&json!({"type": "attachResult", "requestId": request_id, "ok": result.is_ok(), "message": result.err()}));
                 }
+                Ok(Request::Control { command }) => {
+                    if let Err(error) = control.try_send(command) {
+                        let (std::sync::mpsc::TrySendError::Full(command) | std::sync::mpsc::TrySendError::Disconnected(command)) = error;
+                        emit(
+                            &json!({"type":"controlResult","requestId":command.request_id,"ok":false,"message":"Control is busy or unavailable."}),
+                        );
+                    }
+                }
+                Ok(Request::Routine { command }) => {
+                    if let Err(error) = routines.try_send(command) {
+                        let (std::sync::mpsc::TrySendError::Full(command) | std::sync::mpsc::TrySendError::Disconnected(command)) = error;
+                        if let Some(id) = command.request_id() {
+                            emit(
+                                &json!({"type":"routineResult","requestId":id,"ok":false,"message":"Routines are busy or unavailable; try again."}),
+                            );
+                        } else {
+                            emit(&json!({"type":"routines","items":[],"error":"Routines are busy or unavailable; try again."}));
+                        }
+                    }
+                }
                 Ok(Request::CardAnswer { request_id, card_id, revision, answer }) => {
                     let result = match cards {
                         Some(c) => c.answer(&card_id, revision, &answer, "app").map_err(|e| format!("{e:#}")),
@@ -636,6 +707,24 @@ pub fn run() -> Result<()> {
                     if let Some(p) = phone.take() {
                         p.send(crate::mobile::host::Cmd::Stop);
                     }
+                }
+                Ok(Request::ShowStart { run_id }) => {
+                    let _ = show.send(crate::show::Cmd::Start { run_id });
+                }
+                Ok(Request::ShowCaptured(c)) => {
+                    let _ = show.send(crate::show::Cmd::Captured(c));
+                }
+                Ok(Request::ShowResult { run_id, round, capture_id, result }) => {
+                    let _ = show.send(crate::show::Cmd::Result { run_id, round, capture_id, result });
+                }
+                Ok(Request::ShowNext { run_id, step }) => {
+                    let _ = show.send(crate::show::Cmd::Next { run_id, step });
+                }
+                Ok(Request::ShowAgain { run_id }) => {
+                    let _ = show.send(crate::show::Cmd::Again { run_id });
+                }
+                Ok(Request::ShowStop { run_id }) => {
+                    let _ = show.send(crate::show::Cmd::Stop { run_id });
                 }
                 // The line itself isn't logged: some requests carry an access token.
                 Err(e) => eprintln!("lantern-engine: bad request ({e})"),

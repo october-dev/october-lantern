@@ -20,6 +20,10 @@ jobs:
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
       - name: Checks (engine fmt, clippy, tests; app build and tests; script syntax)
         run: scripts/check.sh
+      - name: Local card, routine, guide and app-access protocol smoke
+        run: |
+          cargo build --locked --manifest-path engine/Cargo.toml
+          python3 scripts/smoke-local-cards.py
 
   linux:
     runs-on: ubuntu-latest
@@ -41,6 +45,8 @@ jobs:
         run: scripts/check.sh
       - name: Build and verify the sidecar protocol
         run: scripts/build-app.sh --debug
+      - name: Local card, routine, guide and app-access protocol smoke
+        run: python3 scripts/smoke-local-cards.py build/linux/lantern-engine
       - name: Test procfs discovery and safe tmux delivery
         run: python3 scripts/smoke-linux.py
 

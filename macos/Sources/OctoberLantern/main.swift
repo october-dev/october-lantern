@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         case .text(let t): print(t, terminator: "")
                         case .note(let n): print("\n[note] \(n)")
                         case .task(let prompt, let agent, let project, let to): print("\n[task] agent=\(agent ?? "-") project=\(project ?? "-") to=\(to ?? "-") prompt=\(prompt)")
+                        case .guide(let g, let goal): print("\n[guide] \(g ?? [:]) goal=\(goal ?? "-")")
                         }
                         fflush(stdout)
                     }
@@ -157,7 +158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "settings": self.showSettings(tab: page)
                 case "point": PointAsk.shared.showDemo()
                 default:
-                    self.model.panel = ["agents": .agents, "new": .newSession, "october": .october, "assistant": .assistant][what] ?? .inbox
+                    self.model.panel = ["agents": .agents, "new": .newSession, "october": .october, "assistant": .assistant, "routines": .routines][what] ?? .inbox
                     if what == "chat", let first = self.model.inbox.first ?? self.model.agents.first {
                         self.model.openChat(first)
                     }
@@ -327,6 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             if self.windows.pillVisible { self.windows.hidePill() } else { self.windows.showPill() }
         }
+        item("Routines") { [weak self] in self?.show(.routines) }
         item("Settings…", ",") { [weak self] in self?.showSettings() }
         if Updater.shared.available {
             item("Check for Updates…") { Updater.shared.checkForUpdates() }

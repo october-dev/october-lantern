@@ -326,6 +326,8 @@ pub enum PanelMode {
     NewSession,
     October,
     Assistant,
+    Routines,
+    ShowMe,
 }
 
 impl PanelMode {
@@ -833,6 +835,7 @@ pub struct Prefs {
     pub bus_for_sessions: bool,
     /// Let agents Lantern starts use this computer's apps through Cua Driver (engine `computer`).
     pub computer_use: bool,
+    pub show_me: bool,
     /// Agents Lantern starts ask before each action (engine `askFirst`); off by default.
     pub ask_first: bool,
     pub toolkit_in_sessions: bool,
@@ -869,6 +872,7 @@ impl Default for Prefs {
             screenshot_new_sessions: false,
             bus_for_sessions: true,
             computer_use: true,
+            show_me: true,
             ask_first: false,
             // As Preferences.swift registers them: finishing notifies, the toolkit list is opt-in.
             toolkit_in_sessions: false,
@@ -970,6 +974,12 @@ pub struct Caps {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Model {
+    pub control_held: bool,
+    pub control_sending: bool,
+    pub control_message: Option<String>,
+    pub guide: Option<serde_json::Value>,
+    pub routines: Vec<serde_json::Value>,
+    pub routine_error: Option<String>,
     pub panel: Option<PanelMode>,
     /// Agents in rank order (needs you, your turn, working, the rest; not-live last).
     pub agents: Vec<Agent>,

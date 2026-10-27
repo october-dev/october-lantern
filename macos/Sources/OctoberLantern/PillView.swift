@@ -33,6 +33,7 @@ struct PillView: View {
                 Button("Your Agents") { model.panel = .inbox }
                 Button(dictation.isActive ? "Stop Dictating" : "Dictate a Reply") { model.toggleDictation() }
                 Divider()
+                Button("Routines…") { model.panel = .routines }
                 Button("October…") { model.panel = .october }
                 Button("Settings…") { onMenu() }
                 Divider()

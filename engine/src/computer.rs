@@ -229,17 +229,78 @@ fn claim(path: &std::path::Path) -> Result<Option<std::fs::File>> {
 /// of letting it finish afterwards.
 struct Wanted {
     on: bool,
+    held: bool,
     generation: u64,
 }
 
-static WANTED: Mutex<Wanted> = Mutex::new(Wanted { on: false, generation: 0 });
+static WANTED: Mutex<Wanted> = Mutex::new(Wanted { on: false, held: false, generation: 0 });
 
 /// Records a new request to turn the driver on or off; returns its generation.
 pub fn want(on: bool) -> u64 {
     let mut w = WANTED.lock().unwrap();
-    w.on = on;
+    w.on = on && !w.held;
     w.generation += 1;
     w.generation
+}
+
+static ACTION_GATE: std::sync::RwLock<()> = std::sync::RwLock::new(());
+static CONTROL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub fn control_epoch() -> u64 {
+    CONTROL_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+pub fn action_guard() -> std::sync::RwLockReadGuard<'static, ()> {
+    ACTION_GATE.read().unwrap()
+}
+
+pub fn held() -> bool {
+    WANTED.lock().unwrap().held
+}
+
+pub fn hold() {
+    {
+        let mut w = WANTED.lock().unwrap();
+        w.held = true;
+        w.on = false;
+        w.generation += 1;
+        CONTROL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    // Existing terminal dispatch finishes before the hold is acknowledged. Queued work sees
+    // held/epoch under a read guard and cannot begin after this barrier, including after Continue.
+    drop(ACTION_GATE.write().unwrap());
+}
+
+pub fn prepare_continue() -> u64 {
+    CONTROL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let mut w = WANTED.lock().unwrap();
+    w.held = true;
+    w.on = true;
+    w.generation += 1;
+    w.generation
+}
+
+/// Open the dispatch gate only after a fresh driver is ready and the durable receipt is saved.
+pub fn complete_continue(generation: u64) -> bool {
+    let mut w = WANTED.lock().unwrap();
+    if w.generation != generation || !w.on {
+        return false;
+    }
+    w.held = false;
+    true
+}
+
+/// Revoke on the owned endpoint, then reap the exact child handle. Never stops another engine.
+pub fn revoke_and_stop() -> Result<bool> {
+    let taken = DAEMON.lock().unwrap().take();
+    let Some(mut daemon) = taken else { return Ok(true) };
+    let revoked = binary().is_some_and(|bin| {
+        crate::run::output(driver(&bin).args(["revoke", "--all", "--socket", &socket()]), Duration::from_secs(5))
+            .is_ok_and(|out| out.status.success())
+    });
+    if daemon.child.try_wait()?.is_none() {
+        daemon.child.kill()?;
+    }
+    daemon.child.wait()?;
+    Ok(revoked)
 }
 
 /// No request has come after this one.
@@ -247,9 +308,9 @@ pub fn latest(generation: u64) -> bool {
     WANTED.lock().unwrap().generation == generation
 }
 
-fn wanted_on(generation: u64) -> bool {
+fn wanted_on(generation: u64, continuing: bool) -> bool {
     let w = WANTED.lock().unwrap();
-    w.on && w.generation == generation
+    w.on && (!w.held || continuing) && w.generation == generation
 }
 
 /// How a start ended when it didn't fail.
@@ -263,13 +324,19 @@ pub enum Started {
 /// Downloads the driver if needed and starts Lantern's daemon if it isn't running, for the request
 /// `generation` (from `want(true)`).
 pub fn start(generation: u64) -> Result<Started> {
+    start_internal(generation, false)
+}
+pub fn start_for_continue(generation: u64) -> Result<Started> {
+    start_internal(generation, true)
+}
+fn start_internal(generation: u64, continuing: bool) -> Result<Started> {
     static STARTING: Mutex<()> = Mutex::new(());
     let _guard = STARTING.lock().unwrap();
-    if !wanted_on(generation) {
+    if !wanted_on(generation, continuing) {
         return Ok(Started::Superseded);
     }
     let bin = ensure_installed()?;
-    if !wanted_on(generation) {
+    if !wanted_on(generation, continuing) {
         return Ok(Started::Superseded);
     }
     {
@@ -289,7 +356,7 @@ pub fn start(generation: u64) -> Result<Started> {
     let lock = support_dir().join("cua-driver.lock");
     let deadline = Instant::now() + Duration::from_secs(10);
     let owner = loop {
-        if !wanted_on(generation) {
+        if !wanted_on(generation, continuing) {
             return Ok(Started::Superseded);
         }
         if let Some(file) = claim(&lock)? {
@@ -322,7 +389,7 @@ pub fn start(generation: u64) -> Result<Started> {
         // Checked and spawned under the daemon's lock, which `stop_for` takes too: an off request
         // either comes first (and this start spawns nothing) or finds the daemon and stops it.
         let mut daemon = DAEMON.lock().unwrap();
-        if !wanted_on(generation) {
+        if !wanted_on(generation, continuing) {
             return Ok(Started::Superseded);
         }
         let child = cmd.spawn().context("starting Cua Driver")?;
@@ -330,7 +397,7 @@ pub fn start(generation: u64) -> Result<Started> {
     }
     let deadline = Instant::now() + Duration::from_secs(15);
     while !running(&bin) {
-        if !wanted_on(generation) {
+        if !wanted_on(generation, continuing) {
             // The off (or newer) request stops what this one spawned.
             return Ok(Started::Superseded);
         }
@@ -342,7 +409,7 @@ pub fn start(generation: u64) -> Result<Started> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Ok(if wanted_on(generation) { Started::Ready } else { Started::Superseded })
+    Ok(if wanted_on(generation, continuing) { Started::Ready } else { Started::Superseded })
 }
 
 /// Stops Lantern's daemon for the request `generation`, unless a later request came in (a newer
@@ -413,14 +480,14 @@ mod tests {
     #[test]
     fn only_the_latest_request_starts_the_driver() {
         let first = want(true);
-        assert!(wanted_on(first));
+        assert!(wanted_on(first, false));
         let off = want(false);
-        assert!(!wanted_on(first), "turning it off cancels the earlier start");
+        assert!(!wanted_on(first, false), "turning it off cancels the earlier start");
         assert!(latest(off) && !latest(first));
         // A start for the replaced request does nothing: no download, no lock, no driver.
         assert_eq!(start(first).unwrap(), Started::Superseded);
         let again = want(true);
-        assert!(wanted_on(again) && !wanted_on(off));
+        assert!(wanted_on(again, false) && !wanted_on(off, false));
         // The off request's stop doesn't touch a daemon a newer start owns.
         stop_for(off);
         want(false);

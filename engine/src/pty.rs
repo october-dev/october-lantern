@@ -118,7 +118,11 @@ pub fn connect(name: &str) -> Result<std::fs::File> {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         match std::fs::OpenOptions::new().read(true).write(true).open(pipe_name(name)) {
-            Ok(pipe) => return Ok(pipe),
+            Ok(pipe) => {
+                #[cfg(windows)]
+                crate::platform::verify_pipe_server(&pipe)?;
+                return Ok(pipe);
+            }
             // ERROR_PIPE_BUSY: the host is between connections.
             Err(e) if e.raw_os_error() == Some(231) && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => return Err(e).context("the session has ended"),

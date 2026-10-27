@@ -62,12 +62,16 @@ const CANCELED: u8 = 1;
 const STARTED: u8 = 2;
 
 /// Shared by the worker and whoever waits for the action.
-#[derive(Default)]
-pub struct Ticket(AtomicU8);
+pub struct Ticket(AtomicU8, u64);
+impl Default for Ticket {
+    fn default() -> Self {
+        Self(AtomicU8::new(QUEUED), crate::computer::control_epoch())
+    }
+}
 
 impl Ticket {
     pub fn new() -> Arc<Ticket> {
-        Arc::new(Ticket(AtomicU8::new(QUEUED)))
+        Arc::new(Ticket::default())
     }
 
     /// Cancels the action if it hasn't started. `true` means it never will; `false` means it
@@ -174,6 +178,10 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
         && !still_asking(agent, prompt)
     {
         return Outcome::failed("prompt_changed", "That prompt was already answered or replaced. Check the terminal.");
+    }
+    let _control_guard = crate::computer::action_guard();
+    if (crate::computer::held() || ticket.1 != crate::computer::control_epoch()) && !matches!(op, Op::Focus) {
+        return Outcome::failed("paused", "App access is paused; this input was not queued for later.");
     }
     if !ticket.start() {
         return Outcome::failed("canceled", "Canceled before Lantern typed it.");

@@ -116,6 +116,10 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 
 **Look and feel.** Dark, translucent glass (Apple's Liquid Glass on macOS 26, a frosted blur on earlier versions) with a light rim. Amber means "needs you", green means "working" and grey means "idle". Each agent is shown with its official logo.
 
+## Local tasks, guidance and routines
+
+See [Local task features](LOCAL-FEATURES.md) for cards, deliberate keyboard answers, app-access controls, local schedules, and Show me, including their privacy and control boundaries. These describe this source branch; installer release notes identify shipped versions.
+
 ## A walkthrough
 
 Say you have six sessions running in cmux: two Claude Code, two Codex, one OpenCode and one Pi.

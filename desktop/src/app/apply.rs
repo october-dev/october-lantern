@@ -8,6 +8,33 @@ use serde_json::json;
 impl Lantern {
     pub(super) fn apply(&mut self, action: UiAction) {
         match action {
+            UiAction::Control { action, launch } => {
+                if self.model.control_sending {
+                    return;
+                }
+                let request = json!({"type":"task.control","requestId":uuid::Uuid::new_v4().to_string(),"action":action,"launchId":launch});
+                match self.engine.send(&request) {
+                    Ok(()) => self.model.control_sending = true,
+                    Err(error) => self.model.control_message = Some(error.to_string()),
+                }
+            }
+            UiAction::ReviewRoutine(value) => {
+                if let Ok(mut form) = serde_json::from_value::<crate::ui::routines::Form>(value) {
+                    form.open = true;
+                    self.view.routine_form = form;
+                    self.set_panel(Some(PanelMode::Routines));
+                }
+            }
+
+            UiAction::StartShow(question) => self.start_show(question),
+            UiAction::Guide(action) => self.show_action(&action),
+            UiAction::Routine(mut value) => {
+                value["type"] = serde_json::json!("routine");
+                value["requestId"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+                if let Err(error) = self.engine.send(&value) {
+                    self.model.routine_error = Some(error.to_string());
+                }
+            }
             UiAction::SetPanel(panel) => self.set_panel(panel),
             UiAction::TogglePanel(mode) => self.set_panel(if self.model.panel == Some(mode) { None } else { Some(mode) }),
             UiAction::OpenChat { agent_id } => self.open_chat(&agent_id),
@@ -181,6 +208,9 @@ impl Lantern {
     /// Changing panels (or closing it) also leaves any open conversation; leaving Waiting means
     /// you've seen what was in it.
     pub(super) fn set_panel(&mut self, panel: Option<PanelMode>) {
+        if self.model.panel == Some(PanelMode::ShowMe) && panel != Some(PanelMode::ShowMe) {
+            self.stop_show();
+        }
         let old = self.model.panel;
         if old == panel {
             return;

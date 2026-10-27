@@ -557,6 +557,9 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                 }
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    if cx.model.prefs.show_me && replying.is_none() && ui.small_button("Show me").clicked() {
+                        cx.emit(UiAction::StartShow(cx.inputs.assistant.clone()));
+                    }
                     let width = ui.available_width() - 84.0;
                     let placeholder = if cx.model.dictating {
                         "Listening…".to_string()

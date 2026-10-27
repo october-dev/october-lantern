@@ -68,6 +68,7 @@ pub fn start(name: &str, spec: &Spec) -> Result<Session> {
 }
 
 struct Shared {
+    control: Mutex<()>,
     input: Mutex<File>,
     screen: Mutex<vt100::Parser>,
     /// Attached windows' output streams, and the processes behind them.
@@ -106,6 +107,7 @@ fn run(name: &str) -> Result<()> {
     let (console, input, output, child, child_pid) = spawn(&spec)?;
     let child_start = crate::procs::live(child_pid).map_or(0, |l| l.start);
     let shared = Arc::new(Shared {
+        control: Mutex::new(()),
         input: Mutex::new(input),
         screen: Mutex::new(vt100::Parser::new(ROWS, COLS, 0)),
         streams: Mutex::new(Vec::new()),
@@ -132,12 +134,14 @@ fn run(name: &str) -> Result<()> {
     }
 
     unsafe { WaitForSingleObject(child, INFINITE) };
+    let _control = shared.control.lock().unwrap();
     // Closing the console ends its output; the reader finishes what's left and stops.
     unsafe { ClosePseudoConsole(console) };
     let deadline = Instant::now() + Duration::from_secs(3);
     while !reader.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
+    crate::hooks::write_atomic(&dir().join(format!("{name}.ended")), b"ended")?;
     let _ = std::fs::remove_file(&record);
     std::process::exit(0)
 }
@@ -299,6 +303,7 @@ fn reply(mut pipe: &File, value: Value) -> Result<()> {
 }
 
 fn handle(file: File, client: u32, shared: &Shared) -> Result<()> {
+    crate::platform::require_same_user(client)?;
     let mut reader = BufReader::new(&file);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -310,6 +315,18 @@ fn handle(file: File, client: u32, shared: &Shared) -> Result<()> {
         Ok(())
     };
     match request["op"].as_str().unwrap_or("") {
+        "stop" => {
+            let _control = shared.control.lock().unwrap();
+            unsafe {
+                if windows_sys::Win32::System::Threading::TerminateProcess(shared.child, 0) == 0 {
+                    bail!("{}", std::io::Error::last_os_error());
+                }
+                if WaitForSingleObject(shared.child, 5000) != 0 {
+                    bail!("The child has not confirmed exiting");
+                }
+            }
+            reply(&file, json!({"ok":true}))
+        }
         "info" => {
             let alive = unsafe { WaitForSingleObject(shared.child, 0) } == WAIT_TIMEOUT;
             let tty = crate::procs::live(shared.child_pid).and_then(|l| l.tty);

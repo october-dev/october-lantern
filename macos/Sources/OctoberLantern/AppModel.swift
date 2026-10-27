@@ -4,7 +4,7 @@ import LanternCore
 import SwiftUI
 
 enum PanelMode: Equatable {
-    case inbox, agents, newSession, october, assistant
+    case inbox, agents, newSession, october, assistant, routines
 
     /// The inbox and agent list share tabs and the composer; the others are standalone.
     var isList: Bool { self == .inbox || self == .agents }
@@ -12,6 +12,14 @@ enum PanelMode: Equatable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    @Published var controlHeld = false
+    @Published var controlSending = false
+    @Published var controlMessage: String?
+    func control(_ action: String, launch: String?) {
+        controlSending = engine.control(action, launch: launch)
+        if !controlSending { controlMessage = "Lantern's engine isn't available." }
+    }
+
     @Published private(set) var agents: [Agent] = []
     /// Changing panels (or closing it) also leaves any open conversation.
     @Published var panel: PanelMode? {
@@ -146,6 +154,19 @@ final class AppModel: ObservableObject {
         dismissed = Set(UserDefaults.standard.stringArray(forKey: "dismissedTurns") ?? [])
         seen = Set(UserDefaults.standard.stringArray(forKey: "seenTurns") ?? [])
         engine.onAgents = { [weak self] agents in self?.update(agents) }
+        LocalRoutines.shared.send = { [weak self] in self?.engine.routine($0) ?? false }
+        engine.onRoutines = { snapshot in
+            LocalRoutines.shared.items = snapshot.items
+            if let error = snapshot.error { LocalRoutines.shared.error = error }
+        }
+        engine.onRoutineResult = { receipt in LocalRoutines.shared.finish(receipt.requestId, ok: receipt.ok, message: receipt.message) }
+        engine.onControl = { [weak self] snapshot in
+            self?.controlHeld = snapshot.held; self?.controlMessage = snapshot.message
+            if snapshot.held { ShowMe.shared.stop() }
+        }
+        engine.onControlResult = { [weak self] receipt in
+            self?.controlSending = false; self?.controlMessage = receipt.message
+        }
         engine.onCards = { [weak self] launches in self?.cardsChanged(launches) }
         engine.onCardResult = { [weak self] cardId, ok, message in
             guard let self else { return }
@@ -182,6 +203,8 @@ final class AppModel: ObservableObject {
         }
         engine.onPhone = { state in PhoneModel.shared.receive(state) }
         PhoneModel.shared.engine = engine
+        engine.onShow = { message in ShowMe.shared.receive(message) }
+        ShowMe.shared.send = { [weak self] type, fields in self?.engine.show(type, fields) ?? false }
         engine.onModels = { [weak self] list in self?.models[list.kind.rawValue] = list }
         engine.onInstalled = { [weak self] installed in
             self?.installedKinds = installed.kinds
@@ -222,7 +245,13 @@ final class AppModel: ObservableObject {
                 if let self, self.prefs.busForSessions { self.engine.prepareBus() }
             }
         }
-        engine.onStopped = { [weak self] message in self?.engineStopped(message) }
+        engine.onStopped = { [weak self] message in
+            // A guide lives in the engine: it ended with it.
+            ShowMe.shared.stop()
+            self?.controlSending = false
+            LocalRoutines.shared.pending.removeAll()
+            self?.engineStopped(message)
+        }
         engine.onHealth = { [weak self] health in
             if case .failed = health { Analytics.shared.capture("engine_failed") }
             self?.engineHealth = health

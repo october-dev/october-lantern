@@ -117,13 +117,24 @@ pub struct StepIn {
 pub enum Op {
     /// The server started (the agent has the tools).
     Hello,
+    Guide {
+        operation_id: String,
+        question: String,
+    },
+    SuggestRoutine {
+        operation_id: String,
+        name: String,
+        prompt: String,
+    },
     Ask {
+        operation_id: String,
         question: String,
         details: Option<String>,
         #[serde(default)]
         options: Vec<String>,
     },
     HandOff {
+        operation_id: String,
         reason: Reason,
         step: String,
         why: Option<String>,
@@ -153,6 +164,7 @@ pub enum Op {
         id: String,
     },
     Result {
+        operation_id: String,
         summary: String,
         outcome: Outcome,
         #[serde(default)]
@@ -322,8 +334,22 @@ impl Cards {
     /// A new launch, before it starts: its id, and the key its MCP server will present (also
     /// written to Lantern's private folder, where the server reads it). `key_dir` is `None` in
     /// tests.
-    pub fn register(&self, kind: Kind, cwd: &Path, title: &str, key_dir: Option<&Path>) -> Result<(String, String)> {
-        let id = uuid::Uuid::new_v4().hyphenated().to_string();
+    pub fn register(
+        &self,
+        kind: Kind,
+        cwd: &Path,
+        title: &str,
+        key_dir: Option<&Path>,
+        operation: Option<&str>,
+    ) -> Result<(String, String)> {
+        let id = operation.map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if !valid_id(&id) {
+            bail!("Invalid launch operation identity");
+        }
+        let db = self.db.lock().unwrap();
+        if db.query_row("SELECT 1 FROM launches WHERE id=?1", [&id], |_| Ok(())).optional()?.is_some() {
+            bail!("This launch was already admitted; reconcile it before starting again");
+        }
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).map_err(|e| anyhow::anyhow!("no randomness: {e}"))?;
         let key: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
@@ -333,14 +359,13 @@ impl Cards {
             crate::platform::set_mode(&path, 0o600)?;
         }
         let title = crate::model::truncate(title.lines().next().unwrap_or_default(), 80);
-        let db = self.db.lock().unwrap();
         db.execute(
             "INSERT INTO launches(id, key, kind, cwd, title, created) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, digest(&key), kind.as_str(), cwd.to_string_lossy(), title, now()],
         )?;
         // Old launches go, with their cards and keys.
         let old: Vec<String> = db
-            .prepare("SELECT id FROM launches ORDER BY created DESC LIMIT -1 OFFSET ?1")?
+            .prepare("SELECT id FROM launches WHERE ended IS NOT NULL AND NOT EXISTS(SELECT 1 FROM cards WHERE launch=launches.id AND state IN ('waiting','answered','unconfirmed')) ORDER BY created DESC LIMIT -1 OFFSET ?1")?
             .query_map([KEEP], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         for gone in old {
@@ -350,6 +375,25 @@ impl Cards {
             }
         }
         Ok((id, key))
+    }
+
+    pub fn cancel_waits(&self) -> Result<()> {
+        self.db.lock().unwrap().execute("UPDATE cards SET state=CASE WHEN state='answered' THEN 'unconfirmed' ELSE 'cancelled' END,revision=revision+1,resolved=?1 WHERE state IN ('waiting','answered')",[now()])?;
+        self.wake();
+        self.changed();
+        Ok(())
+    }
+    pub fn session_for_control(&self, launch: &str) -> Result<String> {
+        self.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT session FROM launches WHERE id=?1 AND ended IS NULL", [launch], |r| r.get(0))
+            .context("The owned session is not available")
+    }
+    pub fn session_stopped(&self, launch: &str) -> Result<()> {
+        self.db.lock().unwrap().execute("UPDATE launches SET ended=?2 WHERE id=?1", params![launch, now()])?;
+        self.changed();
+        Ok(())
     }
 
     /// The launch's terminal session (tmux or Lantern's own), which ties it to its agent.
@@ -367,8 +411,7 @@ impl Cards {
         }
     }
 
-    /// Ties launches to the agents now running in their sessions, and marks launches whose agent
-    /// has gone as ended. Returns whether anything changed.
+    /// Tie launches to discovered agents. Missing discovery is not proof of session exit.
     pub fn bind(&self, agents: &[Agent]) -> bool {
         let session_of = |a: &Agent| match &a.route {
             Route::Pty { session } => Some(session.clone()),
@@ -392,9 +435,6 @@ impl Cards {
                 (Some(agent), bound) if bound.as_deref() != Some(agent.id.as_str()) => {
                     changed |= db.execute("UPDATE launches SET agent = ?2 WHERE id = ?1", params![id, agent.id]).is_ok_and(|n| n > 0);
                 }
-                (None, Some(_)) => {
-                    changed |= db.execute("UPDATE launches SET ended = ?2 WHERE id = ?1", params![id, now()]).is_ok_and(|n| n > 0);
-                }
                 _ => {}
             }
         }
@@ -403,6 +443,23 @@ impl Cards {
             self.changed();
         }
         changed
+    }
+
+    /// Probe off the scan thread. A failed/unknown probe keeps the launch open.
+    fn refresh_sessions(&self, alive: impl Fn(&str) -> Option<bool>) {
+        let rows: Vec<(String, String)> = {
+            let db = self.db.lock().unwrap();
+            let Ok(mut q) = db.prepare("SELECT id,session FROM launches WHERE ended IS NULL AND session IS NOT NULL AND created<?1") else {
+                return;
+            };
+            let Ok(rows) = q.query_map([now() - 30_000], |r| Ok((r.get(0)?, r.get(1)?))) else { return };
+            rows.flatten().collect()
+        };
+        for (id, session) in rows {
+            if alive(&session) == Some(false) {
+                let _ = self.session_stopped(&id);
+            }
+        }
     }
 
     /// Closes cards whose call stopped waiting, or that waited too long. Returns whether any were.
@@ -446,13 +503,33 @@ impl Cards {
     /// Handles one request from a launch's MCP server.
     pub fn handle(&self, launch: &str, key: &str, op: Op) -> Result<Value> {
         self.authorize(launch, key)?;
+        if crate::computer::held() && !matches!(op, Op::Wait { .. } | Op::Ack { .. } | Op::Cancel { .. } | Op::Hello) {
+            bail!("App access is paused. Wait for the person to continue.");
+        }
         let now = now();
         let result = match op {
+            Op::Guide { operation_id, question } => {
+                let question = required("question", &question, 200)?;
+                let card = self.add(launch, &operation_id, "handOff", json!({"reason":"other","step":question,"guide":true}), true)?;
+                json!({"card":card})
+            }
+            Op::SuggestRoutine { operation_id, name, prompt } => {
+                let name = required("name", &name, 120)?;
+                let prompt = required("prompt", &prompt, 8000)?;
+                let (kind, cwd): (String, String) =
+                    self.db
+                        .lock()
+                        .unwrap()
+                        .query_row("SELECT kind,cwd FROM launches WHERE id=?1", [launch], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                let draft = json!({"name":name,"prompt":prompt,"cwd":cwd,"kind":kind,"timezone":"UTC","cadence":"daily","hour":9,"minute":0,"weekday":0,"preferences":""});
+                let card = self.add(launch, &operation_id, "routine", json!({"routine":draft}), false)?;
+                json!({"card":card})
+            }
             Op::Hello => {
                 self.db.lock().unwrap().execute("UPDATE launches SET tools = 1 WHERE id = ?1", [launch])?;
                 json!({})
             }
-            Op::Ask { question, details, options } => {
+            Op::Ask { operation_id, question, details, options } => {
                 let question = required("question", &question, 500)?;
                 let details = details.map(|d| bounded("details", &d, 4000)).transpose()?.filter(|d| !d.is_empty());
                 if options.len() > 6 {
@@ -466,10 +543,11 @@ impl Cards {
                     }
                     seen.push(o);
                 }
-                let card = self.add(launch, "ask", json!({"question": question, "details": details, "options": seen}), true)?;
+                let card =
+                    self.add(launch, &operation_id, "ask", json!({"question": question, "details": details, "options": seen}), true)?;
                 json!({"card": card})
             }
-            Op::HandOff { reason, step, why, instructions, url } => {
+            Op::HandOff { operation_id, reason, step, why, instructions, url } => {
                 let step = required("step", &step, 200)?;
                 let why = why.map(|w| bounded("why", &w, 600)).transpose()?.filter(|w| !w.is_empty());
                 if instructions.len() > 3 {
@@ -479,6 +557,7 @@ impl Cards {
                 let url = url.filter(|u| !u.trim().is_empty()).map(|u| checked_url(&u, reason == Reason::SignIn)).transpose()?;
                 let card = self.add(
                     launch,
+                    &operation_id,
                     "handOff",
                     json!({"reason": reason, "step": step, "why": why, "instructions": instructions, "url": url}),
                     true,
@@ -497,7 +576,7 @@ impl Cards {
             }
             Op::Cancel { card } => {
                 self.db.lock().unwrap().execute(
-                    "UPDATE cards SET state = 'cancelled', resolved = ?3, revision = revision + 1 WHERE id = ?1 AND launch = ?2 AND state = 'waiting'",
+                    "UPDATE cards SET state = CASE WHEN state='answered' THEN 'unconfirmed' ELSE 'cancelled' END, resolved = ?3, revision = revision + 1 WHERE id = ?1 AND launch = ?2 AND state IN ('waiting','answered')",
                     params![card, launch, now],
                 )?;
                 self.wake();
@@ -549,13 +628,14 @@ impl Cards {
                 )?;
                 json!({})
             }
-            Op::Result { summary, outcome, files } => {
+            Op::Result { operation_id, summary, outcome, files } => {
                 let summary = required("summary", &summary, 4000)?;
                 if files.len() > 10 {
                     bail!("at most 10 files");
                 }
                 let files: Vec<Value> = files.iter().map(|f| checked_file(f)).collect::<Result<_>>()?;
-                let card = self.add(launch, "result", json!({"summary": summary, "outcome": outcome, "files": files}), false)?;
+                let card =
+                    self.add(launch, &operation_id, "result", json!({"summary": summary, "outcome": outcome, "files": files}), false)?;
                 json!({"card": card})
             }
         };
@@ -563,8 +643,24 @@ impl Cards {
         Ok(result)
     }
 
-    fn add(&self, launch: &str, kind: &str, body: Value, waits: bool) -> Result<String> {
+    fn add(&self, launch: &str, operation_id: &str, kind: &str, body: Value, waits: bool) -> Result<String> {
         let db = self.db.lock().unwrap();
+        if crate::computer::held() {
+            bail!("App access is paused; no question was created.");
+        }
+        if !valid_id(operation_id) {
+            bail!("Invalid card operation id");
+        }
+        let encoded_body = serde_json::to_string(&body)?;
+        let existing: Option<(String, String, String)> = db
+            .query_row("SELECT launch,kind,body FROM cards WHERE id=?1", [operation_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        if let Some((owner, old_kind, old_body)) = existing {
+            if owner != launch || old_kind != kind || old_body != encoded_body {
+                bail!("This operation already names a different card");
+            }
+            return Ok(operation_id.to_string());
+        }
         let (waiting, all): (i64, i64) =
             db.query_row("SELECT COUNT(*) FILTER (WHERE state = 'waiting'), COUNT(*) FROM cards WHERE launch = ?1", [launch], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -575,7 +671,7 @@ impl Cards {
         if all >= MAX_CARDS {
             bail!("this session has made too many cards");
         }
-        let id = uuid::Uuid::new_v4().hyphenated().to_string();
+        let id = operation_id.to_string();
         let now = now();
         let (state, lease, expires) = if waits {
             (State::Waiting, Some(now + LEASE_MS), Some(now + WAIT_LIMIT.as_millis() as i64))
@@ -584,7 +680,7 @@ impl Cards {
         };
         db.execute(
             "INSERT INTO cards(id, launch, kind, body, state, created, lease, expires) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, launch, kind, body.to_string(), state.as_str(), now, lease, expires],
+            params![id, launch, kind, encoded_body, state.as_str(), now, lease, expires],
         )?;
         Ok(id)
     }
@@ -606,11 +702,12 @@ impl Cards {
     fn wait(&self, launch: &str, card: &str) -> Result<Value> {
         let until = std::time::Instant::now() + POLL;
         loop {
+            self.sweep();
             let seen = *self.resolved.0.lock().unwrap();
             let now = now();
             self.db.lock().unwrap().execute(
-                "UPDATE cards SET lease = ?3 WHERE id = ?1 AND launch = ?2 AND state IN ('waiting', 'answered')",
-                params![card, launch, now + LEASE_MS],
+                "UPDATE cards SET lease = ?3 WHERE id = ?1 AND launch = ?2 AND state IN ('waiting', 'answered') AND lease >= ?4",
+                params![card, launch, now + LEASE_MS, now],
             )?;
             let (state, answer, expires) = self.card_state(launch, card)?;
             if state == State::Waiting && expires <= now {
@@ -618,7 +715,12 @@ impl Cards {
                 continue;
             }
             if state != State::Waiting {
-                let answer: Option<Value> = answer.and_then(|a| serde_json::from_str(&a).ok());
+                let _dispatch_guard = crate::computer::action_guard();
+                let answer: Option<Value> = if state == State::Answered && !crate::computer::held() {
+                    answer.and_then(|a| serde_json::from_str(&a).ok())
+                } else {
+                    None
+                };
                 return Ok(json!({"state": state, "answer": answer}));
             }
             let left = until.saturating_duration_since(std::time::Instant::now());
@@ -636,6 +738,10 @@ impl Cards {
     /// The person's answer to a card (from the app). Saved only if the card is still waiting, at
     /// the revision the person saw, and the answer fits it; then the waiting call takes it.
     pub fn answer(&self, card: &str, revision: i64, answer: &Answer, by: &str) -> Result<()> {
+        let _dispatch_guard = crate::computer::action_guard();
+        if crate::computer::held() {
+            bail!("App access is paused; this answer was not queued.");
+        }
         let db = self.db.lock().unwrap();
         let row: Option<(String, String, String, i64, Option<i64>)> = db
             .query_row("SELECT kind, body, state, revision, lease FROM cards WHERE id = ?1", [card], |r| {
@@ -745,7 +851,7 @@ pub fn service() -> Option<&'static Arc<Cards>> {
 }
 
 /// Opens the service and starts listening for launches' MCP servers. Without it (another engine
-/// already listens, or the folder can't be used) agents start without the card tools.
+/// already listens, or the folder cannot be used) supported launches refuse to start.
 pub fn start() -> Option<&'static Arc<Cards>> {
     let cards = match Cards::open_default() {
         Ok(c) => Arc::new(c),
@@ -758,8 +864,50 @@ pub fn start() -> Option<&'static Arc<Cards>> {
         eprintln!("lantern-engine: cards are off: {e:#}");
         return None;
     }
+    let monitor = cards.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            monitor.refresh_sessions(session_alive);
+        }
+    });
     let _ = SERVICE.set(cards);
     SERVICE.get()
+}
+
+/// Only an explicit session reply proves exit; discovery omission and transport errors don't.
+#[cfg(unix)]
+fn session_alive(session: &str) -> Option<bool> {
+    if !session.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let out = crate::run::output(
+        crate::tmux::command().env("LC_ALL", "C").args(["-L", crate::launch::LANTERN_SOCKET, "has-session", "-t", &format!("={session}")]),
+        std::time::Duration::from_secs(2),
+    )
+    .ok()?;
+    if out.status.success() {
+        return Some(true);
+    }
+    let error = String::from_utf8_lossy(&out.stderr);
+    if error.contains("can't find session:")
+        || error.contains("no server running on")
+        || (error.contains("error connecting to") && error.contains("No such file or directory"))
+    {
+        Some(false)
+    } else {
+        None
+    }
+}
+#[cfg(windows)]
+fn session_alive(session: &str) -> Option<bool> {
+    if !crate::pty::valid_name(session) {
+        return None;
+    }
+    if crate::pty::dir().join(format!("{session}.ended")).is_file() {
+        return Some(false);
+    }
+    crate::pty::info(session).ok().map(|info| info.alive)
 }
 
 /// What a launch gets: its id, and the MCP server command for its agent.
@@ -769,10 +917,10 @@ pub struct Registered {
 }
 
 /// Registers a launch of `kind` that gets the card tools, when the service is running.
-pub fn register(kind: Kind, cwd: &Path, title: &str) -> Option<Registered> {
+pub fn register(kind: Kind, cwd: &Path, title: &str, operation: Option<&str>) -> Option<Registered> {
     let cards = service().filter(|_| supported(kind))?;
     let engine = crate::hooks::engine_copy().ok()?;
-    let (id, _) = cards.register(kind, cwd, title, Some(&dir().join("keys"))).ok()?;
+    let (id, _) = cards.register(kind, cwd, title, Some(&dir().join("keys")), operation).ok()?;
     Some(Registered { server: (engine.to_string_lossy().into_owned(), vec!["cards-mcp".into(), id.clone()]), id })
 }
 
@@ -793,7 +941,12 @@ pub fn launched(registered: Option<Registered>, result: Result<crate::launch::La
             Ok(l)
         }
         Err(e) => {
-            forget(&r.id);
+            let _ = cards
+                .db
+                .lock()
+                .unwrap()
+                .execute("UPDATE launches SET status=?2 WHERE id=?1", params![r.id, format!("Start unconfirmed: {e:#}")]);
+            cards.changed();
             Err(e)
         }
     }
@@ -810,15 +963,38 @@ pub fn note() -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_lost_creation_reply_reuses_the_card_and_rejects_an_altered_body() {
+        let (cards, launch, key) = cards();
+        let operation = uuid::Uuid::new_v4().to_string();
+        let request = |question: &str| Op::Ask {
+            operation_id: operation.clone(),
+            question: question.into(),
+            details: None,
+            options: vec!["Yes".into(), "No".into()],
+        };
+        let first = cards.handle(&launch, &key, request("Approve this exact thing?")).unwrap();
+        let retry = cards.handle(&launch, &key, request("Approve this exact thing?")).unwrap();
+        assert_eq!(first, retry);
+        assert!(cards.handle(&launch, &key, request("Approve something else?")).is_err());
+        let count: i64 = cards.db.lock().unwrap().query_row("SELECT COUNT(*) FROM cards WHERE launch=?1", [launch], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
     fn cards() -> (Cards, String, String) {
         let path = std::env::temp_dir().join(format!("lantern-cards-{}.db", uuid::Uuid::new_v4()));
         let cards = Cards::open(&path).unwrap();
-        let (launch, key) = cards.register(Kind::October, Path::new("/tmp/p"), "Book the flight\nmore", None).unwrap();
+        let (launch, key) = cards.register(Kind::October, Path::new("/tmp/p"), "Book the flight\nmore", None, None).unwrap();
         (cards, launch, key)
     }
 
     fn ask(cards: &Cards, launch: &str, key: &str, options: &[&str]) -> String {
-        let op = Op::Ask { question: "Which one?".into(), details: None, options: options.iter().map(|o| o.to_string()).collect() };
+        let op = Op::Ask {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            question: "Which one?".into(),
+            details: None,
+            options: options.iter().map(|o| o.to_string()).collect(),
+        };
         cards.handle(launch, key, op).unwrap()["card"].as_str().unwrap().to_string()
     }
 
@@ -857,7 +1033,7 @@ mod tests {
     fn only_the_launch_with_its_key_can_make_or_wait_for_cards() {
         let (cards, launch, key) = cards();
         assert!(cards.handle(&launch, "wrong", Op::Hello).is_err());
-        let (other, other_key) = cards.register(Kind::Claude, Path::new("/tmp"), "x", None).unwrap();
+        let (other, other_key) = cards.register(Kind::Claude, Path::new("/tmp"), "x", None, None).unwrap();
         let card = ask(&cards, &launch, &key, &[]);
         assert!(cards.handle(&other, &key, Op::Hello).is_err());
         // Another launch can't see this one's card.
@@ -897,6 +1073,7 @@ mod tests {
     fn hand_offs_take_done_or_not_and_only_safe_addresses() {
         let (cards, launch, key) = cards();
         let hand_off = |reason, url: &str| Op::HandOff {
+            operation_id: uuid::Uuid::new_v4().to_string(),
             reason,
             step: "Enter the code".into(),
             why: None,
@@ -931,7 +1108,12 @@ mod tests {
         cards.handle(&launch, &key, steps(&["a", "c"])).unwrap();
         let file = std::env::temp_dir().join(format!("lantern-result-{}.txt", uuid::Uuid::new_v4()));
         std::fs::write(&file, "x").unwrap();
-        let result = |files: Vec<String>| Op::Result { summary: "Booked".into(), outcome: Outcome::Partial, files };
+        let result = |files: Vec<String>| Op::Result {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            summary: "Booked".into(),
+            outcome: Outcome::Partial,
+            files,
+        };
         assert!(cards.handle(&launch, &key, result(vec!["relative.txt".into()])).is_err());
         assert!(cards.handle(&launch, &key, result(vec!["/no/such/file".into()])).is_err());
         cards.handle(&launch, &key, result(vec![file.to_string_lossy().into_owned()])).unwrap();
@@ -954,7 +1136,9 @@ mod tests {
     #[test]
     fn agent_text_is_bounded() {
         let (cards, launch, key) = cards();
-        let ask = |question: String, options: Vec<String>| cards.handle(&launch, &key, Op::Ask { question, details: None, options });
+        let ask = |question: String, options: Vec<String>| {
+            cards.handle(&launch, &key, Op::Ask { operation_id: uuid::Uuid::new_v4().to_string(), question, details: None, options })
+        };
         assert!(ask("x".repeat(501), vec![]).is_err());
         assert!(ask("ok?\u{1b}[2J".into(), vec![]).is_err());
         assert!(ask("ok?".into(), (0..7).map(|i| i.to_string()).collect()).is_err());
@@ -966,7 +1150,7 @@ mod tests {
     }
 
     #[test]
-    fn launches_tie_to_the_agent_in_their_session_and_end_with_it() {
+    fn discovery_gaps_do_not_end_a_session() {
         let (cards, launch, _) = cards();
         cards.started(&launch, Some("october-p-123")).unwrap();
         let mut agent = crate::tests::agent_for(42, 7, None);
@@ -980,7 +1164,14 @@ mod tests {
         let bound = |c: &Cards| c.snapshot().as_array().unwrap().iter().find(|l| l["id"] == launch.as_str()).unwrap().clone();
         assert_eq!(bound(&cards)["agentId"], "october:42:7");
         assert!(bound(&cards)["endedAt"].is_null());
-        assert!(cards.bind(&[]));
+        assert!(!cards.bind(&[]));
+        assert!(bound(&cards)["endedAt"].is_null());
+        cards.db.lock().unwrap().execute("UPDATE launches SET created=?2 WHERE id=?1", params![launch, now() - 60_000]).unwrap();
+        cards.refresh_sessions(|_| None);
+        assert!(bound(&cards)["endedAt"].is_null());
+        cards.refresh_sessions(|_| Some(true));
+        assert!(bound(&cards)["endedAt"].is_null());
+        cards.refresh_sessions(|_| Some(false));
         assert!(bound(&cards)["endedAt"].is_number());
     }
 

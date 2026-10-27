@@ -14,8 +14,10 @@ mod markdown;
 mod october;
 mod point_ask;
 mod question;
+pub(crate) mod routines;
 mod sessions;
 mod settings;
+mod show;
 mod task_cards;
 pub mod theme;
 pub mod welcome;
@@ -41,6 +43,9 @@ pub struct Env {
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct UiState {
+    #[serde(skip)]
+    pub show_picture: Option<egui::ColorImage>,
+    pub routine_form: routines::Form,
     pub expanded_cards: std::collections::HashSet<String>,
     /// Options ticked so far on a question card, by prompt id, then question.
     #[serde(skip)]
@@ -154,6 +159,7 @@ pub enum SettingChange {
     ScreenshotNewSessions(bool),
     BusForSessions(bool),
     ComputerUse(bool),
+    ShowMe(bool),
     AskFirst(bool),
     ToolkitInSessions(bool),
     NotificationsEnabled(bool),
@@ -164,6 +170,14 @@ pub enum SettingChange {
 /// Everything a person can do (CONTRACT §4; Atlas owns this enum, payloads frozen with the skeleton).
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiAction {
+    Control {
+        action: String,
+        launch: Option<String>,
+    },
+    ReviewRoutine(serde_json::Value),
+    StartShow(String),
+    Guide(String),
+    Routine(serde_json::Value),
     // Panels and chats
     SetPanel(Option<PanelMode>),
     TogglePanel(PanelMode),
@@ -325,12 +339,24 @@ pub fn render_panel(ui: &mut egui::Ui, cx: &mut Ctx, max_height: f32) -> f32 {
     let tint = components::material_tint(0.5, cx.model.caps.dense_glass);
     surface(ui, theme::PANEL_WIDTH, max_height, theme::PANEL_RADIUS as f32, tint, |ui| {
         feed::engine_banner(ui, cx);
+        if cx.model.control_held {
+            ui.label(cx.model.control_message.as_deref().unwrap_or("App access is paused. Background commands may still run."));
+            if ui.add_enabled(!cx.model.control_sending, egui::Button::new("Continue app access")).clicked() {
+                cx.emit(UiAction::Control { action: "continue".into(), launch: None });
+            }
+        }
         match cx.model.panel {
             Some(PanelMode::NewSession) => {
                 sessions::render(ui, cx, max_height);
             }
             Some(PanelMode::October) => {
                 october::render(ui, cx, max_height);
+            }
+            Some(PanelMode::ShowMe) => {
+                show::render(ui, cx);
+            }
+            Some(PanelMode::Routines) => {
+                routines::render(ui, cx);
             }
             Some(PanelMode::Assistant) => {
                 assistant::render(ui, cx, max_height);

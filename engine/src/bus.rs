@@ -311,7 +311,10 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
         a.env.push((RUNTIME_ENV.into(), runtime_dir().to_string_lossy().into_owned()));
     }
     let bin = if on_bus { binary().context("October Bus isn't downloaded yet")?.to_string_lossy().into_owned() } else { String::new() };
+    #[cfg(not(test))]
     let dir = support_dir().join("bus");
+    #[cfg(test)]
+    let dir = std::env::temp_dir().join(format!("lantern-bus-tests-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     // The Bus's config for `host` when on the Bus, else `empty`; then Cua Driver and the card
     // tools added by `add` (config, server name, server).

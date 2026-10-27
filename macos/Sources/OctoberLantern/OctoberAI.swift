@@ -1,18 +1,15 @@
 import Foundation
-import os
 
 /// One question to October's AI, for Point & Ask's Ask.
 ///
 /// It goes to Lantern's endpoint on October (`POST /api/lantern/ask`), signed in with the October
 /// account's access token: October picks the model by plan, bills paid plans' credit, and the
-/// answer streams back. Until that endpoint is live, it uses October's inference gateway
-/// (`/v1`, OpenAI-compatible) with a model that can see images, asking with text alone when the
-/// image is refused.
+/// answer streams back. A refused mode or image fails explicitly; the app does not change the
+/// request into a different capability or drop pictures.
 ///
 /// What's sent: the question, the screenshot of the selected area, and the app, window title,
 /// page address and selected text shown on the card. Nothing else.
 enum OctoberAI {
-    static let base = URL(string: "https://www.october.dev/v1")!
 
     struct Request {
         /// Earlier questions and answers in this card.
@@ -26,6 +23,8 @@ enum OctoberAI {
         var context: String
         /// "chat" for the assistant (its own prompt on the server); nil for Point & Ask.
         var mode: String? = nil
+        /// Show me (mode "show"): the controls on screen and the guide's round, from the engine.
+        var guidance: [String: Any]? = nil
     }
 
     enum Failure: LocalizedError {
@@ -58,47 +57,12 @@ enum OctoberAI {
         return url
     }
 
-    static let system = """
-    You are October Lantern's Point & Ask on the user's Mac. The user selected part of their screen \
-    (the attached screenshot) and asked about it. Answer directly and briefly: a short paragraph or a \
-    few bullets, plain Markdown, no headings. If the question is about code or an error, say what is \
-    wrong and how to fix it. If you can't see enough to answer, say what you'd need.
-    """
-
-    /// Modes this server turned down (it answered the plain way): asked plainly from then on, until
-    /// Lantern restarts, so later questions don't pay for a refused request first.
-    private static let unsupportedModes = OSAllocatedUnfairLock(initialState: Set<String>())
-
     static func stream(_ request: Request) -> AsyncThrowingStream<Piece, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
-                    var request = request
-                    if let mode = request.mode, unsupportedModes.withLock({ $0.contains(mode) }) { request.mode = nil }
-                    do {
-                        do {
-                            try await ask(request, token: token, into: continuation)
-                        } catch Failure.invalid where request.mode != nil {
-                            // A server without the mode refuses the request as invalid: ask the
-                            // plain way instead (and from now on, once that works).
-                            var plain = request
-                            plain.mode = nil
-                            try await ask(plain, token: token, into: continuation)
-                            if let mode = request.mode { _ = unsupportedModes.withLock { $0.insert(mode) } }
-                        }
-                        continuation.finish()
-                        return
-                    } catch Failure.notDeployed {
-                        // Lantern's own endpoint isn't live yet: use the inference gateway.
-                    }
-                    let model = try await pickModel(token: token, needsVision: request.image != nil)
-                    do {
-                        try await run(body(request, model: model.id, withImage: request.image != nil && model.vision), token: token, into: continuation)
-                    } catch Failure.invalid(let message) where request.image != nil && message.localizedCaseInsensitiveContains("text") {
-                        // The gateway only takes text for this model or plan: ask without the picture.
-                        try await run(body(request, model: model.id, withImage: false), token: token, into: continuation)
-                    }
+                    try await ask(request, token: token, into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -116,6 +80,9 @@ enum OctoberAI {
         /// agent and project only when the user named them. `to` names a running agent (its
         /// handle) to send it to instead of starting one.
         case task(prompt: String, agent: String?, project: String?, to: String?)
+        /// Show me's answer: where to point (October's `guidance`, or nil when it gave none) and the
+        /// guide's goal id.
+        case guide(guidance: [String: Any]?, goalId: String?)
     }
 
     /// "18 free questions left today" from a free account's `done` event.
@@ -168,6 +135,7 @@ enum OctoberAI {
         if let mode = r.mode { json["mode"] = mode }
         if let image = r.image { json["image"] = image.base64EncodedString() }
         if !r.images.isEmpty { json["images"] = r.images.map { $0.base64EncodedString() } }
+        if let guidance = r.guidance { json["guidance"] = guidance }
         var req = URLRequest(url: askURL)
         req.httpMethod = "POST"
         req.timeoutInterval = 90
@@ -193,6 +161,7 @@ enum OctoberAI {
             switch event["type"] as? String {
             case "delta": if let text = event["text"] as? String { continuation.yield(.text(text)) }
             case "done":
+                if let problem = event["taskError"] as? String { throw Failure.unavailable(problem) }
                 if let t = event["task"] as? [String: Any], let prompt = t["prompt"] as? String,
                    !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     continuation.yield(.task(
@@ -200,68 +169,14 @@ enum OctoberAI {
                         to: t["to"] as? String
                     ))
                 }
+                if r.mode == "show" {
+                    continuation.yield(.guide(guidance: event["guidance"] as? [String: Any], goalId: event["goalId"] as? String))
+                }
                 if let note = note(done: event) { continuation.yield(.note(note)) }
                 return
+            case "error":
+                throw Failure.unavailable(event["message"] as? String ?? "The answer stopped partway. Try again.")
             default: continue
-            }
-        }
-    }
-
-    // MARK: The gateway (until Lantern's endpoint is live)
-
-    private static func body(_ r: Request, model: String, withImage: Bool) -> Data {
-        var messages: [[String: Any]] = [["role": "system", "content": system]]
-        var first = r.turns.first?.question ?? r.question
-        if !r.context.isEmpty { first += "\n\nWhere this is on my Mac:\n\(r.context)" }
-        if !withImage, r.image != nil { first += "\n\n(A screenshot was taken but this model can't see images.)" }
-        var firstContent: Any = first
-        if withImage, let image = r.image {
-            firstContent = [
-                ["type": "text", "text": first],
-                ["type": "image_url", "image_url": ["url": "data:image/jpeg;base64,\(image.base64EncodedString())"]],
-            ]
-        }
-        messages.append(["role": "user", "content": firstContent])
-        for (i, turn) in r.turns.enumerated() {
-            messages.append(["role": "assistant", "content": turn.answer])
-            let next = i + 1 < r.turns.count ? r.turns[i + 1].question : r.question
-            messages.append(["role": "user", "content": next])
-        }
-        let json: [String: Any] = ["model": model, "messages": messages, "stream": true, "max_tokens": 1200]
-        return (try? JSONSerialization.data(withJSONObject: json)) ?? Data()
-    }
-
-    /// Sends the request and yields the answer's text as it streams in (OpenAI's server-sent events).
-    private static func run(_ body: Data, token: String, into continuation: AsyncThrowingStream<Piece, Error>.Continuation) async throws {
-        var req = URLRequest(url: base.appendingPathComponent("chat/completions"))
-        req.httpMethod = "POST"
-        req.timeoutInterval = 90
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        req.httpBody = body
-        let (bytes, response) = try await URLSession.shared.bytes(for: req)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else {
-            var data = Data()
-            for try await b in bytes {
-                data.append(b)
-                if data.count > 64_000 { break }
-            }
-            throw failure(status: status, data: data)
-        }
-        for try await line in bytes.lines {
-            guard line.hasPrefix("data:") else { continue }
-            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-            if payload == "[DONE]" { break }
-            guard let data = payload.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            if let error = obj["error"] as? [String: Any] {
-                throw Failure.unavailable(error["message"] as? String ?? "October's AI stopped answering.")
-            }
-            let choice = (obj["choices"] as? [[String: Any]])?.first
-            if let piece = (choice?["delta"] as? [String: Any])?["content"] as? String, !piece.isEmpty {
-                continuation.yield(.text(piece))
             }
         }
     }
@@ -284,46 +199,4 @@ enum OctoberAI {
 
     // MARK: Choosing a model
 
-    struct Model: Equatable {
-        let id: String
-        let vision: Bool
-    }
-
-    private static var cached: (model: Model, at: Date)?
-
-    /// A model from the gateway's list: one that can see images when there's a screenshot. The
-    /// `pointAskModel` default overrides it.
-    private static func pickModel(token: String, needsVision: Bool) async throws -> Model {
-        if let id = UserDefaults.standard.string(forKey: "pointAskModel"), !id.isEmpty { return Model(id: id, vision: true) }
-        if let cached, Date().timeIntervalSince(cached.at) < 3600, cached.model.vision || !needsVision { return cached.model }
-        var req = URLRequest(url: base.appendingPathComponent("models"))
-        req.timeoutInterval = 15
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: req)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard status == 200 else { throw failure(status: status, data: data) }
-        let list = ((try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["data"] as? [[String: Any]]) ?? []
-        let models = list.compactMap { m -> (id: String, vision: Bool?)? in
-            guard let id = m["id"] as? String else { return nil }
-            return (id, (m["capabilities"] as? [String: Any])?["vision"] as? Bool)
-        }
-        guard let chosen = choose(models) else {
-            throw Failure.unavailable("October's AI has no models available right now.")
-        }
-        cached = (chosen, Date())
-        return chosen
-    }
-
-    /// Prefers models that can see, then well-known capable families, then anything.
-    static func choose(_ models: [(id: String, vision: Bool?)]) -> Model? {
-        let preferred = ["gemini", "claude", "gpt-4", "gpt-5", "qwen2.5-vl", "qwen3-vl", "vl", "llama-4", "gemma-3", "mistral-small", "pixtral"]
-        func rank(_ id: String) -> Int {
-            let lower = id.lowercased()
-            return preferred.firstIndex { lower.contains($0) } ?? preferred.count
-        }
-        let seeing = models.filter { $0.vision == true }.sorted { rank($0.id) < rank($1.id) }
-        if let m = seeing.first { return Model(id: m.id, vision: true) }
-        let any = models.sorted { rank($0.id) < rank($1.id) }
-        return any.first.map { Model(id: $0.id, vision: false) }
-    }
 }

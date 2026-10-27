@@ -49,6 +49,8 @@ struct Card: Decodable, Identifiable, Hashable {
     let why: String?
     let instructions: [String]?
     let url: String?
+    var guide: Bool? = nil
+    var routine: RoutineDraft? = nil
     // result
     let summary: String?
     let outcome: String?
@@ -93,13 +95,15 @@ struct LaunchCards: View {
     }
 
     var body: some View {
-        if launch.status != nil || !launch.steps.isEmpty || !shown.isEmpty {
+        if launch.endedAt == nil || launch.status != nil || !launch.steps.isEmpty || !shown.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
+            if launch.endedAt == nil { TaskControls(launch: launch, model: model) }
                 progress
                 ForEach(shown) { card in
                     switch card.kind {
                     case "result": ResultCard(card: card)
                     case "handOff": HandOffCard(card: card, model: model)
+                case "routine": RoutineSuggestion(card: card, model: model)
                     default: AskCard(card: card, model: model, keys: keys && card.id == launch.waiting.first?.id)
                     }
                 }
@@ -167,6 +171,7 @@ struct AskCard: View {
     @ObservedObject var model: AppModel
     var keys = false
     @State private var words = ""
+    @FocusState private var answerFocused: Bool
 
     private var open: Bool { card.isWaiting && !model.cardSending.contains(card.id) }
 
@@ -197,12 +202,19 @@ struct AskCard: View {
                             .disabled(!open || words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
+
+                if keys && open && !(card.options ?? []).isEmpty {
+                    Button("Use number keys") { answerFocused = true }
+                        .font(.system(size: 10)).buttonStyle(.plain).padding(5)
+                        .focusable().focused($answerFocused)
+                }
                 if let error = model.cardErrors[card.id] {
                     Text(error).font(.system(size: 11)).foregroundStyle(Theme.red)
                 }
             }, waiting: card.isWaiting
         )
-        .background(NumberKeys(enabled: keys && open && !(card.options ?? []).isEmpty, press: press))
+        .background(NumberKeys(enabled: answerFocused && keys && open && !(card.options ?? []).isEmpty, press: press))
+        .onChange(of: card.revision) { _, _ in answerFocused = false }
     }
 
     private func sendWords() {
@@ -252,6 +264,14 @@ struct HandOffCard: View {
                     CardStateLabel(card: card, sending: model.cardSending.contains(card.id))
                 }
                 Text(rule).font(.system(size: 11)).foregroundStyle(Theme.muted)
+                if card.guide == true {
+                    Button("Show me") { ShowMe.shared.start(question: card.step ?? "", on: NSScreen.main) }
+                        .buttonStyle(SecondaryButtonStyle()).disabled(!open)
+                }
+                if card.reason == "signIn" {
+                    Text("This card does not pause other agent work or provide protected sign-in.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
                 if let why = card.why {
                     Text("The agent says: \(why)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.8)).textSelection(.enabled)
                 }
@@ -347,6 +367,40 @@ private struct FileRow: View {
                 Button("Show") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: file.path)]) }.buttonStyle(.plain)
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
             }
+        }
+    }
+}
+
+struct RoutineSuggestion: View {
+    let card: Card
+    @ObservedObject var model: AppModel
+    var body: some View {
+        if let draft = card.routine {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Suggested routine: \(draft.name)").font(.system(size: 13, weight: .medium))
+                Text(draft.prompt).font(.system(size: 12))
+                Button("Review routine…") {
+                    LocalRoutines.shared.suggestedDraft = draft
+                    model.panel = .routines
+                }.buttonStyle(SecondaryButtonStyle())
+                Text("Nothing is scheduled until you confirm.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
+        }
+    }
+}
+struct TaskControls: View {
+    let launch: CardLaunch
+    @ObservedObject var model: AppModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Button(model.controlHeld ? "Continue app access" : "Pause app access") {
+                    model.control(model.controlHeld ? "continue" : "pause", launch: nil)
+                }
+                Button("Stop session", role: .destructive) { model.control("stop", launch: launch.id) }
+            }.font(.system(size: 11)).disabled(model.controlSending)
+            Text(model.controlMessage ?? "App access controls affect all agents Lantern starts. Background commands are not isolated.")
+                .font(.system(size: 11)).foregroundStyle(Theme.muted)
         }
     }
 }

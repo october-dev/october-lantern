@@ -48,6 +48,12 @@ impl Lantern {
             SettingChange::AutomaticUpdates(on) => prefs.automatic_updates = on,
             SettingChange::ScreenshotNewSessions(on) => prefs.screenshot_new_sessions = on,
             SettingChange::BusForSessions(on) => prefs.bus_for_sessions = on,
+            SettingChange::ShowMe(on) => {
+                prefs.show_me = on;
+                if !on {
+                    self.stop_show();
+                }
+            }
             SettingChange::ComputerUse(on) => {
                 prefs.computer_use = on;
                 self.request(serde_json::json!({"type": "computer.prepare", "enabled": on}));

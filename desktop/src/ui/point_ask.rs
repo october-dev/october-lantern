@@ -272,6 +272,9 @@ fn input(ui: &mut Ui, cx: &mut Ctx) {
         .corner_radius(11)
         .inner_margin(Margin { left: 11, right: 6, top: 7, bottom: 7 })
         .show(ui, |ui| {
+            if cx.model.prefs.show_me && ui.small_button("Show me on screen").clicked() {
+                cx.emit(UiAction::StartShow(cx.inputs.point_ask.clone()));
+            }
             let width = (ui.available_width() - 28.0).max(1.0);
             let line_height = ui.painter().layout_no_wrap("A".into(), t::font(13.0, Weight::Regular), t::INK).size().y;
             let words = if cx.inputs.point_ask.is_empty() { placeholder } else { &cx.inputs.point_ask };

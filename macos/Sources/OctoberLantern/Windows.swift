@@ -64,6 +64,8 @@ final class WindowController {
 
     init(model: AppModel) {
         self.model = model
+        pill.title = "October Lantern status"
+        panel.title = "October Lantern"
         pillHost = FirstClickHostingView(rootView: PillView(
             model: model, dictation: model.dictation,
             onDrag: { [weak self] in self?.dragMoved() },

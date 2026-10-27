@@ -21,6 +21,10 @@ use crate::model::{ChoiceOption, ChoiceQuestion, Choices, QuestionKind, SessionS
 use crate::transcripts::home;
 
 pub fn support_dir() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("LANTERN_TEST_PROFILE").map(PathBuf::from).filter(|p| p.is_absolute()) {
+        return path;
+    }
     crate::platform::data_dir("October Lantern")
 }
 

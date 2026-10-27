@@ -274,7 +274,8 @@ impl Lantern {
             image: self.pointing.shot.as_deref().and_then(super::shots::jpeg),
             context: context_lines(self.model.point_ask.context.as_ref()).join("\n"),
             mode: Some("point_task".into()),
-            platform: self.model.caps.platform,
+
+            guidance: None,
             ..Default::default()
         };
         self.pointing.work = None;
@@ -298,6 +299,7 @@ impl Lantern {
         }
         let Some(t) = self.model.point_ask.turns.get_mut(turn) else { return };
         match piece {
+            Piece::Guide { .. } => {}
             Piece::Text(text) => t.answer.push_str(&text),
             Piece::Note(note) => t.note = Some(note),
             Piece::Task { prompt, agent, project, .. } => self.pointing.work = Some((prompt, agent, project)),

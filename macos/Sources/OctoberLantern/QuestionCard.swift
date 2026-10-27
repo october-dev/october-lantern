@@ -18,6 +18,8 @@ struct QuestionCard: View {
         agent.questionKind != "choice" || (questions.count == 1 && !questions[0].multiSelect)
     }
 
+    @FocusState private var answerFocused: Bool
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             switch agent.questionKind {
@@ -25,12 +27,18 @@ struct QuestionCard: View {
             case "plan": plan
             default: permission
             }
+            if keys && sent == nil && oneClick {
+                Button("Use number keys") { answerFocused = true }
+                    .font(.system(size: 10)).buttonStyle(.plain).padding(5)
+                    .focusable().focused($answerFocused)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.amber.opacity(0.10)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.amber.opacity(0.22)))
-        .background(NumberKeys(enabled: keys && sent == nil && oneClick, press: pressNumber))
+        .background(NumberKeys(enabled: answerFocused && keys && sent == nil && oneClick, press: pressNumber))
+        .onChange(of: agent.promptId) { _, _ in answerFocused = false }
         .onChange(of: agent.promptId) { picks = [:] }
     }
 
@@ -295,7 +303,8 @@ struct NumberKeys: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) -> Bool {
-            guard let press, let window = view?.window, event.window === window,
+            guard !event.isARepeat, let press, let window = view?.window, event.window === window,
+                  !(window.firstResponder is NSText),
                   let chars = event.charactersIgnoringModifiers, let n = Int(chars), (1...9).contains(n)
             else { return false }
             let mods = event.modifierFlags.intersection([.command, .control, .option, .shift])

@@ -13,6 +13,29 @@ use eframe::egui::{self, Stroke, Ui};
 /// A session's cards. With `keys`, number keys pick an option of its first waiting question.
 pub fn launch_cards(ui: &mut Ui, cx: &mut Ctx, launch: &CardLaunch, keys: bool) {
     ui.spacing_mut().item_spacing.y = 8.0;
+    if launch.ended_at.is_none() {
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    !cx.model.control_sending,
+                    egui::Button::new(if cx.model.control_held { "Continue app access" } else { "Pause app access" }).small(),
+                )
+                .clicked()
+            {
+                cx.emit(UiAction::Control { action: if cx.model.control_held { "continue" } else { "pause" }.into(), launch: None });
+            }
+            if ui.add_enabled(!cx.model.control_sending, egui::Button::new("Stop session").small()).clicked() {
+                cx.emit(UiAction::Control { action: "stop".into(), launch: Some(launch.id.clone()) });
+            }
+        });
+        ui.small(
+            cx.model
+                .control_message
+                .as_deref()
+                .unwrap_or("App access controls affect all Lantern-owned agents. Background commands are not isolated."),
+        );
+    }
+
     if launch.ended_at.is_none()
         && let Some(status) = &launch.status
     {
@@ -32,6 +55,15 @@ pub fn launch_cards(ui: &mut Ui, cx: &mut Ctx, launch: &CardLaunch, keys: bool) 
         .chain(launch.cards.iter().rev().find(|card| card.kind == "result"));
     for card in shown.collect::<Vec<_>>() {
         match card.kind.as_str() {
+            "routine" => {
+                if let Some(draft) = &card.routine {
+                    ui.label(draft["name"].as_str().unwrap_or("Suggested routine"));
+                    if ui.button("Review routine…").clicked() {
+                        cx.emit(UiAction::ReviewRoutine(draft.clone()));
+                    }
+                    ui.small("Nothing is scheduled until you confirm.");
+                }
+            }
             "result" => result_card(ui, cx, card),
             "handOff" => hand_off_card(ui, cx, card),
             _ => ask_card(ui, cx, card, keys && first_waiting.as_deref() == Some(card.id.as_str())),
@@ -83,8 +115,8 @@ fn answer(cx: &mut Ctx, card: &Card, answer: CardAnswer) {
 fn ask_card(ui: &mut Ui, cx: &mut Ctx, card: &Card, keys: bool) {
     let open = card.is_waiting() && !cx.model.card_sending.contains(&card.id);
     let options = card.options.clone().unwrap_or_default();
-    let typing = ui.ctx().egui_wants_keyboard_input();
-    let pressed = if keys && open && !options.is_empty() { question::number_pressed(ui, typing) } else { None };
+    let focused = keys && open && !options.is_empty() && question::answer_focus(ui, &format!("{}:{}", card.id, card.revision));
+    let pressed = if focused { question::number_pressed(ui, false) } else { None };
     boxed(ui, card.is_waiting(), |ui| {
         ui.add(egui::Label::new(c::text(card.question.clone().unwrap_or_default(), 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
         if let Some(details) = &card.details {
@@ -142,6 +174,12 @@ fn hand_off_card(ui: &mut Ui, cx: &mut Ctx, card: &Card) {
     boxed(ui, card.is_waiting(), |ui| {
         let step = card.step.clone().unwrap_or_default();
         ui.add(egui::Label::new(c::text(format!("Your turn: {step}"), 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
+        if card.guide && ui.button("Show me").clicked() {
+            cx.emit(UiAction::StartShow(step.clone()));
+        }
+        if card.reason.as_deref() == Some("signIn") {
+            ui.small("This card does not pause other work or provide protected sign-in.");
+        }
         c::label(ui, rule(card.reason.as_deref()), 11.0, Weight::Regular, t::MUTED);
         if let Some(why) = &card.why {
             ui.add(

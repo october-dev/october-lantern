@@ -25,6 +25,7 @@ struct Server {
 impl Server {
     /// One request to the engine, retried while it can't be reached.
     async fn call(&self, mut op: Value) -> Result<Value> {
+        op["operationId"] = json!(uuid::Uuid::new_v4().to_string());
         op["launch"] = json!(self.launch);
         op["key"] = json!(self.key);
         let started = Instant::now();
@@ -55,6 +56,10 @@ impl Server {
             if state == "waiting" {
                 continue;
             }
+            if context.ct.is_cancelled() {
+                let _ = self.call(json!({"op":"cancel","card":card})).await;
+                bail!("cancelled");
+            }
             if reply["answer"].is_object() {
                 self.call(json!({"op": "ack", "card": card})).await?;
             }
@@ -66,6 +71,19 @@ impl Server {
         let text = |field: &str| args.get(field).and_then(Value::as_str).map(str::to_string);
         let list = |field: &str| args.get(field).cloned().unwrap_or(json!([]));
         match name {
+            "suggest_routine" => {
+                self.call(json!({"op":"suggestRoutine","name":text("name"),"prompt":text("prompt")})).await?;
+                Ok("A draft is shown. Only the person can choose its schedule and create it.".into())
+            }
+            "show_me" => {
+                let reply = self.call(json!({"op":"guide","question":text("question")})).await?;
+                let (state, answer) = self.wait(reply["card"].as_str().unwrap_or_default(), context).await?;
+                Ok(match answer["done"].as_bool() {
+                    Some(true) => "The person says they completed the step; verify the result.".into(),
+                    Some(false) => "The person cannot do this now; leave dependent work pending.".into(),
+                    None => closed(&state),
+                })
+            }
             "ask_person" => {
                 let reply = self
                     .call(json!({"op": "ask", "question": text("question"), "details": text("details"), "options": list("options")}))
@@ -140,6 +158,20 @@ fn schema(v: Value) -> Arc<JsonObject> {
 fn tools() -> Vec<Tool> {
     let string = |description: &str| json!({"type": "string", "description": description});
     vec![
+        Tool::new(
+            "show_me",
+            "Offer to point out the next control for the person. They choose Show me and do the step; never request secret text.",
+            schema(
+                json!({"type":"object","required":["question"],"properties":{"question":string("What to show on this computer, at most 200 characters.")}}),
+            ),
+        ),
+        Tool::new(
+            "suggest_routine",
+            "Suggest a local routine draft. The person must review the context, choose a schedule and confirm; this never creates unattended work.",
+            schema(
+                json!({"type":"object","required":["name","prompt"],"properties":{"name":string("Short routine name."),"prompt":string("The complete task for each run; never include secrets.")}}),
+            ),
+        ),
         Tool::new(
             "ask_person",
             "Ask the person a question and wait for their answer (up to 25 minutes). Use it for decisions only they can make, \

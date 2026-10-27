@@ -436,6 +436,7 @@ final class Assistant: ObservableObject {
                         } else {
                             propose(prompt: prompt, agent: agent, project: project, turn: id)
                         }
+                    case .guide: break
                     }
                 }
                 if let i = turns.firstIndex(where: { $0.id == id }), turns[i].answer.isEmpty {
@@ -469,6 +470,16 @@ final class Assistant: ObservableObject {
     /// Point & Ask decided its question is work: a new conversation here with that question and
     /// answer, starting the task with the selection's screenshot. October's prompt is used as it
     /// is: it says what the screenshot shows, which the user's own words ("move these") don't.
+    /// Show me for an answer: Lantern's panel closes so the screen is clear, and Lantern points the
+    /// way on the display under the pointer.
+    func showMe(_ question: String) {
+        model?.panel = nil
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        // Let the panel close before the picture is taken.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { ShowMe.shared.start(question: question, on: screen) }
+    }
+
     func adopt(question: String, answer: String, prompt: String, agent: String?, project: String?, screenshot: URL?, context: String?) {
         clear()
         let turn = Turn(question: question, answer: answer)
@@ -493,6 +504,12 @@ final class Assistant: ObservableObject {
         guard let kind = named ?? model.defaultAgentKind else {
             model.refreshInstalled()
             return setTaskProblem("Lantern has no agent to do this with. Set one up in New Session, then try again.", turn: turn)
+        }
+        if let project, project.hasPrefix("/") {
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: project, isDirectory: &isDirectory), isDirectory.boolValue else {
+                return setTaskProblem("The requested project folder does not exist. Create it or choose an existing folder, then try again.", turn: turn)
+            }
         }
         let folder = Self.folder(for: project, model: model)
         let index = turns.firstIndex { $0.id == turn }
@@ -636,6 +653,7 @@ final class Assistant: ObservableObject {
     /// The project you named (matched against recent folders and agents' folders); otherwise
     /// your home folder.
     static func folder(for project: String?, model: AppModel) -> String {
+        if let project, project.hasPrefix("/") { return project }
         let agentFolders = model.agents.sorted { ($0.stateSince ?? 0) > ($1.stateSince ?? 0) }.compactMap(\.cwd)
         let candidates = model.recentFolders + agentFolders
         if let project = project?.lowercased(), !project.isEmpty,
@@ -914,6 +932,13 @@ private struct TurnView: View {
                 Label(started, systemImage: "play.circle.fill").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.green)
             }
             if let note = turn.note { Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted) }
+            if !turn.answer.isEmpty, !turn.failed, turn.task == nil, turn.started == nil, Preferences.shared.showMe {
+                Button { Assistant.shared.showMe(turn.question) } label: {
+                    Label("Show me on screen", systemImage: "hand.point.up.left").font(.system(size: 11.5, weight: .medium))
+                }
+                .buttonStyle(.plain).foregroundStyle(Theme.amber)
+                .help("Lantern points at it on your screen, step by step")
+            }
             if let problem = turn.taskProblem {
                 Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)
             }

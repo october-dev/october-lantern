@@ -294,6 +294,7 @@ fn general(ui: &mut Ui, cx: &mut Ctx) {
             ui,
             "The new agent gets a screenshot of the screen you're on (without Lantern) with its first message, for context. It stays on this computer. Needs screen capture permission; you can also switch it per session.",
         );
+        toggle(ui, cx, "Show me on screen", cx.model.prefs.show_me, SettingChange::ShowMe);
         toggle(ui, cx, "Let agents use this computer's apps", cx.model.prefs.computer_use, SettingChange::ComputerUse);
         let status = match cx.model.computer.as_ref().filter(|_| cx.model.prefs.computer_use) {
             Some(s) if s.status == "installing" => " Downloading Cua Driver…".to_string(),

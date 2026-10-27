@@ -391,6 +391,55 @@ pub fn open_terminal(script: &str) -> anyhow::Result<()> {
     bail!("no supported terminal found; install a terminal or set LANTERN_TERMINAL (e.g. ptyxis, gnome-terminal, konsole, kitty, xterm)")
 }
 
+/// Compare the token user of a local IPC peer before sending a launch capability or input.
+/// Pipe ACLs protect our server; this also authenticates the server a client connected to.
+#[cfg(windows)]
+pub fn require_same_user(pid: u32) -> anyhow::Result<()> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{EqualSid, GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let peer = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if peer.is_null() {
+            anyhow::bail!("Cannot verify the IPC peer: {}", std::io::Error::last_os_error());
+        }
+        let token_user = |process| -> anyhow::Result<Vec<usize>> {
+            let mut token = std::ptr::null_mut();
+            if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
+                anyhow::bail!("Cannot read IPC peer token");
+            }
+            let mut size = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+            // Aligned storage: TOKEN_USER includes pointers into the returned buffer.
+            let mut buffer = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+            let ok = size > 0 && GetTokenInformation(token, TokenUser, buffer.as_mut_ptr().cast(), size, &mut size) != 0;
+            CloseHandle(token);
+            if !ok {
+                anyhow::bail!("Cannot verify IPC peer user");
+            }
+            Ok(buffer)
+        };
+        let theirs = token_user(peer);
+        CloseHandle(peer);
+        let theirs = theirs?;
+        let ours = token_user(GetCurrentProcess())?;
+        if EqualSid((*(theirs.as_ptr() as *const TOKEN_USER)).User.Sid, (*(ours.as_ptr() as *const TOKEN_USER)).User.Sid) == 0 {
+            anyhow::bail!("The IPC peer belongs to a different user");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn verify_pipe_server(file: &std::fs::File) -> anyhow::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    let mut pid = 0;
+    if unsafe { windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId(file.as_raw_handle().cast(), &mut pid) } == 0 {
+        anyhow::bail!("Cannot identify the IPC server");
+    }
+    require_same_user(pid)
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;

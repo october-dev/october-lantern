@@ -32,6 +32,13 @@ fn runtime_dir() -> PathBuf {
     if cfg!(target_os = "macos") {
         return crate::platform::data_dir("October").join("core/runtime");
     }
+    if cfg!(windows) {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| crate::transcripts::home().join("AppData/Roaming"))
+            .join("October/core/runtime");
+    }
     // October Desktop follows Electron's app.getPath("userData") on Linux.
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)

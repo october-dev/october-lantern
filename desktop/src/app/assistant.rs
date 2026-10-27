@@ -209,15 +209,8 @@ impl Lantern {
         });
         self.model.assistant.asking = true;
         let context = with_images(agent_summary(&self.model.agents, &question, self.model.caps.platform), images.len());
-        let request = october_ai::Request {
-            turns: earlier,
-            question,
-            image,
-            images: several,
-            context,
-            mode: Some("chat".into()),
-            platform: self.model.caps.platform,
-        };
+        let request =
+            october_ai::Request { turns: earlier, question, image, images: several, context, mode: Some("chat".into()), guidance: None };
         crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));
         let generation = self.asking.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.asking.generation.clone();
@@ -238,6 +231,7 @@ impl Lantern {
         }
         let Some(index) = self.model.assistant.turns.iter().position(|t| t.id == turn) else { return };
         match piece {
+            Piece::Guide { .. } => {}
             Piece::Text(text) => self.model.assistant.turns[index].answer.push_str(&text),
             Piece::Note(note) => self.model.assistant.turns[index].note = Some(note),
             Piece::Task { prompt, agent, project, to } => {
@@ -367,6 +361,15 @@ impl Lantern {
             self.refresh_installed();
             return self.set_task_problem(turn, "Lantern has no agent to do this with. Set one up in New Session, then try again.");
         };
+        if let Some(project) = project.as_deref()
+            && Path::new(project).is_absolute()
+            && !Path::new(project).is_dir()
+        {
+            return self.set_task_problem(
+                turn,
+                "The requested project folder does not exist. Create it or choose an existing folder, then try again.",
+            );
+        }
         let folder = self.task_folder(project.as_deref());
         let turns = &self.model.assistant.turns;
         let prompt = match turns.iter().position(|t| t.id == turn) {
@@ -713,6 +716,11 @@ impl Lantern {
     /// The project the person named (matched against recent folders, then agents' folders, newest
     /// first); otherwise the home folder, where the agent can look anywhere.
     fn task_folder(&self, project: Option<&str>) -> String {
+        if let Some(project) = project
+            && Path::new(project).is_absolute()
+        {
+            return project.to_string();
+        }
         let home = crate::settings::home().to_string_lossy().into_owned();
         let mut agents: Vec<_> = self.model.agents.iter().collect();
         agents.sort_by(|a, b| b.state_since.unwrap_or(0.0).total_cmp(&a.state_since.unwrap_or(0.0)));

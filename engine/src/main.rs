@@ -14,6 +14,7 @@ mod bus;
 mod cards;
 mod computer;
 mod console;
+mod control;
 mod deliver;
 mod harness;
 mod history;
@@ -29,9 +30,11 @@ mod procs;
 mod pty;
 mod readers;
 mod report;
+mod routines;
 mod run;
 mod scanner;
 mod serve;
+mod show;
 mod sqlite;
 mod subscriptions;
 #[cfg(test)]
@@ -46,6 +49,11 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("serve") => serve::run(),
+        #[cfg(debug_assertions)]
+        Some("test-profile") => {
+            println!("{}", hooks::support_dir().display());
+            Ok(())
+        }
         // Lantern's own terminal sessions on Windows (see pty.rs).
         #[cfg(windows)]
         Some("pty-host") => pty::host(args.get(1).map(String::as_str).unwrap_or("")),

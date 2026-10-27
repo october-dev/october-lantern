@@ -103,6 +103,27 @@ impl Lantern {
                 }
             }
             "october" => self.model.october = serde_json::from_value::<OctoberLink>(event["october"].clone()).ok(),
+            "computerHold" => {
+                self.model.control_held = event["held"] == true;
+                self.model.control_message = event["message"].as_str().map(str::to_string);
+                if self.model.control_held {
+                    self.stop_show();
+                }
+            }
+            "controlResult" => {
+                self.model.control_sending = false;
+                self.model.control_message = event["message"].as_str().map(str::to_string);
+            }
+            "showCapture" | "showQuery" | "showState" => self.show_event(event.clone()),
+            "routines" => {
+                self.model.routines = event["items"].as_array().cloned().unwrap_or_default();
+                if let Some(error) = event["error"].as_str() {
+                    self.model.routine_error = Some(error.to_string());
+                }
+            }
+            "routineResult" => {
+                self.model.routine_error = event["message"].as_str().map(str::to_string);
+            }
             "cards" => {
                 self.model.launches = serde_json::from_value(event["launches"].clone()).unwrap_or_default();
                 let open: HashSet<String> = self.model.launches.iter().flat_map(|l| l.waiting()).map(|c| c.id.clone()).collect();

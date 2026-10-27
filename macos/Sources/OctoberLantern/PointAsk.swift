@@ -237,6 +237,7 @@ final class PointAsk: ObservableObject {
                     case .text(let text): turns[index].answer += text
                     case .note(let note): turns[index].note = note
                     case .task(let prompt, let agent, let project, _): work = (prompt, agent, project)
+                    case .guide: break
                     }
                 }
                 if let work, !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
@@ -274,6 +275,20 @@ final class PointAsk: ObservableObject {
         cancel()
         model?.panel = .assistant
         Analytics.shared.capture("point_ask_task", [:])
+    }
+
+    /// Show me: Point & Ask closes and Lantern points the way on the selection's display, for what
+    /// was typed (or the last question).
+    func showMe() {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let question = words.isEmpty ? turns.last?.question : words else { return }
+        let screen = selection?.screen
+        cancel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { ShowMe.shared.start(question: question, on: screen) }
+    }
+
+    var canShowMe: Bool {
+        Preferences.shared.showMe && signedIn && !(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && turns.isEmpty)
     }
 
     func copyAnswer() {
@@ -685,6 +700,14 @@ struct PointAskCard: View {
                     .buttonStyle(.plain).foregroundStyle(Theme.muted).help("Copy the answer")
             }
             Spacer()
+            if point.canShowMe {
+                Button { point.showMe() } label: {
+                    Label("Show me", systemImage: "hand.point.up.left").font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Theme.ink).padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(Theme.faint)).overlay(Capsule().strokeBorder(Theme.stroke))
+                }
+                .buttonStyle(.plain).help("Lantern points at it on your screen, step by step")
+            }
             if account.signedIn {
                 primaryButton(point.asking ? "Asking…" : "Ask ⏎", enabled: !point.asking && point.canSendSelection) { point.ask() }
             } else {

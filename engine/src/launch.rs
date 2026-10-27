@@ -211,6 +211,7 @@ pub(crate) fn with_bundled(on_path: &Installed, bundled_october: bool) -> Instal
 /// agent's name (a full path), a folder to put first on PATH, and environment.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LaunchEnv {
+    pub session: Option<String>,
     pub program: Option<String>,
     pub path_prefix: Option<String>,
     pub env: Vec<(String, String)>,
@@ -223,6 +224,7 @@ pub struct LaunchEnv {
 pub(crate) fn october_env(on_path: bool, bundled: Option<&crate::harness::Bundled>, session: Vec<(String, String)>) -> LaunchEnv {
     let bundled = bundled.filter(|_| !on_path);
     LaunchEnv {
+        session: None,
         program: bundled.map(|b| b.bin.to_string_lossy().into_owned()),
         path_prefix: bundled.map(|b| b.node_bin.to_string_lossy().into_owned()),
         env: session,
@@ -290,6 +292,7 @@ pub struct Extras<'a> {
     pub computer_note: Option<&'a str>,
     /// What the first message says about Lantern's card tools (set by `launch`).
     pub cards_note: Option<&'a str>,
+    pub operation_id: Option<&'a str>,
     /// The agent asks before acting, as it does on its own (see `hands_free_args`).
     pub ask_first: bool,
 }
@@ -720,7 +723,7 @@ fn launch_session(
     let (program, args) = agent_argv(kind, prompt, images, model, bus.as_ref(), program_override, node_dir, extra.ask_first)?;
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
-    let session = format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000);
+    let session = extra.session.clone().unwrap_or_else(|| format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000));
     check_launch_deadline(deadline)?;
     // The launch's own PATH folder and environment, then October Bus's (as `agent_command_with`).
     let mut env: Vec<(String, String)> = Vec::new();
@@ -802,6 +805,10 @@ pub fn launch(
     deadline: Instant,
 ) -> Result<Launched> {
     check_launch_deadline(deadline)?;
+    if crate::computer::held() {
+        bail!("App access is paused. Continue before starting another agent.");
+    }
+    let control_epoch = crate::computer::control_epoch();
     let screenshot = extras.screenshot;
     if !cwd.is_dir() {
         bail!("{} is not a folder", cwd.display());
@@ -861,7 +868,17 @@ pub fn launch(
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let title =
         prompt.map(str::trim).filter(|p| !p.is_empty()).map(str::to_string).unwrap_or_else(|| format!("{} in {project}", agent_name(kind)));
-    let cards = crate::cards::register(kind, cwd, &title);
+    let cards = crate::cards::register(kind, cwd, &title, extras.operation_id);
+    if crate::cards::supported(kind) && cards.is_none() {
+        bail!("Task cards could not be registered. Restart Lantern before starting another task.");
+    }
+    if let Some(c) = &cards {
+        let session = format!("{}-{}", kind.as_str(), c.id);
+        if let Some(store) = crate::cards::service() {
+            store.started(&c.id, Some(&session))?;
+        }
+        extra.session = Some(session);
+    }
     let bus = if on_bus || (server.is_some() && crate::bus::takes_mcp(kind)) || cards.is_some() {
         let name = format!("{} · {project}", display_name(kind));
         let id = crate::bus::new_id(kind);
@@ -885,6 +902,9 @@ pub fn launch(
         }
         None => None,
     };
+    if crate::cards::supported(kind) && cards.is_none() {
+        bail!("The card tools could not be attached; the agent was not started.");
+    }
     let note = bus.as_ref().filter(|b| b.on_bus).map(|b| crate::bus::note(&b.name));
     let computer_note = if computer { crate::computer::note(bus.as_ref().is_some_and(|b| b.computer)) } else { None };
     let extras = Extras {
@@ -896,6 +916,13 @@ pub fn launch(
     let message = first_message(prompt.map(str::trim).filter(|p| !p.is_empty()), extras).map(|m| with_guidance(m, cwd));
     let prompt = message.as_deref();
 
+    let _dispatch_guard = crate::computer::action_guard();
+    if crate::computer::held() || control_epoch != crate::computer::control_epoch() {
+        if let Some(c) = &cards {
+            crate::cards::forget(&c.id);
+        }
+        bail!("The start was cancelled by a control change; it was not queued for Continue.");
+    }
     #[cfg(unix)]
     let launched = launch_tmux(kind, cwd, prompt, &images, model, bus, bus_problem, &extra, mode, deadline);
     #[cfg(windows)]
@@ -936,7 +963,7 @@ fn launch_tmux(
 
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
-    let session = format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000);
+    let session = extra.session.clone().unwrap_or_else(|| format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000));
     let status = &mut tmux::command();
     let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])

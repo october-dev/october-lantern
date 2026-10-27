@@ -22,6 +22,12 @@ mod shell_win;
 mod shell_x11;
 
 pub enum Event {
+    ShowAnswer {
+        run: String,
+        round: u64,
+        capture: String,
+        result: serde_json::Value,
+    },
     Status(String),
     Screenshot {
         owner: String,

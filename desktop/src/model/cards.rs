@@ -49,6 +49,8 @@ pub struct Card {
     pub why: Option<String>,
     pub instructions: Option<Vec<String>>,
     pub url: Option<String>,
+    pub guide: bool,
+    pub routine: Option<serde_json::Value>,
     pub summary: Option<String>,
     pub outcome: Option<String>,
     pub files: Option<Vec<CardFile>>,

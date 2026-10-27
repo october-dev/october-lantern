@@ -33,6 +33,7 @@ mod preferences;
 mod select;
 mod session;
 mod shots;
+mod show;
 mod uninstall;
 mod windows;
 
@@ -79,6 +80,7 @@ pub struct Lantern {
     inputs: Inputs,
     turns: Turns,
     view: UiState,
+    guide: show::Guide,
     assets: Option<Assets>,
     windows: windows::Windows,
     next_request: u64,
@@ -134,6 +136,7 @@ impl Lantern {
             inputs: Inputs::default(),
             turns,
             view: UiState::default(),
+            guide: show::Guide::default(),
             assets: None,
             windows: windows::Windows::default(),
             next_request: 0,
@@ -175,6 +178,8 @@ impl Lantern {
     /// Results of background work.
     fn integration(&mut self, event: Event) {
         match event {
+            Event::ShowAnswer { run, round, capture, result } => self.show_answer(&run, round, &capture, result),
+            Event::Screenshot { owner, generation: _, result } if owner.starts_with("__show:") => self.show_captured(&owner[7..], result),
             Event::Screenshot { owner, generation, result } if owner == "__new" => {
                 self.windows.capture_done();
                 self.screenshot_captured(generation, result);
@@ -309,6 +314,7 @@ impl Lantern {
     /// Signs out: forgets the keyring sign-in, tells the engine (phone and October sessions stop),
     /// and ends Ask Lantern's conversation.
     fn sign_out(&mut self) {
+        self.stop_show();
         let generation = self.auth.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         crate::analytics::capture("october_signed_out", serde_json::json!({}));
         crate::analytics::forget_user();
@@ -328,6 +334,8 @@ impl Lantern {
     /// The engine stopped: Lantern starts it again (up to three times in five minutes), except
     /// while uninstalling, which stops it on purpose.
     fn engine_stopped(&mut self, error: String) {
+        self.model.control_sending = false;
+        self.stop_show();
         self.connected = false;
         self.engine_restarts.retain(|at| at.elapsed() < Duration::from_secs(300));
         if self.model.system.uninstall != crate::model::Uninstall::Idle || self.engine_restarts.len() >= 3 {
@@ -421,7 +429,6 @@ fn capabilities() -> crate::model::Caps {
         Caps { platform: Platform::Windows, edge_pill: true, hover_halo: true, dictation: true, global_hotkeys: true, ..Default::default() }
     } else {
         Caps {
-            platform: Platform::Linux,
             edge_pill: crate::os::shell::x11_available(),
             dense_glass: true,
             dictation: true,

@@ -26,9 +26,14 @@ final class EngineClient {
     var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
     var onPhone: ((PhoneModel.State) -> Void)?
+    var onControl: ((ControlSnapshot) -> Void)?
+    var onControlResult: ((RoutineReceipt) -> Void)?
+    var onRoutines: ((RoutineSnapshot) -> Void)?
+    var onRoutineResult: ((RoutineReceipt) -> Void)?
     var onCards: (([CardLaunch]) -> Void)?
     /// An answer to a card: (card id, ok, message).
     var onCardResult: ((String, Bool, String?) -> Void)?
+    var onShow: ((ShowMessage) -> Void)?
     /// Launch and attach results: (requestId, ok, message).
     var onActionResult: ((String, Bool, String?) -> Void)?
     /// A session started on Lantern's tmux server, by tmux session name.
@@ -291,6 +296,25 @@ final class EngineClient {
         send(["type": "focus", "requestId": requestId, "agentId": agentId])
     }
 
+    // MARK: Show me (see ShowMe)
+
+    /// A Show me request: `show.start`, `show.captured`, `show.result`, `show.next`, `show.again` or
+    /// `show.stop`, with its fields.
+    @discardableResult
+    func control(_ action: String, launch: String?) -> Bool {
+        var value: [String: Any] = ["type": "task.control", "requestId": UUID().uuidString, "action": action]
+        if let launch { value["launchId"] = launch }
+        return send(value)
+    }
+
+    func routine(_ fields: [String: Any]) -> Bool {
+        var value = fields; value["type"] = "routine"; return send(value)
+    }
+
+    func show(_ type: String, _ fields: [String: Any]) -> Bool {
+        send(fields.merging(["type": type]) { _, new in new })
+    }
+
     // MARK: Phone (see PhoneModel)
 
     /// The current October access token: the engine starts hosting for the phone app, or hands a
@@ -356,8 +380,13 @@ final class EngineClient {
                     if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
+                case .computerHold(let snapshot): onControl?(snapshot)
+                case .controlResult(let receipt): onControlResult?(receipt)
+                case .routines(let snapshot): onRoutines?(snapshot)
+                case .routineResult(let receipt): onRoutineResult?(receipt)
                 case .cards(let launches): onCards?(launches)
                 case .cardResult(_, let cardId, let ok, let message): onCardResult?(cardId, ok, message)
+                case .show(let message): onShow?(message)
                 case .launchResult(let id, let ok, let message, let session):
                     onActionResult?(id, ok, message)
                     if ok, let session { onLaunched?(session) }

@@ -140,8 +140,10 @@ pub(super) fn exchange<S: Read + Write>(mut stream: S, request: &Value) -> Resul
 
 #[cfg(windows)]
 fn pipe_name() -> String {
-    let user: String = std::env::var("USERNAME").unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-    format!(r"\\.\pipe\lantern-cards-{user}")
+    use sha2::{Digest, Sha256};
+    let profile = super::dir();
+    let digest = Sha256::digest(profile.to_string_lossy().to_lowercase().as_bytes());
+    format!(r"\\.\pipe\lantern-cards-{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 /// A security descriptor that lets only this user (and the system) open the pipe: the string form
@@ -259,7 +261,10 @@ pub fn request(request: &Value) -> Result<Value> {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
         match std::fs::OpenOptions::new().read(true).write(true).open(pipe_name()) {
-            Ok(pipe) => return exchange(pipe, request),
+            Ok(pipe) => {
+                crate::platform::verify_pipe_server(&pipe)?;
+                return exchange(pipe, request);
+            }
             // ERROR_PIPE_BUSY: every instance is taken for a moment.
             Err(e) if e.raw_os_error() == Some(231) && std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(20))
