@@ -233,7 +233,7 @@ pub fn read_ask_events(reader: impl Read, sink: &mut dyn FnMut(Piece) -> bool) -
             _ => {}
         }
     }
-    Ok(())
+    Err(Failure::Unavailable("October's answer stopped before it finished. Try again.".into()))
 }
 
 /// "3 free questions left today." from a free account's `done` event (only at 10 or fewer).
@@ -319,6 +319,18 @@ mod tests {
     fn a_cancelled_sink_stops_the_stream() {
         let sse = "data: {\"type\":\"delta\",\"text\":\"a\"}\ndata: {\"type\":\"delta\",\"text\":\"b\"}\n";
         assert_eq!(read_ask_events(sse.as_bytes(), &mut |_| false), Err(Failure::Cancelled));
+    }
+
+    #[test]
+    fn a_truncated_stream_keeps_partial_text_and_reports_failure() {
+        for sse in ["", "data: {\"type\":\"delta\",\"text\":\"Partial answer\"}\n", "data: {\"type\":\"done\""] {
+            let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), sink));
+            assert!(matches!(result, Err(Failure::Unavailable(_))), "EOF without a terminal receipt is not completion");
+            if sse.contains("Partial answer") {
+                assert_eq!(pieces, [Piece::Text("Partial answer".into())]);
+            }
+            assert!(!pieces.iter().any(|piece| matches!(piece, Piece::Task { .. } | Piece::Guide { .. })));
+        }
     }
 
     #[test]

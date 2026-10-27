@@ -179,6 +179,7 @@ enum OctoberAI {
             default: continue
             }
         }
+        throw Failure.unavailable("October's answer stopped before it finished. Try again.")
     }
 
     static func failure(status: Int, data: Data) -> Failure {
@@ -196,7 +197,5 @@ enum OctoberAI {
         default: return .unavailable(message ?? "October's AI isn't available right now (\(status)). Try again soon.")
         }
     }
-
-    // MARK: Choosing a model
 
 }

@@ -16,7 +16,7 @@ Recent completed card history is bounded; live work and unresolved questions/ans
 
 Live tasks expose **Pause app access**, **Continue app access**, and **Stop session**. Pause is global to Lantern's driver: it persists a hold, rejects new launches and controlled input, closes waits/guides, revokes the owned driver's sessions, and stops that daemon. Continue starts a fresh driver; it never replays cancelled input or old approvals. Stop also terminates the specific owned tmux/ConPTY session. Driver Off cannot be undone by an earlier start request.
 
-These controls do **not** prove that arbitrary shell children or other same-user automation stopped. They do not establish protected takeover, observation protection, or the stronger “you're in control” guarantee. Those S2 requirements remain open and need an enforced execution boundary. A missing discovery scan is not treated as proof that a session ended.
+These controls do **not** prove that arbitrary shell children or other same-user automation stopped. Protected sign-in and the stronger “you're in control” guarantee are outside this beta's scope, by the owner's 27 October decision. A missing discovery scan is not treated as proof that a session ended.
 
 After an engine crash, a saved hold blocks dispatch before card IPC opens. Lantern cancels old waits and checks the previous private driver under its ownership lock. It confirms app-access pause only after shutdown and endpoint release; a failed or unreachable check remains unconfirmed. A second engine cannot stop a live owner's driver.
 
@@ -38,7 +38,7 @@ Ask Lantern, Point & Ask and a task's **Show me** hand-off use the same guide. E
 
 Show me observes through Cua; its allowlist contains no click, type or pointer-movement tool. Mac uses a short, pass-through native ring and step label only for a revalidated semantic control. The renderer independently expires the cue after 1.5 seconds, leaving a marked captured picture. Pixel-only targets and Windows/Linux use a clearly labelled captured picture. Use **Look again** after changing the screen, **Next** after completing a step, or **Stop**. Capture/run/round IDs and cancellation epochs reject late work. Limits are eight steps, sixteen looks, ten minutes total and two minutes idle.
 
-No endpoint/mode fallback changes a guide into an ordinary answer, and no text-only retry silently drops pictures. Native Windows/Linux desktop behavior, the held-out model accuracy evaluation, secure-screen/privacy qualification and protected hand-off remain release gates. Compilation and simulated protocol fixtures do not close them.
+No endpoint/mode fallback changes a guide into an ordinary answer, and no text-only retry silently drops pictures. An answer that disconnects before its final receipt shows an error while retaining partial text. Native Windows/Linux desktop behavior, the held-out model accuracy evaluation and screen/privacy qualification remain release gates. Compilation and simulated protocol fixtures do not close them. Sign-in hand-offs are ordinary requests to the person; the beta offers no protected sign-in mode.
 
 ## Validation
 

@@ -8,7 +8,7 @@
 //! Agents are started through the user's login shell (`$SHELL -lic`), so they get the same PATH
 //! and API keys as in a terminal they opened themselves.
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -1289,6 +1289,7 @@ mod hands_free_tests {
 #[cfg(all(test, unix))]
 mod private_launch_tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn login_shell_consumes_a_private_file_without_putting_credentials_in_argv() {
