@@ -116,7 +116,7 @@ fn ask_card(ui: &mut Ui, cx: &mut Ctx, card: &Card, keys: bool) {
     let open = card.is_waiting() && !cx.model.card_sending.contains(&card.id);
     let options = card.options.clone().unwrap_or_default();
     let focused = keys && open && !options.is_empty() && question::answer_focus(ui, &format!("{}:{}", card.id, card.revision));
-    let pressed = if focused { question::number_pressed(ui, false) } else { None };
+    let pressed = if focused { question::number_pressed(ui) } else { None };
     boxed(ui, card.is_waiting(), |ui| {
         ui.add(egui::Label::new(c::text(card.question.clone().unwrap_or_default(), 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
         if let Some(details) = &card.details {

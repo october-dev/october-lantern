@@ -31,7 +31,7 @@ final class OctoberAccount: ObservableObject {
         }
     }
 
-    struct Session: Codable {
+    struct Session: Codable, Sendable {
         var accessToken: String
         var refreshToken: String
         var expiresAt: Date
@@ -63,6 +63,7 @@ final class OctoberAccount: ObservableObject {
     private var callback: CallbackListener?
     private var refreshTask: Task<Void, Never>?
     private var refreshing: Task<Void, Never>?
+    private var restoring: Task<Void, Never>?
     /// Changes whenever the signed-in identity changes (sign-in, sign-out). Work that awaited a
     /// network answer checks it before touching the session, so a refresh that finishes after a
     /// sign-out can't sign the old account back in.
@@ -90,12 +91,23 @@ final class OctoberAccount: ObservableObject {
         return a
     }
 
-    private init(restore: Bool = true) {
+    init(restore: Bool = true, loadSession: (@Sendable () -> Session?)? = nil) {
         guard restore else { return }
-        session = Keychain.load()
-        if let s = session { Analytics.shared.identify(userId: s.userId, email: s.email) }
-        if session != nil {
-            Task { await refreshIfNeeded(force: false); await loadPlan() }
+        let g = generation
+        restoring = Task { @MainActor [weak self] in
+            // A Keychain ACL/unlock dialog can wait indefinitely. It must not block app startup.
+            let saved = await Task.detached { (loadSession ?? Keychain.load)() }.value
+            guard let self else { return }
+            defer { self.restoring = nil }
+            guard self.generation == g else { return }
+            self.session = saved
+            if let saved { Analytics.shared.identify(userId: saved.userId, email: saved.email) }
+            if saved != nil {
+                await self.refreshIfNeeded(force: false)
+                guard self.generation == g else { return }
+                self.engineReady()
+                await self.loadPlan()
+            }
         }
     }
 
@@ -108,6 +120,8 @@ final class OctoberAccount: ObservableObject {
 
     func signIn(with provider: Provider) {
         guard !signingIn else { return }
+        generation += 1
+        restoring?.cancel(); restoring = nil
         error = nil
         signingIn = true
         let attempt = attempts.begin()
@@ -164,6 +178,8 @@ final class OctoberAccount: ObservableObject {
 
     func signIn(email: String, password: String) async {
         guard !signingIn else { return }
+        generation += 1
+        restoring?.cancel(); restoring = nil
         error = nil
         signingIn = true
         let attempt = attempts.begin()
@@ -186,6 +202,7 @@ final class OctoberAccount: ObservableObject {
         }
         cancelSignIn()
         generation += 1
+        restoring?.cancel(); restoring = nil
         session = nil
         plan = nil
         refreshTask?.cancel()
@@ -204,6 +221,7 @@ final class OctoberAccount: ObservableObject {
 
     /// A current access token, refreshing first if it's about to expire.
     func accessToken() async -> String? {
+        if let restoring { await restoring.value }
         await refreshIfNeeded(force: false)
         return session?.accessToken
     }

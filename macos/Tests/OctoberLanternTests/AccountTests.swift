@@ -84,3 +84,23 @@ final class AccountTests: XCTestCase {
         XCTAssertFalse(account.signingIn)
     }
 }
+
+
+final class AccountStartupTests: XCTestCase {
+    @MainActor
+    func testKeychainReadDoesNotBlockAccountConstruction() async {
+        let gate = DispatchSemaphore(value: 0)
+        let entered = expectation(description: "Keychain reader started off the main thread")
+        let account = OctoberAccount(loadSession: {
+            entered.fulfill()
+            _ = gate.wait(timeout: .now() + 5)
+            return nil
+        })
+        await fulfillment(of: [entered], timeout: 2)
+        XCTAssertFalse(account.signedIn)
+        // This code remains reachable while the simulated system dialog is waiting.
+        gate.signal()
+        let token = await account.accessToken()
+        XCTAssertNil(token)
+    }
+}

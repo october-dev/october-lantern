@@ -69,6 +69,7 @@ final class LocalRoutines: ObservableObject {
 
 struct RoutinesView: View {
     @ObservedObject private var routines = LocalRoutines.shared
+    @ObservedObject private var metrics = PanelMetrics.shared
     @State private var draft = RoutineDraft()
     @State private var editing: LocalRoutine?
     @State private var creating = false
@@ -109,6 +110,8 @@ struct RoutinesView: View {
                 }
             }.padding(16)
         }
+        .frame(maxHeight: max(260, metrics.maxHeight - 80))
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear { takeSuggestion() }
         .onChange(of: routines.suggestedDraft) { _, _ in takeSuggestion() }
         .onChange(of: routines.pending) { old, new in
@@ -145,7 +148,17 @@ struct RoutinesView: View {
                     ForEach(Array(["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].enumerated()), id: \.offset) { index, name in Text(name).tag(index) }
                 }
             }
-            HStack { Stepper("Hour \(draft.hour)", value: $draft.hour, in: 0...23); Stepper("Minute \(draft.minute)", value: $draft.minute, in: 0...59) }
+            DatePicker("Time", selection: Binding(get: {
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: draft.timezone) ?? .current
+                return calendar.date(from: DateComponents(year: 2001, month: 1, day: 1, hour: draft.hour, minute: draft.minute)) ?? Date()
+            }, set: { value in
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: draft.timezone) ?? .current
+                draft.hour = calendar.component(.hour, from: value)
+                draft.minute = calendar.component(.minute, from: value)
+            }), displayedComponents: .hourAndMinute)
+                .environment(\.timeZone, TimeZone(identifier: draft.timezone) ?? .current)
             TextField("Timezone (e.g. America/Los_Angeles)", text: $draft.timezone)
             TextField("Preferences for this routine", text: $draft.preferences, axis: .vertical).lineLimit(2...5)
             Text("Preferences are instructions to the agent, not enforced restrictions. Each run uses the selected agent's account and may use its credits. No overlapping runs. A repeated daylight-saving time runs once; a nonexistent time is skipped.")

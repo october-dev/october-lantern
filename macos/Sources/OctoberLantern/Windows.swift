@@ -78,6 +78,7 @@ final class WindowController {
         pill.contentView = GlassContainer(content: pillHost, cornerRadius: nil, tint: 0.45)
         panelHost = FirstClickHostingView(rootView: PanelView(model: model, dictation: model.dictation))
         panel.contentView = GlassContainer(content: panelHost, cornerRadius: 22, tint: 0.5)
+        panelHost.onSizeChange = { [weak self] in self?.scheduleLayout() }
 
         // Re-lay out whenever the model changes (agent count changes the pill's height).
         model.objectWillChange

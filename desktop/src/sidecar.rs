@@ -223,6 +223,14 @@ impl Sidecar {
     /// Stops the engine now (uninstalling: it holds files in Lantern's data folder open). Sessions
     /// Lantern started run in processes of their own and keep running.
     pub fn stop(&mut self) {
+        if let Ok(mut input) = self.input.input.lock() {
+            let _ = writeln!(input, "{{\"type\":\"shutdown\"}}");
+            let _ = input.flush();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while self.child.try_wait().ok().flatten().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -264,8 +272,7 @@ impl Sidecar {
 
 impl Drop for Sidecar {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.stop();
     }
 }
 
@@ -298,7 +305,7 @@ mod tests {
     use std::time::Duration;
     fn echo() -> Sidecar {
         if cfg!(windows) {
-            let script = "while(($l=[Console]::In.ReadLine()) -ne $null){[Console]::Out.WriteLine($l);[Console]::Out.Flush()}";
+            let script = r#"while(($l=[Console]::In.ReadLine()) -ne $null){if($l -eq '{"type":"shutdown"}'){break};[Console]::Out.WriteLine($l);[Console]::Out.Flush()}"#;
             return Sidecar::spawn(Box::new(move || {
                 let mut command = Command::new("powershell");
                 command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
@@ -306,7 +313,13 @@ mod tests {
             }))
             .unwrap();
         }
-        Sidecar::spawn(Box::new(|| Ok(Command::new("cat")))).unwrap()
+        Sidecar::spawn(Box::new(|| {
+            let mut command = Command::new("/bin/sh");
+            command
+                .args(["-c", r#"while IFS= read -r line; do [ "$line" = '{"type":"shutdown"}' ] && exit 0; printf '%s\n' "$line"; done"#]);
+            Ok(command)
+        }))
+        .unwrap()
     }
     #[test]
     fn locked_ui_coalesces_snapshots_and_keeps_reply_results() {

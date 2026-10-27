@@ -167,6 +167,7 @@ mod tests {
                 "Your Agents",
                 "Dictate a Reply",
                 "—",
+                "Routines…",
                 "October…",
                 "Settings…",
                 "—",

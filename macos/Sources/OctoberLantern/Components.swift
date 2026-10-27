@@ -313,5 +313,10 @@ struct CodeBlock: View {
 
 /// A hosting view that takes the first click, so buttons work without focusing the panel first.
 final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
+    var onSizeChange: (() -> Void)?
+    override func invalidateIntrinsicContentSize() {
+        super.invalidateIntrinsicContentSize()
+        onSizeChange?()
+    }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

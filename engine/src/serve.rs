@@ -25,6 +25,7 @@ const APP_DEADLINE: Duration = Duration::from_secs(15);
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Request {
+    Shutdown,
     Refresh,
     #[serde(rename_all = "camelCase")]
     Reply {
@@ -723,6 +724,12 @@ pub fn run() -> Result<()> {
                 Ok(Request::ShowAgain { run_id }) => {
                     let _ = show.send(crate::show::Cmd::Again { run_id });
                 }
+                Ok(Request::Shutdown) => {
+                    crate::computer::want(false);
+                    let _ = show.send(crate::show::Cmd::DriverOff);
+                    crate::computer::stop();
+                    return Ok(());
+                }
                 Ok(Request::ShowStop { run_id }) => {
                     let _ = show.send(crate::show::Cmd::Stop { run_id });
                 }
@@ -730,6 +737,8 @@ pub fn run() -> Result<()> {
                 Err(e) => eprintln!("lantern-engine: bad request ({e})"),
             },
             Ok(Incoming::Closed) | Err(RecvTimeoutError::Disconnected) => {
+                crate::computer::want(false);
+                let _ = show.send(crate::show::Cmd::DriverOff);
                 crate::computer::stop();
                 return Ok(());
             }

@@ -17,9 +17,9 @@ pub fn question_card(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, keys: bool) {
     };
     let sent = cx.model.answered.get(&prompt_id).cloned();
     let delivery = cx.model.answer_delivery.get(&prompt_id).copied();
-    // A text box has the keyboard (empty or not): plain digits are text there; Ctrl+1–9 still answer.
+    // Only an explicitly focused card owns number keys; text editors retain their own keys.
     let focused = keys && sent.is_none() && answer_focus(ui, &prompt_id);
-    let pressed = if focused { number_pressed(ui, false) } else { None };
+    let pressed = if focused { number_pressed(ui) } else { None };
     let answer = egui::Frame::new()
         .fill(t::opacity(t::AMBER, 0.10))
         .stroke(Stroke::new(1.0, t::opacity(t::AMBER, 0.22)))
@@ -295,9 +295,7 @@ pub(super) fn option_row(
     response
 }
 
-/// A number key pressed on its own: 0 for 1. The key and the digit it would type are both taken,
-/// so an empty reply box doesn't get it too.
-/// Ctrl+1–9 always; a plain digit only when no text box has the keyboard (`typing`).
+/// Keyboard answering is armed by focusing a button whose identity belongs to this exact card.
 pub(super) fn answer_focus(ui: &mut Ui, identity: &str) -> bool {
     ui.push_id(identity, |ui| {
         let response = ui.small_button("Use number keys");
@@ -309,7 +307,7 @@ pub(super) fn answer_focus(ui: &mut Ui, identity: &str) -> bool {
     .inner
 }
 
-pub(super) fn number_pressed(ui: &mut Ui, typing: bool) -> Option<usize> {
+pub(super) fn number_pressed(ui: &mut Ui) -> Option<usize> {
     const KEYS: [egui::Key; 9] = [
         egui::Key::Num1,
         egui::Key::Num2,
@@ -321,27 +319,22 @@ pub(super) fn number_pressed(ui: &mut Ui, typing: bool) -> Option<usize> {
         egui::Key::Num8,
         egui::Key::Num9,
     ];
-    if typing {
-        return None;
-    }
-    let fresh = ui.input(|input| {
-        input.events.iter().any(|event| {
-            matches!(event,
-        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
-            if KEYS.contains(key) && (*modifiers == egui::Modifiers::NONE || *modifiers == egui::Modifiers::COMMAND))
+    let (event_index, choice, plain) = ui.input(|input| {
+        input.events.iter().enumerate().find_map(|(index, event)| match event {
+            egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. }
+                if *modifiers == egui::Modifiers::NONE || *modifiers == egui::Modifiers::COMMAND =>
+            {
+                KEYS.iter().position(|candidate| candidate == key).map(|choice| (index, choice, *modifiers == egui::Modifiers::NONE))
+            }
+            _ => None,
         })
+    })?;
+    ui.input_mut(|input| {
+        input.events.remove(event_index);
+        if plain {
+            let digit = (choice + 1).to_string();
+            input.events.retain(|event| !matches!(event,egui::Event::Text(text) if text==&digit));
+        }
     });
-    if !fresh {
-        return None;
-    }
-    if let Some(i) = KEYS.iter().position(|key| ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, *key))) {
-        return Some(i);
-    }
-    if typing {
-        return None;
-    }
-    let i = KEYS.iter().position(|key| c::consume_plain_key(ui, *key))?;
-    let digit = (i + 1).to_string();
-    ui.input_mut(|input| input.events.retain(|event| !matches!(event, egui::Event::Text(text) if *text == digit)));
-    Some(i)
+    Some(choice)
 }

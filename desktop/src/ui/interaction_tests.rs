@@ -215,15 +215,28 @@ fn claudes_question_is_answered_by_its_option_or_number_key_but_not_while_typing
     let one_plan = text_rect(&output, "One plan").center();
     assert_eq!(click(&ctx, &assets, &mut f, one_plan), answer(AgentAnswer::Picks { picks: vec![vec![1]] }, "t-fixture-1"));
 
-    // Ctrl and a number pick on the card the reply box is addressed to, even while typing.
+    // Digits require deliberate focus on this exact card, including modified digits.
     let ctrl = |k| egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
     let mut f = fixture("question");
     f.inputs.drafts.address(Some("claude:1:1"));
-    render(&ctx, &assets, &mut f, Vec::new());
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    let (_, actions) = render(&ctx, &assets, &mut f, vec![ctrl(egui::Key::Num3)]);
+    assert!(actions.is_empty(), "a newly arrived question never steals a shortcut");
+    render(&ctx, &assets, &mut f, vec![key(egui::Key::Num3, false)]);
+    assert!(click(&ctx, &assets, &mut f, text_rect(&output, "Use number keys").center()).is_empty());
+    let repeated =
+        egui::Event::Key { key: egui::Key::Num3, physical_key: None, pressed: true, repeat: true, modifiers: egui::Modifiers::COMMAND };
+    let (_, actions) = render(&ctx, &assets, &mut f, vec![repeated]);
+    assert!(actions.is_empty(), "holding a key never answers");
+    render(&ctx, &assets, &mut f, vec![key(egui::Key::Num3, false)]);
     let (_, actions) = render(&ctx, &assets, &mut f, vec![ctrl(egui::Key::Num3)]);
     assert_eq!(actions, answer(AgentAnswer::Picks { picks: vec![vec![2]] }, "t-fixture-1"));
     let (_, actions) = render(&ctx, &assets, &mut f, vec![ctrl(egui::Key::Num9)]);
     assert!(actions.is_empty(), "no ninth option");
+    f.model.agents[0].prompt_id = Some("replacement-question".into());
+    render(&ctx, &assets, &mut f, vec![key(egui::Key::Num1, false)]);
+    let (_, actions) = render(&ctx, &assets, &mut f, vec![ctrl(egui::Key::Num1)]);
+    assert!(actions.is_empty(), "replacement questions require their own deliberate focus");
 
     // Once answered, it says Sending… until the keys went in, then Sent, and can't be answered again.
     let mut f = fixture("question");

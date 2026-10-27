@@ -167,9 +167,16 @@ final class EngineClient {
     private func shutDown() {
         historyRequests.cancelAll()
         ready = false
+        // Let the engine stop its owned driver before exiting. SIGTERM bypasses that cleanup.
+        try? stdin?.write(contentsOf: Data("{\"type\":\"shutdown\"}\n".utf8))
+        try? stdin?.close()
         stdin = nil
         buffer = Data()
-        process?.terminate()
+        if let retiring = process {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 8) {
+                if retiring.isRunning { retiring.terminate() }
+            }
+        }
         process = nil
     }
 
