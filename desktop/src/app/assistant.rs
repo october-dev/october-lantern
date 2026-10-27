@@ -183,18 +183,17 @@ impl Lantern {
         if question.is_empty() {
             question = images_question(images.len());
         }
-        // October sees the first image; an agent this starts gets them all. A picture that can't be
-        // prepared stops the question here, rather than going without it.
-        let image = match images.first() {
-            Some(first) => match super::images::jpeg_for_october(std::path::Path::new(first)) {
-                Some(jpeg) => Some(jpeg),
-                None => {
-                    self.model.assistant.attach_problem = Some("Lantern couldn't read that picture. Remove it and add it again.".into());
-                    return;
-                }
-            },
-            None => None,
+        // October sees what was attached and, for a follow-up, earlier pictures in this
+        // conversation (six at most, newest first). A picture that can't be prepared stops the
+        // question here, rather than going without it.
+        let earlier_pictures = self.model.assistant.turns.iter().rev().flat_map(|t| t.images.iter().cloned());
+        let pictures: Vec<String> =
+            images.iter().cloned().chain(earlier_pictures.filter(|p| std::path::Path::new(p).exists())).take(6).collect();
+        let Some(mut jpegs) = super::images::jpegs_for_october(&pictures) else {
+            self.model.assistant.attach_problem = Some("Lantern couldn't read one of the pictures. Remove it and try again.".into());
+            return;
         };
+        let (image, several) = if jpegs.len() == 1 { (jpegs.pop(), Vec::new()) } else { (None, jpegs) };
         self.inputs.assistant.clear();
         self.model.assistant.attachments.clear();
         self.model.assistant.attach_problem = None;
@@ -210,8 +209,15 @@ impl Lantern {
         });
         self.model.assistant.asking = true;
         let context = with_images(agent_summary(&self.model.agents, &question, self.model.caps.platform), images.len());
-        let request =
-            october_ai::Request { turns: earlier, question, image, context, mode: Some("chat".into()), platform: self.model.caps.platform };
+        let request = october_ai::Request {
+            turns: earlier,
+            question,
+            image,
+            images: several,
+            context,
+            mode: Some("chat".into()),
+            platform: self.model.caps.platform,
+        };
         crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));
         let generation = self.asking.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.asking.generation.clone();

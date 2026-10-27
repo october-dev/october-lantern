@@ -275,6 +275,7 @@ impl Lantern {
             context: context_lines(self.model.point_ask.context.as_ref()).join("\n"),
             mode: Some("point_task".into()),
             platform: self.model.caps.platform,
+            ..Default::default()
         };
         self.pointing.work = None;
         crate::analytics::capture("point_ask_asked", serde_json::json!({"follow_up": turn > 0}));

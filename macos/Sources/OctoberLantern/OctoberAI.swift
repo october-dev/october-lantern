@@ -20,6 +20,8 @@ enum OctoberAI {
         var question: String
         /// The screenshot, as JPEG.
         var image: Data?
+        /// Several pictures (Ask Lantern): what was attached, then earlier ones in the conversation.
+        var images: [Data] = []
         /// The app, window, page and selection, as lines of text.
         var context: String
         /// "chat" for the assistant (its own prompt on the server); nil for Point & Ask.
@@ -165,6 +167,7 @@ enum OctoberAI {
         if !r.context.isEmpty { json["context"] = capped(r.context, 6000) }
         if let mode = r.mode { json["mode"] = mode }
         if let image = r.image { json["image"] = image.base64EncodedString() }
+        if !r.images.isEmpty { json["images"] = r.images.map { $0.base64EncodedString() } }
         var req = URLRequest(url: askURL)
         req.httpMethod = "POST"
         req.timeoutInterval = 90

@@ -24,6 +24,8 @@ pub struct Request {
     pub question: String,
     /// The screenshot, as JPEG.
     pub image: Option<Vec<u8>>,
+    /// Several pictures (Ask Lantern): what was attached, then earlier ones in the conversation.
+    pub images: Vec<Vec<u8>>,
     /// The app, window, page and selection, or the agent summary, as lines of text.
     pub context: String,
     /// "chat" for Ask Lantern (its own prompt on the server); `None` for Point & Ask.
@@ -203,6 +205,10 @@ pub fn ask_body(request: &Request) -> Value {
     if let Some(image) = &request.image {
         use base64::Engine;
         body["image"] = base64::engine::general_purpose::STANDARD.encode(image).into();
+    }
+    if !request.images.is_empty() {
+        use base64::Engine;
+        body["images"] = request.images.iter().map(|i| base64::engine::general_purpose::STANDARD.encode(i)).collect::<Vec<_>>().into();
     }
     body
 }
@@ -508,6 +514,7 @@ mod tests {
             mode: Some("chat".into()),
             platform: Platform::Windows,
             image: Some(vec![0xFF, 0xD8, 0xFF]),
+            ..Default::default()
         };
         let body = ask_body(&request);
         let keys = |value: &Value| {

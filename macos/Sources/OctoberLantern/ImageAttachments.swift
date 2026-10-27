@@ -56,6 +56,25 @@ enum ImageAttachments {
             .flatMap { $0.count <= 4_000_000 ? $0 : nil }
     }
 
+    /// Pictures for one Ask Lantern question (at most six; October takes 4 MB together), smaller
+    /// when there are several. Nil when one can't be read: a question never goes without a picture
+    /// the person added.
+    static func jpegsForOctober(_ urls: [URL]) -> [Data]? {
+        let urls = Array(urls.prefix(6))
+        guard urls.count > 1 else { return urls.isEmpty ? [] : jpegForOctober(urls[0]).map { [$0] } }
+        for (side, quality) in [(1280.0, 0.75), (960.0, 0.65), (720.0, 0.55)] {
+            var out: [Data] = []
+            for url in urls {
+                guard let image = NSImage(contentsOf: url), let cg = scaled(image, longest: side),
+                      let jpeg = NSBitmapImageRep(cgImage: cg).representation(using: .jpeg, properties: [.compressionFactor: quality])
+                else { return nil }
+                out.append(jpeg)
+            }
+            if out.reduce(0, { $0 + $1.count }) <= 3_900_000 { return out }
+        }
+        return nil
+    }
+
     private static func png(_ image: NSImage) -> Data? {
         guard let cg = scaled(image, longest: longestSide) else { return nil }
         return NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:])

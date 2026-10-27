@@ -405,12 +405,24 @@ final class Assistant: ObservableObject {
         turns.append(turn)
         asking = true
         let id = turn.id
-        // October sees the first image; an agent this starts gets them all.
-        let request = OctoberAI.Request(
+        // October sees what was attached and, for a follow-up, earlier pictures in this
+        // conversation (six at most, newest first). One it can't read stops the question.
+        let earlier = turns.dropLast().reversed().flatMap { ($0.images ?? []).map(URL.init(fileURLWithPath:)) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        let pictures = Array((images + earlier).prefix(6))
+        guard let jpegs = ImageAttachments.jpegsForOctober(pictures) else {
+            turns.removeLast()
+            asking = false
+            attachments = images
+            attachProblem = "Lantern couldn't read one of the pictures. Remove it and try again."
+            return
+        }
+        var request = OctoberAI.Request(
             turns: turns.dropLast().filter { !$0.failed }.map { ($0.question, $0.answer) },
-            question: question, image: images.first.flatMap(ImageAttachments.jpegForOctober),
+            question: question, image: jpegs.count == 1 ? jpegs[0] : nil,
             context: agentSummary(question: question, images: images.count), mode: "chat"
         )
+        if jpegs.count > 1 { request.images = jpegs }
         task = Task {
             do {
                 for try await piece in OctoberAI.stream(request) {

@@ -81,7 +81,42 @@ pub fn from_clipboard(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(vec![save_rgba(image, dir)?])
 }
 
-/// The image as JPEG for October's answer (it takes one; see `shots::jpeg`).
+/// Pictures for one Ask Lantern question (Swift `ImageAttachments.jpegsForOctober`): at most six,
+/// smaller when there are several (October takes 4 MB together). `None` when one can't be read: a
+/// question never goes without a picture the person added.
+pub fn jpegs_for_october(paths: &[String]) -> Option<Vec<Vec<u8>>> {
+    let paths = &paths[..paths.len().min(6)];
+    if paths.len() <= 1 {
+        return paths.iter().map(|p| jpeg_for_october(Path::new(p))).collect();
+    }
+    let decoded: Vec<image::RgbImage> = paths.iter().map(|p| image::open(p).ok().map(|i| i.to_rgb8())).collect::<Option<_>>()?;
+    for (side, quality) in [(1280u32, 75u8), (960, 65), (720, 55)] {
+        let mut out = Vec::new();
+        for picture in &decoded {
+            let longest = picture.width().max(picture.height());
+            let scaled = if longest > side {
+                let scale = side as f32 / longest as f32;
+                image::imageops::resize(
+                    picture,
+                    ((picture.width() as f32 * scale) as u32).max(1),
+                    ((picture.height() as f32 * scale) as u32).max(1),
+                    image::imageops::FilterType::Triangle,
+                )
+            } else {
+                picture.clone()
+            };
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality).encode_image(&scaled).ok()?;
+            out.push(jpeg);
+        }
+        if out.iter().map(Vec::len).sum::<usize>() <= 3_900_000 {
+            return Some(out);
+        }
+    }
+    None
+}
+
+/// The image as JPEG for October's answer (one picture; see `shots::jpeg`).
 pub fn jpeg_for_october(path: &Path) -> Option<Vec<u8>> {
     super::shots::jpeg(&std::fs::read(path).ok()?)
 }
@@ -136,6 +171,11 @@ mod tests {
             let saved = save_file(&path, &dir.join("screenshots")).unwrap();
             assert!(jpeg_for_october(&saved).is_some(), "{name} is sent, not dropped");
         }
+        // Several go together, smaller; one that can't be read stops them all.
+        let paths: Vec<String> = ["a.gif", "a.webp", "Shot.JPEG"].iter().map(|n| dir.join(n).to_string_lossy().into_owned()).collect();
+        assert_eq!(jpegs_for_october(&paths).map(|j| j.len()), Some(3));
+        let missing = vec![paths[0].clone(), dir.join("gone.png").to_string_lossy().into_owned()];
+        assert!(jpegs_for_october(&missing).is_none());
         // Something named like a picture that isn't one is refused when added.
         let fake = dir.join("fake.png");
         std::fs::write(&fake, b"not a picture").unwrap();
