@@ -361,6 +361,7 @@ pub struct ModelOption {
 pub struct ModelList {
     pub choosable: bool,
     pub models: Vec<ModelOption>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

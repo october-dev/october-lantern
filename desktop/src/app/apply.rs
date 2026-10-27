@@ -73,6 +73,7 @@ impl Lantern {
             UiAction::AnswerQuestion { agent_id, prompt_id, answer } => self.answer_question(&agent_id, &prompt_id, answer),
             UiAction::StartNewSession => self.start_new_session(),
             UiAction::ChooseSessionAgent { kind } => self.choose_session_agent(kind),
+            UiAction::LoadModels { kind } => self.load_models(&kind),
             UiAction::ChooseSessionModel { kind, model } => {
                 if self.inputs.new_session.kind.as_ref() == Some(&kind) {
                     self.inputs.new_session.model = model;

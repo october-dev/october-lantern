@@ -149,6 +149,8 @@ struct RoutinesView: View {
             Picker("Agent", selection: $draft.kind) {
                 Text("October").tag("october"); Text("Claude Code").tag("claude"); Text("Codex").tag("codex")
             }
+            .onChange(of: draft.kind) { _, _ in draft.model = nil }
+            AgentModelPicker(kind: AgentKind(rawValue: draft.kind), model: model, selection: $draft.model)
             Picker("Repeat", selection: $draft.cadence) {
                 Text("Daily").tag("daily"); Text("Weekdays").tag("weekdays"); Text("Weekly").tag("weekly")
             }

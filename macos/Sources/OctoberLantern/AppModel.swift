@@ -224,6 +224,9 @@ final class AppModel: ObservableObject {
         // in memory (never the refresh token).
         octoberSessionWatch = OctoberAccount.shared.$session.sink { [weak self] session in
             self?.engine.octoberSession(accessToken: session?.accessToken, expiresAt: session?.expiresAt)
+            self?.engine.cancelModels(kind: .october)
+            self?.models.removeValue(forKey: AgentKind.october.rawValue)
+            if self?.panel == .newSession || self?.panel == .routines { self?.loadModels(.october) }
             if session == nil { ShowMe.shared.stop() }
         }
         showMeWatch = prefs.$showMe.sink { enabled in
@@ -244,6 +247,7 @@ final class AppModel: ObservableObject {
             if let self {
                 let s = OctoberAccount.shared.session
                 self.engine.octoberSession(accessToken: s?.accessToken, expiresAt: s?.expiresAt)
+                if self.panel == .routines || self.panel == .newSession { self.loadModels(.october) }
                 if self.launchAfterHarness != nil { self.engine.prepareHarness() }
                 // Agents can use this Mac's apps: get Cua Driver ready (downloaded on first use).
                 if self.prefs.computerUse { self.engine.prepareComputer(enabled: true) }
@@ -622,7 +626,12 @@ final class AppModel: ObservableObject {
 
     /// `screenshot`: a saved screenshot (ScreenCapture.save) the agent gets with its first message.
     /// Asks the engine which models `kind` offers (it answers from a cache after the first time).
-    func loadModels(_ kind: AgentKind) { engine.models(kind: kind) }
+    func loadModels(_ kind: AgentKind) {
+        models.removeValue(forKey: kind.rawValue)
+        if !engine.models(kind: kind) {
+            models[kind.rawValue] = EngineMessage.ModelList(requestId: "", kind: kind, choosable: true, models: [], error: "Lantern's engine isn't available. Retry when it reconnects.")
+        }
+    }
 
     /// The model last chosen for each agent; nil is the agent's own default.
     func lastModel(_ kind: AgentKind) -> String? {

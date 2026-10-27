@@ -8,7 +8,7 @@
 //! Agents are started through the user's login shell (`$SHELL -lic`), so they get the same PATH
 //! and API keys as in a terminal they opened themselves.
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -467,7 +467,53 @@ pub(crate) fn agent_command_with(
         (Some(p), Some(PromptArg::Option(flag))) => cmd.push_str(&format!(" {flag} {}", quote(p))),
         _ => {}
     }
-    format!("exec {} -lic {}", quote(&shell()), quote(&cmd))
+    cmd
+}
+
+/// Keep app credentials and the first message out of shell/tmux arguments (and tmux's retained
+/// pane_start_command). After login setup, a noninteractive POSIX shell reads the private file
+/// and removes it before exec; interactive shell history never reads its credential lines.
+#[cfg(unix)]
+struct LaunchScript(Option<PathBuf>);
+
+#[cfg(unix)]
+impl LaunchScript {
+    fn new(command: &str) -> Result<Self> {
+        Self::in_dir(&support_dir().join("launch"), command)
+    }
+
+    fn in_dir(dir: &Path, command: &str) -> Result<Self> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        crate::bus::create_private_dir(dir)?;
+        let path = dir.join(format!("agent-{}.sh", uuid::Uuid::new_v4().simple()));
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+        let script = Self(Some(path.clone()));
+        writeln!(file, "/bin/rm -f -- {} || exit 1\n{command}", quote(&path.to_string_lossy()))?;
+        Ok(script)
+    }
+
+    fn command(&self) -> String {
+        format!("exec {} -lic {}", quote(&shell()), quote(&self.reader_command()))
+    }
+
+    fn reader_command(&self) -> String {
+        format!("exec /bin/sh {}", quote(&self.0.as_ref().unwrap().to_string_lossy()))
+    }
+
+    /// The terminal now owns consumption; dropping a failed launch still removes its secret file.
+    fn handed_off(mut self) {
+        self.0 = None;
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LaunchScript {
+    fn drop(&mut self) {
+        if let Some(path) = &self.0 {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 /// Opens a new Terminal window running `script` (through a `.command` file, which needs no
@@ -987,7 +1033,9 @@ fn launch_tmux(
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
         check_launch_deadline(deadline)?;
-        open_in_terminal(&name, &agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra))?;
+        let script = LaunchScript::new(&agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra))?;
+        open_in_terminal(&name, &script.command())?;
+        script.handed_off();
         if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
             crate::bus::link_when_ready(b.id.clone());
         }
@@ -997,16 +1045,18 @@ fn launch_tmux(
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
     let session = extra.session.clone().unwrap_or_else(|| format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000));
+    let script = LaunchScript::new(&agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra))?;
     let status = &mut tmux::command();
     let status = status
         .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
         .arg(cwd)
-        .arg(agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra));
+        .arg(script.command());
     check_launch_deadline(deadline)?;
     let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
         bail!("tmux couldn't start the session");
     }
+    script.handed_off();
 
     if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
         crate::bus::link_when_ready(b.id.clone());
@@ -1233,6 +1283,50 @@ mod hands_free_tests {
         trust_claude_folder_in(&missing, Path::new("/x")).unwrap();
         assert!(!missing.exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_launch_tests {
+    use super::*;
+
+    #[test]
+    fn login_shell_consumes_a_private_file_without_putting_credentials_in_argv() {
+        let dir = std::env::temp_dir().join(format!("lantern-private-launch-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for shell in ["/bin/bash", "/bin/zsh"].into_iter().filter(|shell| Path::new(shell).is_file()) {
+            let result = dir.join("receipt");
+            let script = LaunchScript::in_dir(
+                &dir,
+                &format!(
+                    "LANTERN_TEST_TOKEN={} exec /bin/sh -c {}",
+                    quote("dummy-secret-not-a-real-token"),
+                    quote(&format!("printf '%s' \"$LANTERN_TEST_TOKEN\" > {}", quote(&result.to_string_lossy())))
+                ),
+            )
+            .unwrap();
+            let path = script.0.as_ref().unwrap().clone();
+            assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+            assert!(!script.command().contains("dummy-secret"));
+            // Test shell parsing without running the developer's personal startup files.
+            let mut command = Command::new(shell);
+            if shell.ends_with("bash") {
+                command.args(["--noprofile", "--norc"]);
+            } else {
+                command.args(["-d", "-f"]);
+            }
+            let output = command.args(["-lic", &script.reader_command()]).output().unwrap();
+            assert!(output.status.success(), "{shell}: {}", String::from_utf8_lossy(&output.stderr));
+            assert_eq!(std::fs::read_to_string(&result).unwrap(), "dummy-secret-not-a-real-token");
+            assert!(!path.exists(), "The file must disappear before the agent starts");
+            std::fs::remove_file(result).unwrap();
+        }
+        let cancelled = LaunchScript::in_dir(&dir, "exit 1").unwrap();
+        let path = cancelled.0.as_ref().unwrap().clone();
+        drop(cancelled);
+        assert!(!path.exists(), "Failed launches must remove the file");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 

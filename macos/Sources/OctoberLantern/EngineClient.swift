@@ -51,6 +51,7 @@ final class EngineClient {
     private var buffer = Data()
     private var supervisor = Supervisor()
     private var historyRequests = HistoryRequests()
+    private var modelRequests: [AgentKind: String] = [:]
     /// The current process said a compatible hello; until then nothing else it says is used and no
     /// request is sent to it.
     private var ready = false
@@ -109,6 +110,7 @@ final class EngineClient {
 
     private func launch(_ generation: Int) {
         historyRequests.cancelAll()
+        modelRequests.removeAll()
         buffer = Data()
         ready = false
         onHealth?(.starting)
@@ -152,6 +154,10 @@ final class EngineClient {
         process = nil
         stdin = nil
         ready = false
+        for (kind, id) in modelRequests {
+            onModels?(EngineMessage.ModelList(requestId: id, kind: kind, choosable: true, models: [], error: "The engine disconnected while loading models. Retry when it reconnects."))
+        }
+        modelRequests.removeAll()
         guard let delay = supervisor.exited(generation, ranFor: Date().timeIntervalSince(launchedAt)) else { return }
         onStopped?(message)
         onHealth?(.restarting)
@@ -166,6 +172,7 @@ final class EngineClient {
     /// Ends the current process without treating it as a crash.
     private func shutDown() {
         historyRequests.cancelAll()
+        modelRequests.removeAll()
         ready = false
         // Let the engine stop its owned driver before exiting. SIGTERM bypasses that cleanup.
         try? stdin?.write(contentsOf: Data("{\"type\":\"shutdown\"}\n".utf8))
@@ -260,8 +267,14 @@ final class EngineClient {
 
     @discardableResult
     func models(kind: AgentKind) -> Bool {
-        send(["type": "models", "kind": kind.rawValue])
+        let id = UUID().uuidString
+        modelRequests[kind] = id
+        if send(["type": "models", "requestId": id, "kind": kind.rawValue]) { return true }
+        modelRequests.removeValue(forKey: kind)
+        return false
     }
+
+    func cancelModels(kind: AgentKind) { modelRequests.removeValue(forKey: kind) }
 
     @discardableResult
     func history(agentId: String) -> Bool {
@@ -382,7 +395,11 @@ final class EngineClient {
                     if let harness { onHarness?(harness) }
                 case .harness(let status): onHarness?(status)
                 case .computer(let status): onComputer?(status)
-                case .models(let list): onModels?(list)
+                case .models(let list):
+                    if modelRequests[list.kind] == list.requestId {
+                        modelRequests.removeValue(forKey: list.kind)
+                        onModels?(list)
+                    }
                 case .history(let id, let agentId, let supported, let messages, let busy):
                     if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
                 case .october(let link): onOctober?(link)

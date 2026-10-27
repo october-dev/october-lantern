@@ -518,6 +518,17 @@ pub fn session_env() -> Vec<(String, String)> {
     env
 }
 
+/// Only an absent app sign-in may use the CLI's own account. An expired app sign-in needs
+/// refreshing, rather than quietly changing billing providers in the model picker.
+pub fn model_session() -> Result<Option<String>> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    match SESSION.lock().unwrap().as_ref() {
+        Some((token, expiry)) if *expiry > now => Ok(Some(token.clone())),
+        Some(_) => bail!("Your October sign-in has expired. Sign in again, then retry loading models."),
+        None => Ok(None),
+    }
+}
+
 /// The command the harness's shell runs for a fresh token: POSIX quoting, or cmd's double quotes
 /// on Windows (where a path can't contain `"`).
 pub(crate) fn token_command(exe: &str, windows: bool) -> String {

@@ -70,8 +70,27 @@ impl Lantern {
     }
 
     pub(super) fn load_models(&mut self, kind: &AgentKind) {
-        if !self.model.new_session.models.contains_key(kind.as_str()) {
-            self.request(json!({"type": "models", "kind": kind.as_str()}));
+        self.model.new_session.models.remove(kind.as_str());
+        self.pending.retain(|_, p| !matches!(p, Pending::Models { kind: pending } if pending == kind.as_str()));
+        if let Some(id) = self.request(json!({"type": "models", "kind": kind.as_str()})) {
+            self.pending.insert(id, Pending::Models { kind: kind.as_str().into() });
+        } else {
+            self.model.new_session.models.insert(
+                kind.as_str().into(),
+                crate::model::ModelList {
+                    choosable: true,
+                    error: Some("Lantern's engine isn't available. Retry when it reconnects.".into()),
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    pub(super) fn invalidate_october_models(&mut self) {
+        self.model.new_session.models.remove(AgentKind::OCTOBER);
+        self.pending.retain(|_, p| !matches!(p, Pending::Models { kind } if kind == AgentKind::OCTOBER));
+        if matches!(self.model.panel, Some(PanelMode::NewSession | PanelMode::Routines)) {
+            self.load_models(&AgentKind(AgentKind::OCTOBER.into()));
         }
     }
 

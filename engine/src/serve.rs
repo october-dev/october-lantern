@@ -98,7 +98,9 @@ enum Request {
     #[serde(rename = "installed.refresh")]
     InstalledRefresh,
     /// The models to offer when starting `kind` (answered with `models`).
+    #[serde(rename_all = "camelCase")]
     Models {
+        request_id: String,
         kind: Kind,
     },
     #[serde(rename_all = "camelCase")]
@@ -587,12 +589,17 @@ pub fn run() -> Result<()> {
                         Err(e) => emit(&json!({"type": "toolkit", "ok": false, "message": format!("{e:#}")})),
                     });
                 }
-                Ok(Request::Models { kind }) => {
+                Ok(Request::Models { request_id, kind }) => {
                     // Listing runs the agent's own command; off the loop.
                     std::thread::spawn(move || {
-                        let models = crate::models::list(kind);
+                        let (models, error) = match crate::models::list(kind) {
+                            Ok(models) => (models, None),
+                            Err(error) => (Vec::new(), Some(error.to_string())),
+                        };
                         let choosable = crate::models::flag(kind).is_some();
-                        emit(&json!({"type": "models", "kind": kind, "choosable": choosable, "models": models}));
+                        emit(
+                            &json!({"type": "models", "requestId": request_id, "kind": kind, "choosable": choosable, "models": models, "error": error}),
+                        );
                     });
                 }
                 Ok(Request::History { request_id, agent_id }) => {

@@ -222,6 +222,9 @@ pub enum UiAction {
         kind: AgentKind,
         model: Option<String>,
     },
+    LoadModels {
+        kind: AgentKind,
+    },
     /// The native folder picker.
     ChooseFolder,
     SetSessionScreenshot(bool),

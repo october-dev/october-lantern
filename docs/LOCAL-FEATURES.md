@@ -22,9 +22,15 @@ After an engine crash, a saved hold blocks dispatch before card IPC opens. Lante
 
 ## Routines
 
-Open **Routines** from Lantern's menu. Create a local schedule with a task, existing project folder, October/Claude Code/Codex, an IANA timezone, a daily/weekdays/weekly time and preferences. Review and confirm it explicitly. An agent's suggestion opens the same form and cannot create a schedule itself. Each run uses that agent's account and may use credits. Routines use the harness's one-shot mode, rather than leaving a terminal waiting after its turn. Claude retains native permission rules; Codex exec uses its workspace-write sandbox.
+Open **Routines** from Lantern's menu. Create a local schedule with a task, existing project folder, October/Claude Code/Codex, an optional model, an IANA timezone, a daily/weekdays/weekly time and preferences. Review and confirm it explicitly. An agent's suggestion opens the same form and cannot create a schedule itself. Each run uses that agent's account and may use credits. Routines use the harness's one-shot mode, rather than leaving a terminal waiting after its turn. Claude retains native permission rules; Codex exec uses its workspace-write sandbox.
 
 Lantern and the computer must remain available. An occurrence is recorded before starting an agent. Retries cannot launch it twice; an uncertain admission blocks overlap until reconciled. There are no catch-up bursts after sleep or restart. A repeated DST time runs once at its earlier occurrence; a nonexistent time is skipped. The panel shows next run, its cards/results and the last admission/session state. A session that exits without a result is “closed”; an agent's completion report is labelled as such. Pausing/deleting a schedule leaves an admitted run running.
+
+## Models and account routing
+
+New sessions and routines share a searchable model picker. With an October app sign-in, its list comes from October's live account catalogue and selections explicitly use the October provider, including paid Kimi K2.6. A failed or expired app sign-in shows an error and Retry; it does not substitute direct-provider CLI credentials. Without an app sign-in, October lists its CLI's own configured models. **Default** deliberately follows the agent's saved configuration, which can use a different provider. Explicit selections show their full model id.
+
+Unix launches put their environment and first message into a private single-use file, removed before the agent executes. The terminal/login shell and tmux receive its path, keeping the app access token out of their arguments and tmux's retained start command. This is credential handling, not an execution sandbox.
 
 ## Show me
 

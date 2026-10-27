@@ -51,6 +51,9 @@ use std::time::{Duration, Instant};
 /// A request the engine hasn't answered yet.
 #[derive(Clone, Debug)]
 enum Pending {
+    Models {
+        kind: String,
+    },
     /// The ticket says which draft revision was sent, so only that is cleared when it arrives.
     Reply(Ticket),
     Keys {
@@ -254,6 +257,7 @@ impl Lantern {
                         self.model.account.error = Some(error);
                     }
                 }
+                self.invalidate_october_models();
             }
             _ => {}
         }
@@ -328,6 +332,7 @@ impl Lantern {
             }
         });
         self.model.account = Default::default();
+        self.invalidate_october_models();
         self.clear_assistant();
     }
 
@@ -335,6 +340,19 @@ impl Lantern {
     /// while uninstalling, which stops it on purpose.
     fn engine_stopped(&mut self, error: String) {
         self.model.control_sending = false;
+        for pending in self.pending.values() {
+            if let Pending::Models { kind } = pending {
+                self.model.new_session.models.insert(
+                    kind.clone(),
+                    crate::model::ModelList {
+                        choosable: true,
+                        error: Some("The engine disconnected while loading models. Retry when it reconnects.".into()),
+                        ..Default::default()
+                    },
+                );
+            }
+        }
+        self.pending.retain(|_, pending| !matches!(pending, Pending::Models { .. }));
         if self.model.routine_pending.take().is_some() {
             self.model.routine_error =
                 Some("The engine disconnected. Check the saved routines before retrying; the previous outcome is unknown.".into());
@@ -603,6 +621,30 @@ mod sign_in_tests {
     fn lantern() -> Lantern {
         let (engine, _) = crate::sidecar::test_sender();
         Lantern::new(engine, None)
+    }
+
+    #[test]
+    fn a_superseded_or_signed_out_model_request_cannot_restore_a_catalogue() {
+        let mut lantern = lantern();
+        lantern.connected = true;
+        let kind = crate::model::AgentKind("october".into());
+        lantern.load_models(&kind);
+        let old = format!("shell-{}", lantern.next_request);
+        lantern.load_models(&kind);
+        let current = format!("shell-{}", lantern.next_request);
+        let response = |id: &str| {
+            serde_json::json!({"type":"models", "requestId":id, "kind":"october", "choosable":true,
+            "models":[{"id":"october/openrouter/moonshotai/kimi-k2.6","label":"Kimi"}]} )
+        };
+        lantern.engine_event(response(&old));
+        assert!(!lantern.model.new_session.models.contains_key("october"));
+        lantern.engine_event(response(&current));
+        assert_eq!(lantern.model.new_session.models["october"].models[0].id, "october/openrouter/moonshotai/kimi-k2.6");
+        lantern.load_models(&kind);
+        let before_sign_out = format!("shell-{}", lantern.next_request);
+        lantern.sign_out();
+        lantern.engine_event(response(&before_sign_out));
+        assert!(!lantern.model.new_session.models.contains_key("october"));
     }
 
     #[test]

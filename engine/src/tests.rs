@@ -799,7 +799,7 @@ fn bus_launches_reach_each_agent() {
     assert!(cmd.contains("OPENCODE_CONFIG=") && cmd.contains("exec opencode"), "{cmd}");
     let october = Attach { wrap: vec!["'/b/october-bus'".into(), "agent".into(), "run".into(), "--".into()], ..Default::default() };
     let cmd = agent_command(Kind::October, Path::new("/p"), None, None, None, Some(&october));
-    assert!(cmd.contains("october-bus'\\'' agent run -- october"), "{cmd}");
+    assert!(cmd.contains("october-bus' agent run -- october"), "{cmd}");
     let note = crate::bus::note("Claude · web");
     let msg = first_message(Some("fix it"), Extras { bus_note: Some(&note), ..Default::default() }).unwrap();
     assert!(msg.starts_with("fix it") && msg.contains("October Bus"));
@@ -1040,7 +1040,7 @@ fn bundled_october_runs_with_its_node_and_sign_in() {
     let session = env_for(Some(&("tok.en".to_string(), 2_000)), 1_000);
     let extra = october_env(false, Some(&bundled), session.clone());
     let cmd = agent_command_with(Kind::October, Path::new("/p"), Some("hi"), &[], None, None, &extra);
-    // The command is single-quoted for `$SHELL -lic`; look inside it.
+    // The private launch script contains the environment, never the terminal command arguments.
     let inner = cmd.replace(r"'\''", "'");
     assert!(inner.contains("PATH='/S/October Lantern/runtime/node-v24.21.0-darwin-arm64/bin':\"$PATH\" "), "{inner}");
     assert!(inner.contains("exec '/S/October Lantern/harness/1.0/node_modules/.bin/october' -- 'hi'"), "{inner}");

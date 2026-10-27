@@ -234,9 +234,11 @@ enum EngineMessage: Decodable {
     /// The models an agent can start with (see engine/src/models.rs). `choosable` is false for
     /// agents whose model option Lantern doesn't know.
     struct ModelList: Decodable, Equatable {
+        let requestId: String
         let kind: AgentKind
         let choosable: Bool
         let models: [ModelOption]
+        let error: String?
     }
 
     struct ModelOption: Decodable, Hashable {

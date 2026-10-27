@@ -21,6 +21,7 @@ impl Lantern {
                 self.turns.restart();
                 if self.connected {
                     self.give_engine_sign_in();
+                    self.invalidate_october_models();
                 }
                 // Agents can use this computer's apps: get Cua Driver ready (downloaded on first use).
                 if self.connected && self.model.prefs.computer_use {
@@ -88,7 +89,10 @@ impl Lantern {
                 }
             }
             "models" => {
-                if let (Some(kind), Ok(list)) = (text(&event, "kind"), serde_json::from_value::<ModelList>(event.clone())) {
+                if let Some(Pending::Models { kind }) = text(&event, "requestId").and_then(|id| self.pending.remove(&id))
+                    && event["kind"].as_str() == Some(kind.as_str())
+                    && let Ok(list) = serde_json::from_value::<ModelList>(event.clone())
+                {
                     self.model.new_session.models.insert(kind, list);
                 }
             }

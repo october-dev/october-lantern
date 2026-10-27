@@ -211,55 +211,91 @@ fn agent_chip(ui: &mut Ui, cx: &Ctx, kind: &AgentKind, selected: bool) -> Respon
 }
 
 fn model(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind) {
-    let Some(list) = cx.model.new_session.models.get(kind.as_str()) else {
-        loading(ui, &format!("Loading {}'s models…", kind.display_name()), 11.5, cx.env);
-        return;
+    let mut chosen = cx.inputs.new_session.model.clone();
+    let retry = model_picker(
+        ui,
+        kind,
+        cx.model.new_session.models.get(kind.as_str()),
+        &mut chosen,
+        (&mut cx.view.searching_models, &mut cx.view.model_query),
+        cx.env,
+    );
+    if chosen != cx.inputs.new_session.model {
+        pick_model(cx, kind, chosen);
+    }
+    if retry {
+        cx.emit(UiAction::LoadModels { kind: kind.clone() });
+    }
+}
+
+/// Shared by sessions and routines; a catalogue error never substitutes a different account.
+pub(super) fn model_picker(
+    ui: &mut Ui,
+    kind: &AgentKind,
+    list: Option<&ModelList>,
+    chosen: &mut Option<String>,
+    (searching, query): (&mut bool, &mut String),
+    env: &super::Env,
+) -> bool {
+    let Some(list) = list else {
+        loading(ui, &format!("Loading {}'s models…", kind.display_name()), 11.5, env);
+        return false;
     };
+    let mut retry = false;
+    if let Some(error) = &list.error {
+        ui.colored_label(t::AMBER, error);
+        retry = ui.button("Retry loading models").clicked();
+    }
     if !list.choosable {
         c::label(ui, format!("{} starts with its own default model.", kind.display_name()), 11.5, Weight::Regular, t::MUTED);
-        return;
+        return retry;
     }
-    let label = cx
-        .inputs
-        .new_session
-        .model
+    let label = chosen
         .as_ref()
-        .map(|chosen| {
+        .map(|id| {
             list.models
                 .iter()
-                .find(|m| &m.id == chosen)
-                .map_or_else(|| chosen.clone(), |m| m.group.as_ref().map_or_else(|| m.label.clone(), |g| format!("{} · {g}", m.label)))
+                .find(|m| &m.id == id)
+                .map_or_else(|| id.clone(), |m| m.group.as_ref().map_or_else(|| m.label.clone(), |g| format!("{} · {g}", m.label)))
         })
         .unwrap_or_else(|| "Default model".into());
     let response = field(ui, "session-model", Icon::Cpu, &label).on_hover_text(format!("Model: {label}"));
+    let mut picked = None;
     egui::Popup::menu(&response).show(|ui| {
-        if ui.button("Default").clicked() {
-            pick_model(cx, kind, None);
+        if ui.button("Default (agent configuration)").clicked() {
+            picked = Some(None);
         }
-        if !list.models.is_empty() && list.models.len() <= 25 {
-            ui.separator();
+        if list.models.len() <= 25 {
             for option in &list.models {
                 if ui.button(&option.label).clicked() {
-                    pick_model(cx, kind, Some(option.id.clone()));
+                    picked = Some(Some(option.id.clone()));
                 }
             }
         }
         ui.separator();
         let label = if list.models.len() > 25 { format!("Search {} models…", list.models.len()) } else { "Other model…".into() };
         if ui.button(label).clicked() {
-            cx.view.searching_models = true;
+            *searching = true;
         }
     });
-    if cx.view.searching_models {
-        model_search(ui, cx, kind, list);
+    if *searching && let Some(id) = model_search(ui, list, query) {
+        picked = Some(Some(id));
     }
+    if let Some(value) = picked {
+        *chosen = value;
+        *searching = false;
+        query.clear();
+    }
+    ui.small(chosen.as_ref().map_or_else(|| "Default follows the agent's saved configuration.".into(), |id| format!("Model: {id}")));
+    retry
 }
 
-fn model_search(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind, list: &ModelList) {
+fn model_search(ui: &mut Ui, list: &ModelList, query: &mut String) -> Option<String> {
     ui.spacing_mut().item_spacing.y = 2.0;
+    let mut picked = None;
     egui::Frame::new().fill(t::FAINT).corner_radius(8).inner_margin(Margin::symmetric(10, 7)).show(ui, |ui| {
         let response = ui.add(
-            egui::TextEdit::singleline(&mut cx.view.model_query)
+            egui::TextEdit::singleline(query)
                 .id_salt("model-query")
                 .font(t::font(12.5, Weight::Regular))
                 .hint_text(c::text("Model name or id", 12.5, Weight::Regular, t::MUTED))
@@ -267,40 +303,20 @@ fn model_search(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind, list: &ModelList) {
                 .margin(0)
                 .desired_width(ui.available_width()),
         );
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            let query = cx.view.model_query.trim().to_owned();
-            if !query.is_empty() {
-                pick_model(cx, kind, Some(query));
-            }
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !query.trim().is_empty() {
+            picked = Some(query.trim().to_owned());
         }
     });
-    let query = cx.view.model_query.trim().to_owned();
-    for option in model_matches(list, &query) {
-        let response = egui::Frame::new()
-            .inner_margin(Margin::symmetric(10, 4))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    c::label(ui, &option.label, 12.0, Weight::Regular, t::white(0.9));
-                    if let Some(group) = &option.group {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            c::label(ui, group, 12.0, Weight::Regular, t::MUTED);
-                        });
-                    }
-                });
-            })
-            .response
-            .interact(Sense::click());
-        if response.clicked() {
-            pick_model(cx, kind, Some(option.id.clone()));
+    let trimmed = query.trim();
+    for option in model_matches(list, trimmed) {
+        if ui.button(option.group.as_ref().map_or_else(|| option.label.clone(), |group| format!("{} · {group}", option.label))).clicked() {
+            picked = Some(option.id.clone());
         }
     }
-    if !query.is_empty() && !list.models.iter().any(|m| m.id == query) {
-        egui::Frame::new().inner_margin(Margin::symmetric(10, 4)).show(ui, |ui| {
-            if c::text_button(ui, &format!("Use “{query}”"), 12.0, Weight::Medium, t::AMBER).clicked() {
-                pick_model(cx, kind, Some(query));
-            }
-        });
+    if !trimmed.is_empty() && !list.models.iter().any(|m| m.id == trimmed) && ui.button(format!("Use “{trimmed}”")).clicked() {
+        picked = Some(trimmed.to_owned());
     }
+    picked
 }
 
 fn model_matches<'a>(list: &'a ModelList, query: &str) -> Vec<&'a crate::model::ModelOption> {
@@ -862,6 +878,7 @@ mod tests {
             models: (0..30)
                 .map(|i| ModelOption { id: format!("provider/MODEL-{i}"), label: format!("Friendly {i}"), group: None })
                 .collect(),
+            ..Default::default()
         };
         assert_eq!(model_matches(&list, "").len(), 6);
         assert_eq!(model_matches(&list, "model").len(), 8);

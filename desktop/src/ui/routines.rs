@@ -28,10 +28,16 @@ pub struct Form {
     pub revision: Option<i64>,
     #[serde(skip)]
     pub operation: Option<String>,
+    #[serde(skip)]
+    pub model_kind: Option<String>,
+    #[serde(skip)]
+    pub model_searching: bool,
+    #[serde(skip)]
+    pub model_query: String,
 }
 impl Default for Form {
     fn default() -> Self {
-        Self {name:String::new(),prompt:String::new(),cwd:String::new(),kind:"october".into(),model:None,timezone:iana_time_zone::get_timezone().unwrap_or_default(),cadence:"daily".into(),hour:9,minute:0,weekday:0,preferences:"Ask before spending money, sending messages, deleting files outside the project, installing apps or changing system settings.".into(),open:false,id:None,revision:None,operation:None}
+        Self {name:String::new(),prompt:String::new(),cwd:String::new(),kind:"october".into(),model:None,timezone:iana_time_zone::get_timezone().unwrap_or_default(),cadence:"daily".into(),hour:9,minute:0,weekday:0,preferences:"Ask before spending money, sending messages, deleting files outside the project, installing apps or changing system settings.".into(),open:false,id:None,revision:None,operation:None,model_kind:None,model_searching:false,model_query:String::new()}
     }
 }
 
@@ -81,6 +87,16 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         ui.add(egui::TextEdit::multiline(&mut form.prompt).hint_text("What should the agent do?").desired_rows(3));
         ui.add(egui::TextEdit::singleline(&mut form.cwd).hint_text("Full project folder path"));
         ui.horizontal(|ui|{ui.label("Agent");for kind in ["october","claude","codex"]{ui.selectable_value(&mut form.kind,kind.into(),kind);}});
+        let kind = crate::model::AgentKind(form.kind.clone());
+        if form.model_kind.as_deref() != Some(&form.kind) {
+            if form.model_kind.is_some() { form.model = None; }
+            form.model_kind = Some(form.kind.clone()); form.model_searching = false; form.model_query.clear();
+            cx.emit(UiAction::LoadModels { kind: kind.clone() });
+        }
+        let retry = ui.push_id("routine-model", |ui| super::sessions::model_picker(ui, &kind,
+            cx.model.new_session.models.get(kind.as_str()), &mut form.model,
+            (&mut form.model_searching, &mut form.model_query), cx.env)).inner;
+        if retry { cx.emit(UiAction::LoadModels { kind }); }
         ui.horizontal(|ui|{ui.label("Repeat");for cadence in ["daily","weekdays","weekly"]{ui.selectable_value(&mut form.cadence,cadence.into(),cadence);}});
         if form.cadence=="weekly" {egui::ComboBox::from_label("Day").selected_text(["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"][form.weekday.min(6) as usize]).show_ui(ui,|ui|{for (i,day) in ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].iter().enumerate(){ui.selectable_value(&mut form.weekday,i as u32,*day);}});}
         ui.horizontal(|ui|{ui.label("Time");ui.add(egui::DragValue::new(&mut form.hour).range(0..=23));ui.label(":");ui.add(egui::DragValue::new(&mut form.minute).range(0..=59));});

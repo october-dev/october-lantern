@@ -42,8 +42,6 @@ struct NewSessionView: View {
     @AppStorage("openInTerminal") private var openInTerminal = false
     /// nil: the agent's own default model.
     @State private var chosenModel: String?
-    @State private var searchingModels = false
-    @State private var modelQuery = ""
     @ObservedObject private var prefs = Preferences.shared
     @ObservedObject private var shot = ScreenCapture.shared
     /// Why the last start failed, shown above the Start button (the form keeps what you typed).
@@ -91,7 +89,7 @@ struct NewSessionView: View {
         VStack(alignment: .leading, spacing: 12) {
             promptField(task ? "What should it do in \(app.target?.name ?? "this app")?" : "What should it work on? (optional)")
             section("Choose your agent") { agentRow }
-            if let k = selectedKind { section("Model") { modelRow(k) } }
+            if let k = selectedKind { section("Model") { AgentModelPicker(kind: k, model: model, selection: $chosenModel) } }
             section("Folder it works in") { folderRow }
             section("Context") {
                 if app.target != nil, !app.isTerminal { workOnApp }
@@ -178,34 +176,6 @@ struct NewSessionView: View {
     }
 
     // MARK: Options
-
-    @ViewBuilder private func modelRow(_ k: AgentKind) -> some View {
-        if let list = model.models[k.rawValue] {
-            if list.choosable {
-                Menu {
-                    Button("Default") { chosenModel = nil }
-                    if !list.models.isEmpty && list.models.count <= 25 {
-                        Divider()
-                        ForEach(list.models, id: \.id) { m in Button(m.label) { chosenModel = m.id } }
-                    }
-                    Divider()
-                    Button(list.models.count > 25 ? "Search \(list.models.count) models…" : "Other model…") { searchingModels = true }
-                } label: {
-                    field(symbol: "cpu", text: modelLabel(list))
-                }
-                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
-                .help("Model: \(modelLabel(list))")
-                if searchingModels { modelSearch(list) }
-            } else {
-                Text("\(k.displayName) starts with its own default model.").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
-            }
-        } else {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Loading \(k.displayName)'s models…").font(.system(size: 11.5)).foregroundStyle(Theme.muted)
-            }
-        }
-    }
 
     private var folderRow: some View {
         Menu {
@@ -354,53 +324,7 @@ struct NewSessionView: View {
     /// A new agent picked: load its models and start from the model used with it last time.
     private func kindChanged() {
         guard let k = selectedKind else { return }
-        model.loadModels(k)
         chosenModel = model.lastModel(k)
-        searchingModels = false
-        modelQuery = ""
-    }
-
-    private func modelLabel(_ list: EngineMessage.ModelList) -> String {
-        guard let chosenModel else { return "Default model" }
-        return list.models.first { $0.id == chosenModel }.map { m in m.group.map { "\(m.label) · \($0)" } ?? m.label } ?? chosenModel
-    }
-
-    /// Type to filter the agent's models, or use exactly what you typed.
-    private func modelSearch(_ list: EngineMessage.ModelList) -> some View {
-        let query = modelQuery.trimmingCharacters(in: .whitespaces)
-        let matches = query.isEmpty ? Array(list.models.prefix(6))
-            : Array(list.models.filter { $0.id.localizedCaseInsensitiveContains(query) || $0.label.localizedCaseInsensitiveContains(query) }.prefix(8))
-        return VStack(alignment: .leading, spacing: 2) {
-            TextField("Model name or id", text: $modelQuery)
-                .textFieldStyle(.plain).font(.system(size: 12.5))
-                .padding(.horizontal, 10).padding(.vertical, 7)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.faint))
-                .onSubmit { if !query.isEmpty { pickModel(matches.first { $0.id == query }?.id ?? query) } }
-            ForEach(matches, id: \.id) { m in
-                Button { pickModel(m.id) } label: {
-                    HStack {
-                        Text(m.label).foregroundStyle(Theme.ink.opacity(0.9)).lineLimit(1)
-                        Spacer()
-                        if let g = m.group { Text(g).foregroundStyle(Theme.muted) }
-                    }
-                    .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 4).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            if !query.isEmpty && !list.models.contains(where: { $0.id == query }) {
-                Button { pickModel(query) } label: {
-                    Text("Use “\(query)”").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private func pickModel(_ id: String) {
-        chosenModel = id
-        searchingModels = false
-        modelQuery = ""
     }
 
     private var selectedKind: AgentKind? { kind ?? model.installedKinds.flatMap { ordered($0).first } }
