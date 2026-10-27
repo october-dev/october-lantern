@@ -9,6 +9,10 @@ impl Lantern {
     pub(super) fn apply(&mut self, action: UiAction) {
         match action {
             UiAction::Control { action, launch } => {
+                if action == "continue" && !self.model.prefs.computer_use {
+                    self.model.control_message = Some("Turn on app access in Settings before continuing.".into());
+                    return;
+                }
                 if self.model.control_sending {
                     return;
                 }
@@ -29,10 +33,18 @@ impl Lantern {
             UiAction::StartShow(question) => self.start_show(question),
             UiAction::Guide(action) => self.show_action(&action),
             UiAction::Routine(mut value) => {
-                value["type"] = serde_json::json!("routine");
-                value["requestId"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
-                if let Err(error) = self.engine.send(&value) {
-                    self.model.routine_error = Some(error.to_string());
+                if self.model.routine_pending.is_some() {
+                    return;
+                }
+                value["type"] = json!("routine");
+                let id = value["requestId"].as_str().map(str::to_string).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                value["requestId"] = json!(id);
+                match self.engine.send(&value) {
+                    Ok(()) => {
+                        self.model.routine_error = None;
+                        self.model.routine_pending = Some((id, value["action"] == "save"));
+                    }
+                    Err(error) => self.model.routine_error = Some(error.to_string()),
                 }
             }
             UiAction::SetPanel(panel) => self.set_panel(panel),

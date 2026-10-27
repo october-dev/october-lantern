@@ -353,7 +353,7 @@ impl Routines {
             draft.kind,
             &PathBuf::from(draft.cwd),
             Some(&prompt),
-            crate::launch::Extras { ask_first: true, operation_id: Some(operation), ..Default::default() },
+            crate::launch::Extras { ask_first: true, run_once: true, operation_id: Some(operation), ..Default::default() },
             draft.model.as_deref(),
             crate::launch::Mode::Background,
             std::time::Instant::now() + std::time::Duration::from_secs(120),
@@ -365,7 +365,7 @@ impl Routines {
         {
             let db = self.db.lock().unwrap();
             db.execute("UPDATE routine_runs SET state='running' WHERE state='unknown' AND launch IN (SELECT id FROM launches WHERE agent IS NOT NULL AND ended IS NULL)",[])?;
-            db.execute("UPDATE routine_runs SET state='finished' WHERE state IN ('running','unknown') AND launch IN (SELECT id FROM launches WHERE ended IS NOT NULL)",[])?;
+            db.execute("UPDATE routine_runs SET state=CASE (SELECT json_extract(body,'$.outcome') FROM cards WHERE launch=routine_runs.launch AND kind='result' ORDER BY created DESC LIMIT 1) WHEN 'done' THEN 'reported_done' WHEN 'partial' THEN 'partial' WHEN 'failed' THEN 'failed' ELSE 'closed' END, message=COALESCE(message,'The owned session ended. Review its result; a closed session alone is not proof of completion.') WHERE state IN ('running','unknown') AND launch IN (SELECT id FROM launches WHERE ended IS NOT NULL)",[])?;
             db.execute("UPDATE routine_runs SET state='failed',message='No agent launch was admitted.' WHERE state='unknown' AND NOT EXISTS(SELECT 1 FROM launches WHERE id=routine_runs.launch)",[])?;
         }
         let rows = self.snapshot()?;
@@ -472,6 +472,48 @@ mod tests {
         drop(cards);
         let _ = std::fs::remove_file(path);
     }
+    #[test]
+    fn session_exit_releases_overlap_without_claiming_unreported_success() {
+        let path = std::env::temp_dir().join(format!("lantern-routine-end-{}.db", uuid::Uuid::new_v4()));
+        let cards = crate::cards::Cards::open(&path).unwrap();
+        let routines = Routines::open(&path).unwrap();
+        let routine = routines.save(None, None, draft()).unwrap();
+        for (index, outcome, expected) in [(0, None, "closed"), (1, Some(crate::cards::Outcome::Done), "reported_done")] {
+            let operation = uuid::Uuid::new_v4().to_string();
+            let at = Utc::now();
+            assert!(routines.admit(&routine, 1, &format!("manual:{index}"), &operation, at).unwrap().is_some());
+            let (launch, key) = cards.register(Kind::October, Path::new(&draft().cwd), "Fixture", None, Some(&operation)).unwrap();
+            routines
+                .receipt(
+                    &operation,
+                    Ok(crate::launch::Launched { session: Some("fixture".into()), bus_problem: None, launch: Some(launch.clone()) }),
+                )
+                .unwrap();
+            if let Some(outcome) = outcome {
+                cards
+                    .handle(
+                        &launch,
+                        &key,
+                        crate::cards::Op::Result {
+                            operation_id: uuid::Uuid::new_v4().to_string(),
+                            summary: "Reported result".into(),
+                            outcome,
+                            files: vec![],
+                        },
+                    )
+                    .unwrap();
+            }
+            cards.session_stopped(&launch).unwrap();
+            routines.tick(at, at).unwrap();
+            let state: String =
+                routines.db.lock().unwrap().query_row("SELECT state FROM routine_runs WHERE id=?1", [operation], |r| r.get(0)).unwrap();
+            assert_eq!(state, expected);
+        }
+        drop(routines);
+        drop(cards);
+        let _ = std::fs::remove_file(path);
+    }
+
     fn draft() -> Draft {
         Draft {
             name: "Check".into(),

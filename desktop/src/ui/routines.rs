@@ -26,10 +26,12 @@ pub struct Form {
     pub id: Option<String>,
     #[serde(skip)]
     pub revision: Option<i64>,
+    #[serde(skip)]
+    pub operation: Option<String>,
 }
 impl Default for Form {
     fn default() -> Self {
-        Self {name:String::new(),prompt:String::new(),cwd:String::new(),kind:"october".into(),model:None,timezone:"UTC".into(),cadence:"daily".into(),hour:9,minute:0,weekday:0,preferences:"Ask before spending money, sending messages, deleting files outside the project, installing apps or changing system settings.".into(),open:false,id:None,revision:None}
+        Self {name:String::new(),prompt:String::new(),cwd:String::new(),kind:"october".into(),model:None,timezone:"UTC".into(),cadence:"daily".into(),hour:9,minute:0,weekday:0,preferences:"Ask before spending money, sending messages, deleting files outside the project, installing apps or changing system settings.".into(),open:false,id:None,revision:None,operation:None}
     }
 }
 
@@ -54,16 +56,19 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                 ui.label(draft["prompt"].as_str().unwrap_or_default());
                 ui.small(format!("{} · {} at {:02}:{:02} · {}",if routine["enabled"]==true {"On"} else {"Paused"},draft["cadence"].as_str().unwrap_or_default(),draft["hour"].as_u64().unwrap_or(0),draft["minute"].as_u64().unwrap_or(0),draft["timezone"].as_str().unwrap_or_default()));
                 if let Some(next)=routine["nextRun"].as_str(){ui.small(format!("Next: {next}"));}
-                if let Some(state)=routine["lastRun"]["state"].as_str(){ui.small(format!("Last run: {state}"));}
+                if let Some(state)=routine["lastRun"]["state"].as_str(){ui.small(format!("Last run: {}",if state=="reported_done" {"agent reported completion"}else{state}));}
                 if let Some(message)=routine["lastRun"]["message"].as_str(){ui.small(message);}
-                ui.horizontal(|ui| {
+                if let Some(launch)=cx.model.launches.iter().find(|launch|Some(launch.id.as_str())==routine["lastRun"]["launch"].as_str()).cloned() {
+                    super::task_cards::launch_cards(ui,cx,&launch,true);
+                }
+                ui.add_enabled_ui(cx.model.routine_pending.is_none() && !cx.view.routine_form.open,|ui| {ui.horizontal(|ui| {
                     if ui.button("Run now").clicked(){action(cx,"run",&routine,None);}
                     if ui.button(if routine["enabled"]==true {"Pause"}else{"Enable"}).clicked(){action(cx,"change",&routine,Some(if routine["enabled"]==true {"pause"}else{"enable"}));}
                     if ui.button("Edit").clicked() && let Ok(mut form)=serde_json::from_value::<Form>(draft.clone()) {
                             form.id=routine["id"].as_str().map(str::to_string);form.revision=routine["revision"].as_i64();form.open=true;cx.view.routine_form=form;
                     }
                     if ui.button("Delete").clicked(){action(cx,"change",&routine,Some("delete"));}
-                });
+                });});
             });
         }
         if !cx.view.routine_form.open {
@@ -83,10 +88,10 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         ui.add(egui::TextEdit::multiline(&mut form.preferences).hint_text("Preferences").desired_rows(3));
         ui.small("Preferences are instructions, not enforced restrictions. Runs use the selected agent's account and credits. No overlapping runs. Repeated DST times run once; nonexistent times are skipped.");
         ui.horizontal(|ui|{
-            if ui.add_enabled(!form.name.trim().is_empty()&&!form.prompt.trim().is_empty(),egui::Button::new("Confirm and save")).clicked(){
+            if ui.add_enabled(cx.model.routine_pending.is_none()&&!form.name.trim().is_empty()&&!form.prompt.trim().is_empty(),egui::Button::new("Confirm and save")).clicked(){
                 let draft=serde_json::to_value(&form).unwrap_or_default();
-                cx.emit(UiAction::Routine(json!({"action":"save","id":form.id,"revision":form.revision,"draft":draft})));
-                form.open=false;
+                let operation=form.operation.get_or_insert_with(||uuid::Uuid::new_v4().to_string()).clone();
+                cx.emit(UiAction::Routine(json!({"action":"save","requestId":operation,"id":form.id,"revision":form.revision,"draft":draft})));
             }
             if ui.button("Cancel").clicked(){form.open=false;}
         });

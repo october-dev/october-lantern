@@ -18,9 +18,9 @@ These controls do **not** prove that arbitrary shell children or other same-user
 
 ## Routines
 
-Open **Routines** from Lantern's menu. Create a local schedule with a task, existing project folder, October/Claude Code/Codex, an IANA timezone, a daily/weekdays/weekly time and preferences. Review and confirm it explicitly. An agent's suggestion opens the same form and cannot create a schedule itself. Each run uses that agent's account and may use credits; native harness approvals remain enabled.
+Open **Routines** from Lantern's menu. Create a local schedule with a task, existing project folder, October/Claude Code/Codex, an IANA timezone, a daily/weekdays/weekly time and preferences. Review and confirm it explicitly. An agent's suggestion opens the same form and cannot create a schedule itself. Each run uses that agent's account and may use credits. Routines use the harness's one-shot mode, rather than leaving a terminal waiting after its turn. Claude retains native permission rules; Codex exec uses its workspace-write sandbox.
 
-Lantern and the computer must remain available. An occurrence is recorded before starting an agent. Retries cannot launch it twice; an uncertain admission blocks overlap until reconciled. There are no catch-up bursts after sleep or restart. A repeated DST time runs once at its earlier occurrence; a nonexistent time is skipped. The panel shows next run and the last admission/session state. “Finished” means the owned terminal session ended, not that an output was independently verified. Pausing/deleting a schedule leaves an admitted run running.
+Lantern and the computer must remain available. An occurrence is recorded before starting an agent. Retries cannot launch it twice; an uncertain admission blocks overlap until reconciled. There are no catch-up bursts after sleep or restart. A repeated DST time runs once at its earlier occurrence; a nonexistent time is skipped. The panel shows next run, its cards/results and the last admission/session state. A session that exits without a result is “closed”; an agent's completion report is labelled as such. Pausing/deleting a schedule leaves an admitted run running.
 
 ## Show me
 

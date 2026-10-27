@@ -217,6 +217,7 @@ pub struct LaunchEnv {
     pub env: Vec<(String, String)>,
     /// Without the agent's auto-approve flags (`hands_free_args`).
     pub ask_first: bool,
+    pub run_once: bool,
 }
 
 /// October: the user's own `october` when it's on PATH, else Lantern's October Harness with its
@@ -229,6 +230,7 @@ pub(crate) fn october_env(on_path: bool, bundled: Option<&crate::harness::Bundle
         path_prefix: bundled.map(|b| b.node_bin.to_string_lossy().into_owned()),
         env: session,
         ask_first: false,
+        run_once: false,
     }
 }
 
@@ -295,6 +297,7 @@ pub struct Extras<'a> {
     pub operation_id: Option<&'a str>,
     /// The agent asks before acting, as it does on its own (see `hands_free_args`).
     pub ask_first: bool,
+    pub run_once: bool,
 }
 
 /// How Lantern asks every agent it starts to answer, after the first message: where it is, and
@@ -438,6 +441,10 @@ pub(crate) fn agent_command_with(
         cmd.push(' ');
         cmd.push_str(arg);
     }
+    for arg in once_args(kind, extra.run_once) {
+        cmd.push(' ');
+        cmd.push_str(&quote(arg));
+    }
     for arg in hands_free_args(kind, extra.ask_first) {
         cmd.push(' ');
         cmd.push_str(&quote(arg));
@@ -504,6 +511,7 @@ pub(crate) fn agent_argv(
     // Where a launch's own Node.js is (October Harness's), for npm shims that need it.
     node_dir: Option<&Path>,
     ask_first: bool,
+    run_once: bool,
 ) -> Result<(PathBuf, Vec<String>)> {
     let name = program(kind);
     let found = match program_override {
@@ -543,13 +551,14 @@ pub(crate) fn agent_argv(
         _ => bail!("Lantern can't start {} from {}.", agent_name(kind), found.display()),
     };
     // Asked before the Bus's arguments are added: whether Codex takes it depends only on Codex.
-    let no_daemon = kind == Kind::Codex && codex_has_no_daemon(&executable, &program, &args);
+    let no_daemon = !run_once && kind == Kind::Codex && codex_has_no_daemon(&executable, &program, &args);
     if let Some(b) = bus {
         args.extend(b.args.iter().cloned());
     }
     if no_daemon {
         args.push("--no-daemon".into());
     }
+    args.extend(once_args(kind, run_once).iter().map(|a| a.to_string()));
     args.extend(hands_free_args(kind, ask_first).iter().map(|a| a.to_string()));
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         args.extend([flag.to_string(), m.to_string()]);
@@ -573,6 +582,19 @@ pub(crate) fn agent_argv(
             Ok((PathBuf::from(wrapper), wrapped))
         }
         _ => Ok((program, args)),
+    }
+}
+
+/// Routines use one model run, then exit; a TUI left waiting would block every later occurrence.
+fn once_args(kind: Kind, once: bool) -> &'static [&'static str] {
+    if !once {
+        return &[];
+    }
+    match kind {
+        Kind::October => &["--print"],
+        Kind::Claude => &["--print", "--allowedTools", "mcp__lantern__*"],
+        Kind::Codex => &["exec", "--skip-git-repo-check", "--sandbox", "workspace-write"],
+        _ => &[],
     }
 }
 
@@ -672,7 +694,7 @@ fn codex_has_no_daemon(found: &Path, program: &Path, args: &[String]) -> bool {
 #[cfg(windows)]
 fn check_codex_early() {
     // Working out Codex's arguments asks it, and remembers the answer.
-    std::thread::spawn(|| agent_argv(Kind::Codex, None, &[], None, None, None, None, false).map(drop));
+    std::thread::spawn(|| agent_argv(Kind::Codex, None, &[], None, None, None, None, false, false).map(drop));
 }
 
 /// Whether `codex --help` offers `--no-daemon` (as an option, not just in prose).
@@ -720,7 +742,8 @@ fn launch_session(
 ) -> Result<Launched> {
     let program_override = extra.program.as_deref().map(Path::new);
     let node_dir = extra.path_prefix.as_deref().map(Path::new);
-    let (program, args) = agent_argv(kind, prompt, images, model, bus.as_ref(), program_override, node_dir, extra.ask_first)?;
+    let (program, args) =
+        agent_argv(kind, prompt, images, model, bus.as_ref(), program_override, node_dir, extra.ask_first, extra.run_once)?;
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
     let session = extra.session.clone().unwrap_or_else(|| format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000));
@@ -841,6 +864,10 @@ pub fn launch(
         }
     }
     extra.ask_first = extras.ask_first;
+    extra.run_once = extras.run_once;
+    if extras.run_once && !crate::cards::supported(kind) {
+        bail!("This harness cannot run a local routine");
+    }
     if kind == Kind::Claude
         && !extras.ask_first
         && let Err(error) = trust_claude_folder(cwd)

@@ -980,6 +980,7 @@ pub struct Model {
     pub guide: Option<serde_json::Value>,
     pub routines: Vec<serde_json::Value>,
     pub routine_error: Option<String>,
+    pub routine_pending: Option<(String, bool)>,
     pub panel: Option<PanelMode>,
     /// Agents in rank order (needs you, your turn, working, the rest; not-live last).
     pub agents: Vec<Agent>,

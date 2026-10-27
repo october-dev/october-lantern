@@ -41,8 +41,8 @@ final class LocalRoutines: ObservableObject {
     @Published var pending: Set<String> = []
     var send: (([String: Any]) -> Bool)?
 
-    func request(_ fields: [String: Any]) {
-        let id = UUID().uuidString.lowercased()
+    func request(_ fields: [String: Any], operation: String? = nil) {
+        let id = operation ?? UUID().uuidString.lowercased()
         var value = fields
         value["requestId"] = id
         error = nil
@@ -53,11 +53,11 @@ final class LocalRoutines: ObservableObject {
         pending.remove(id)
         if !ok { error = message ?? "The routine couldn't be changed. Try again." }
     }
-    func save(_ draft: RoutineDraft, editing: LocalRoutine?) {
+    func save(_ draft: RoutineDraft, editing: LocalRoutine?, operation: String) {
         guard let data = try? JSONEncoder().encode(draft), let value = try? JSONSerialization.jsonObject(with: data) else { return }
         var fields: [String: Any] = ["action": "save", "draft": value]
         if let editing { fields["id"] = editing.id; fields["revision"] = editing.revision }
-        request(fields)
+        request(fields, operation: operation)
     }
     func change(_ routine: LocalRoutine, _ action: String) {
         request(["action": "change", "id": routine.id, "revision": routine.revision, "change": action])
@@ -68,11 +68,14 @@ final class LocalRoutines: ObservableObject {
 }
 
 struct RoutinesView: View {
+    @ObservedObject var model: AppModel
     @ObservedObject private var routines = LocalRoutines.shared
     @ObservedObject private var metrics = PanelMetrics.shared
     @State private var draft = RoutineDraft()
     @State private var editing: LocalRoutine?
     @State private var creating = false
+    @State private var saving = false
+    @State private var saveOperation: String?
 
     var body: some View {
         ScrollView {
@@ -91,15 +94,18 @@ struct RoutinesView: View {
                         if let error = routine.error { Text(error).font(.system(size: 11)).foregroundStyle(Theme.amber) }
                         if let next = routine.nextRun { Text("Next: \(next)").font(.system(size: 11)).textSelection(.enabled) }
                         if let run = routine.lastRun {
-                            Text("Last run: \(run.state)").font(.system(size: 11, weight: .medium))
+                            Text("Last run: \(run.state == "reported_done" ? "agent reported completion" : run.state)").font(.system(size: 11, weight: .medium))
                             if let message = run.message { Text(message).font(.system(size: 11)).foregroundStyle(Theme.muted) }
+                            if let launch = model.launches.first(where: { $0.id == run.launch }) {
+                                LaunchCards(launch: launch, model: model, keys: true)
+                            }
                         }
                         HStack {
                             Button("Run now") { routines.run(routine) }
                             Button(routine.enabled ? "Pause" : "Enable") { routines.change(routine, routine.enabled ? "pause" : "enable") }
                             Button("Edit") { editing = routine; draft = routine.draft; creating = true }
                             Button("Delete", role: .destructive) { routines.change(routine, "delete") }
-                        }.font(.system(size: 11)).disabled(!routines.pending.isEmpty)
+                        }.font(.system(size: 11)).disabled(creating || !routines.pending.isEmpty)
                     }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
                         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.faint))
                 }
@@ -115,7 +121,10 @@ struct RoutinesView: View {
         .onAppear { takeSuggestion() }
         .onChange(of: routines.suggestedDraft) { _, _ in takeSuggestion() }
         .onChange(of: routines.pending) { old, new in
-            if !old.isEmpty && new.isEmpty && routines.error == nil { creating = false; editing = nil }
+            if saving && !old.isEmpty && new.isEmpty {
+                saving = false
+                if routines.error == nil { creating = false; editing = nil; saveOperation = nil }
+            }
         }
     }
 
@@ -164,9 +173,13 @@ struct RoutinesView: View {
             Text("Preferences are instructions to the agent, not enforced restrictions. Each run uses the selected agent's account and may use its credits. No overlapping runs. A repeated daylight-saving time runs once; a nonexistent time is skipped.")
                 .font(.system(size: 11)).foregroundStyle(Theme.muted)
             HStack {
-                Button(editing == nil ? "Confirm and create" : "Confirm changes") { routines.save(draft, editing: editing) }
+                Button(editing == nil ? "Confirm and create" : "Confirm changes") {
+                    let operation = saveOperation ?? UUID().uuidString.lowercased()
+                    saveOperation = operation; saving = true
+                    routines.save(draft, editing: editing, operation: operation)
+                }
                     .buttonStyle(AmberButtonStyle()).disabled(draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !routines.pending.isEmpty)
-                Button("Cancel") { creating = false; editing = nil }
+                Button("Cancel") { creating = false; editing = nil; saving = false; saveOperation = nil }
             }
         }.textFieldStyle(.roundedBorder)
     }

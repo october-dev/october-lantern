@@ -23,7 +23,7 @@ struct PanelView: View {
                 NewSessionView(model: model)
             case .routines:
                 PanelTitle(title: "Routines", model: model)
-                RoutinesView()
+                RoutinesView(model: model)
             case .october:
                 PanelTitle(title: "October", model: model)
                 OctoberView(model: model)

@@ -477,6 +477,7 @@ pub fn run() -> Result<()> {
                             computer_note: None,
                             cards_note: None,
                             operation_id: None,
+                            run_once: false,
                             ask_first,
                         };
                         let result = match launch::launch(

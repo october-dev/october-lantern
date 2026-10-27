@@ -335,6 +335,10 @@ impl Lantern {
     /// while uninstalling, which stops it on purpose.
     fn engine_stopped(&mut self, error: String) {
         self.model.control_sending = false;
+        if self.model.routine_pending.take().is_some() {
+            self.model.routine_error =
+                Some("The engine disconnected. Check the saved routines before retrying; the previous outcome is unknown.".into());
+        }
         self.stop_show();
         self.connected = false;
         self.engine_restarts.retain(|at| at.elapsed() < Duration::from_secs(300));

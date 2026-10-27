@@ -16,6 +16,10 @@ final class AppModel: ObservableObject {
     @Published var controlSending = false
     @Published var controlMessage: String?
     func control(_ action: String, launch: String?) {
+        if action == "continue" && !prefs.computerUse {
+            controlMessage = "Turn on app access in Settings before continuing."
+            return
+        }
         controlSending = engine.control(action, launch: launch)
         if !controlSending { controlMessage = "Lantern's engine isn't available." }
     }
@@ -69,6 +73,7 @@ final class AppModel: ObservableObject {
     private var launchAfterHarness: (() -> Void)?
     private var octoberSessionWatch: AnyCancellable?
     private var signInWatch: AnyCancellable?
+    private var showMeWatch: AnyCancellable?
     @Published private(set) var launching = false
     /// Models each agent can start with, by kind, once the engine has listed them.
     @Published private(set) var models: [String: EngineMessage.ModelList] = [:]
@@ -219,6 +224,10 @@ final class AppModel: ObservableObject {
         // in memory (never the refresh token).
         octoberSessionWatch = OctoberAccount.shared.$session.sink { [weak self] session in
             self?.engine.octoberSession(accessToken: session?.accessToken, expiresAt: session?.expiresAt)
+            if session == nil { ShowMe.shared.stop() }
+        }
+        showMeWatch = prefs.$showMe.sink { enabled in
+            if !enabled { ShowMe.shared.stop() }
         }
         // Back from the browser: Lantern comes forward where you were (Ask Lantern if nothing was
         // open), with your question still in its box.
@@ -249,7 +258,10 @@ final class AppModel: ObservableObject {
             // A guide lives in the engine: it ended with it.
             ShowMe.shared.stop()
             self?.controlSending = false
-            LocalRoutines.shared.pending.removeAll()
+            if !LocalRoutines.shared.pending.isEmpty {
+                LocalRoutines.shared.error = "The engine disconnected. Check saved routines before retrying; the previous outcome is unknown."
+                LocalRoutines.shared.pending.removeAll()
+            }
             self?.engineStopped(message)
         }
         engine.onHealth = { [weak self] health in

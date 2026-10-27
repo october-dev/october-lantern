@@ -122,7 +122,13 @@ impl Lantern {
                 }
             }
             "routineResult" => {
-                self.model.routine_error = event["message"].as_str().map(str::to_string);
+                if self.model.routine_pending.as_ref().is_some_and(|(id, _)| Some(id.as_str()) == event["requestId"].as_str()) {
+                    let (_, save) = self.model.routine_pending.take().unwrap();
+                    self.model.routine_error = event["message"].as_str().map(str::to_string);
+                    if save && event["ok"] == true {
+                        self.view.routine_form.open = false;
+                    }
+                }
             }
             "cards" => {
                 self.model.launches = serde_json::from_value(event["launches"].clone()).unwrap_or_default();
@@ -254,5 +260,28 @@ impl Lantern {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod routine_receipt_tests {
+    use super::*;
+    #[test]
+    fn routine_form_stays_open_on_failure_and_ignores_unrelated_receipts() {
+        let (engine, _) = crate::sidecar::test_sender();
+        let mut app = Lantern::new(engine, None);
+        app.view.routine_form.open = true;
+        app.view.routine_form.name = "Keep my draft".into();
+        app.model.routine_pending = Some(("save-1".into(), true));
+        app.engine_event(json!({"type":"routineResult","requestId":"other","ok":true}));
+        assert!(app.model.routine_pending.is_some());
+        app.engine_event(json!({"type":"routineResult","requestId":"save-1","ok":false,"message":"Choose a valid folder"}));
+        assert!(app.model.routine_pending.is_none());
+        assert!(app.view.routine_form.open);
+        assert_eq!(app.view.routine_form.name, "Keep my draft");
+        assert_eq!(app.model.routine_error.as_deref(), Some("Choose a valid folder"));
+        app.model.routine_pending = Some(("save-2".into(), true));
+        app.engine_event(json!({"type":"routineResult","requestId":"save-2","ok":true}));
+        assert!(!app.view.routine_form.open);
     }
 }
