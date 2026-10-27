@@ -218,6 +218,8 @@ final class WindowController {
                 guard let self else { return }
                 let p = NSEvent.mouseLocation
                 if self.panel.frame.contains(p) || self.pill.frame.contains(p) { return }
+                // Standalone forms keep their input until explicitly dismissed.
+                if self.model.panel == .routines || self.model.panel == .newSession || self.model.panel == .october { return }
                 if self.model.draft.isEmpty && !self.model.dictation.isActive { self.model.panel = nil }
             }
         }

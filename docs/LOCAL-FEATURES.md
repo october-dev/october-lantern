@@ -32,4 +32,6 @@ No endpoint/mode fallback changes a guide into an ordinary answer, and no text-o
 
 ## Validation
 
+See [the implementation evidence and remaining gates](LOCAL-VALIDATION.md).
+
 Run `scripts/check.sh` (Mac/Linux), `scripts/check.ps1` (Windows), and `scripts/check-windows-types.sh` for a cross-target type check. The latter does not execute Windows code. `scripts/smoke-local-cards.py` exercises card transport, cancellation, routine editing and Show me cancellation against a private debug profile without starting a paid model. Native UI/model tests must also be recorded separately.
