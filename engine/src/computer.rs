@@ -1,7 +1,8 @@
 //! Using the computer's apps: Cua Driver (github.com/trycua/cua, MIT) for the agents Lantern
 //! starts. With it an agent can see and work any app's windows (click, type, scroll, menus,
-//! screenshots, the user's signed-in browser) in the background, without taking over the mouse,
-//! with its own cursor on screen.
+//! screenshots, the user's signed-in browser) with its own cursor on screen, without taking over
+//! the mouse: in the foreground by default, so the user can watch, and in the background when they
+//! ask for that (see `note`).
 //!
 //! The `cua-driver` program isn't in the app: it's downloaded the first time it's needed (the
 //! pinned release in `engine/cua.json`, checked against its SHA-256) into Lantern's support folder.
@@ -186,9 +187,13 @@ pub fn note(has_tools: bool) -> Option<String> {
         )
     };
     Some(format!(
-        "You can also use the apps on this computer through Cua Driver, in the background, without taking over the mouse. {how} \
-         Prefer files, the terminal and APIs when they can do the job; use the apps when the task needs them (a website in the \
-         user's browser, a form, a desktop app). After each action, look at the window again to check what happened."
+        "You can also use the apps on this computer through Cua Driver, with your own cursor, without taking over the user's \
+         mouse or keyboard. {how} Work in the foreground by default, so the user can watch: before you work in an app, bring \
+         its window to the front with bring_to_front (its pid and window_id), including apps you open with launch_app, which \
+         opens them behind other windows. Leave apps in the background only when the user asks for that (for example \
+         \"in the background\" or \"don't interrupt me\"). Prefer files, the terminal and APIs when they can do the job; \
+         use the apps when the task needs them (a website in the user's browser, a form, a desktop app). After each action, \
+         look at the window again to check what happened."
     ))
 }
 
@@ -537,6 +542,13 @@ pub fn status_json(status: &str, message: Option<String>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agents_work_in_front_of_the_user_unless_asked_not_to() {
+        let note = note(true).unwrap();
+        assert!(note.contains("Work in the foreground by default") && note.contains("bring_to_front"), "{note}");
+        assert!(note.contains("only when the user asks"), "{note}");
+    }
 
     #[cfg(unix)]
     #[test]

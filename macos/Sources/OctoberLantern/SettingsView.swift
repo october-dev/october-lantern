@@ -87,7 +87,7 @@ struct SettingsView: View {
                 Text("Agents Lantern starts (Claude Code, Codex, OpenCode, October) can see and message each other and share tasks. Everything stays on this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Let agents use this Mac's apps", isOn: Binding(get: { prefs.computerUse }, set: { model.setComputerUse($0) }))
-                Text("Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source) and Lantern's Accessibility and Screen Recording permissions.")
+                Text("Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) with their own cursor, without taking over your mouse. They bring the app to the front so you can watch, or work in the background when you ask them to. Uses Cua Driver (open source) and Lantern's Accessibility and Screen Recording permissions.")
                     .font(.caption).foregroundStyle(.secondary)
                 if prefs.computerUse { computerStatus }
                 Toggle("Show me", isOn: $prefs.showMe)
