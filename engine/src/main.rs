@@ -16,6 +16,7 @@ mod computer;
 mod console;
 mod control;
 mod deliver;
+mod elog;
 mod harness;
 mod history;
 mod hooks;

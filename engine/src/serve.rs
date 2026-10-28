@@ -312,6 +312,7 @@ pub fn run() -> Result<()> {
     });
 
     emit(&json!({"type": "hello", "protocol": 3, "version": env!("CARGO_PKG_VERSION")}));
+    crate::elog::line(format_args!("engine {} started (pid {})", env!("CARGO_PKG_VERSION"), std::process::id()));
     crate::hooks::refresh_hook_binary();
     // Checking installed agents runs a login shell, so do it off the main loop.
     std::thread::spawn(emit_installed);
@@ -367,6 +368,7 @@ pub fn run() -> Result<()> {
     let mut scan_pending = false;
     let mut history_pending = false;
     let mut launch_pending = false;
+    let mut launch_started = Instant::now();
     let mut agents: Vec<Agent> = Vec::new();
     let mut last_emit = Instant::now() - HEARTBEAT;
     let mut next_scan = Instant::now();
@@ -390,6 +392,21 @@ pub fn run() -> Result<()> {
         match rx.recv_timeout(wait) {
             Ok(Incoming::LaunchFinished(result)) => {
                 launch_pending = false;
+                match result["ok"].as_bool() {
+                    Some(true) => crate::elog::line(format_args!(
+                        "launch {}: started after {} ms, session {}{}",
+                        result["requestId"].as_str().unwrap_or_default(),
+                        launch_started.elapsed().as_millis(),
+                        result["session"].as_str().unwrap_or("none (a terminal window)"),
+                        result["warning"].as_str().map(|w| format!("; {w}")).unwrap_or_default()
+                    )),
+                    _ => crate::elog::line(format_args!(
+                        "launch {}: failed after {} ms: {}",
+                        result["requestId"].as_str().unwrap_or_default(),
+                        launch_started.elapsed().as_millis(),
+                        result["message"].as_str().unwrap_or_default()
+                    )),
+                }
                 emit(&result);
             }
             Ok(Incoming::CardsChanged) => emit_cards(&mut last_cards),
@@ -402,6 +419,12 @@ pub fn run() -> Result<()> {
                 if let Some(c) = cards {
                     c.bind(&fresh);
                     c.sweep();
+                }
+                for a in fresh.iter().filter(|a| !agents.iter().any(|b| b.id == a.id)) {
+                    crate::elog::line(format_args!("agent seen: {}", crate::elog::agent(a)));
+                }
+                for a in agents.iter().filter(|a| !fresh.iter().any(|b| b.id == a.id)) {
+                    crate::elog::line(format_args!("agent gone: {}", a.id));
                 }
                 if fresh != agents || last_emit.elapsed() >= HEARTBEAT {
                     agents = fresh;
@@ -459,11 +482,21 @@ pub fn run() -> Result<()> {
                     timeout_ms,
                 }) => {
                     if launch_pending {
+                        crate::elog::line(format_args!("launch {request_id}: refused, another is still starting"));
                         emit(&json!({"type": "launchResult", "requestId": request_id, "ok": false,
                             "message": "Another session is still starting. Wait for its outcome before starting another."}));
                         continue;
                     }
                     launch_pending = true;
+                    launch_started = Instant::now();
+                    crate::elog::line(format_args!(
+                        "launch {request_id}: {} in {}, {}, message {}, {} images, bus {bus}, computer {computer}",
+                        kind.as_str(),
+                        crate::elog::folder(std::path::Path::new(&cwd)),
+                        if background { "in the background" } else { "in a terminal window" },
+                        if prompt.as_deref().is_some_and(|p| !p.is_empty()) { "given" } else { "none" },
+                        images.len() + usize::from(screenshot.is_some()),
+                    ));
                     let finished = tx.clone();
                     let deadline = Instant::now() + Duration::from_millis(timeout_ms.min(45_000));
                     // Off the loop: it may wait for the agent to start before typing its first message.

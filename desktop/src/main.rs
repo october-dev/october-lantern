@@ -5,6 +5,7 @@
 mod account;
 mod analytics;
 mod app;
+mod app_log;
 mod model;
 mod october_ai;
 mod os;

@@ -72,6 +72,10 @@ enum Support {
         details += "\nComputer use: \(model.computer?.status ?? "off")"
         details += "\nSigned in to October: \(OctoberAccount.shared.session == nil ? "no" : "yes")"
         details += "\nSaved chats: \(Assistant.loadNote) (\(Assistant.shared.conversations.count) now)"
+        details += "\nAsk Lantern tasks, newest first:\n\(Assistant.shared.reportLines())"
+        details += "\nEach agent:\n" + model.agents.map { a in
+            "- \(a.id) \(a.state) via \(a.route?.via ?? "none")\(a.tmux.map { " pane \($0.socket.map { "-L \($0) " } ?? "")\($0.target)" } ?? "")\(a.host.map { " in \($0.app)" } ?? "")"
+        }.joined(separator: "\n")
         let token = OctoberAccount.shared.session?.accessToken
         model.show("Sending logs…")
         Task {

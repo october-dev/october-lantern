@@ -528,6 +528,12 @@ pub struct TaskLink {
     /// it was first sent (RFC 3339): what the agent said before then isn't its answer.
     pub send_key: Option<String>,
     pub sent_at: Option<String>,
+    /// When it was started, and when Lantern first saw its agent (RFC 3339): for Send Logs.
+    pub started_at: Option<String>,
+    pub seen_at: Option<String>,
+    /// The app log already says its agent wasn't seen in time.
+    #[serde(skip)]
+    pub unseen_noted: bool,
 }
 
 /// A saved Ask Lantern conversation (Swift `Assistant.Conversation`).
@@ -1050,6 +1056,59 @@ impl Model {
         let session = link.session.as_deref()?;
         self.agents.iter().find(|agent| agent.in_session(session))
     }
+    /// The latest tasks, for Send Logs (Swift `Assistant.reportLines`): what each shows and what
+    /// Lantern knows about it. Never the message or the folder.
+    pub fn task_report(&self) -> String {
+        let current = &self.assistant.turns;
+        let earlier = self.assistant.conversations.iter().flat_map(|c| &c.turns).filter(|t| !current.iter().any(|c| c.id == t.id));
+        let mut tasks: Vec<&TaskLink> = current.iter().chain(earlier).filter_map(|t| t.task.as_ref()).filter(|l| !l.sent).collect();
+        tasks.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+        if tasks.is_empty() {
+            return "none".into();
+        }
+        let lines: Vec<String> = tasks
+            .iter()
+            .take(5)
+            .map(|link| {
+                let mut parts = vec![
+                    link.kind.as_str().to_string(),
+                    format!("started {}", link.started_at.as_deref().unwrap_or("?")),
+                    format!("session {}", link.session.as_deref().unwrap_or("none")),
+                ];
+                if let Some(id) = &link.agent_id {
+                    parts.push(format!("agent {id}"));
+                }
+                if let Some(seen) = &link.seen_at {
+                    parts.push(format!("seen {seen}"));
+                }
+                parts.push(format!("shows: {}", self.task_shown(link)));
+                format!("- {}", parts.join(", "))
+            })
+            .collect();
+        lines.join("\n")
+    }
+
+    /// What the conversation shows for a task, in words.
+    fn task_shown(&self, link: &TaskLink) -> String {
+        let agent = self.task_agent(link);
+        if let Some(error) = &link.error {
+            return format!("couldn't start it: {error}");
+        }
+        if link.sign_in && agent.is_none_or(|a| a.state != AgentState::Working) {
+            return "needs sign-in in a terminal window".into();
+        }
+        if let Some(agent) = agent {
+            return format!("agent {:?}", agent.state);
+        }
+        if link.in_terminal {
+            return "running in a terminal window".into();
+        }
+        if link.agent_id.is_some() || !link.transcript.is_empty() {
+            return "closed".into();
+        }
+        "Getting started (no agent seen yet)".into()
+    }
+
     /// The running agent from the latest task in Ask Lantern's conversation: the box replies to it.
     pub fn assistant_agent(&self) -> Option<&Agent> {
         let (_, link) = self.assistant.latest_task()?;

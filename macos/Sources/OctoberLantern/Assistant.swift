@@ -66,6 +66,9 @@ final class Assistant: ObservableObject {
         /// when it was first sent (what the agent said before then isn't its answer).
         var sendKey: String?
         var sentAt: Date?
+        /// When it was started, and when Lantern first saw its agent: for Send Logs.
+        var startedAt: Date?
+        var seenAt: Date?
     }
 
     struct Conversation: Identifiable, Codable {
@@ -235,7 +238,12 @@ final class Assistant: ObservableObject {
     func track(_ link: TaskLink, agent: Agent?, messages: [ChatMessage]) {
         guard let i = turns.lastIndex(where: { $0.task == link }) else { return }
         var updated = link
-        if let agent, updated.agentId == nil { updated.agentId = agent.id }
+        if let agent, updated.agentId == nil {
+            updated.agentId = agent.id
+            updated.seenAt = Date()
+            let after = link.startedAt.map { " after \(Int(Date().timeIntervalSince($0))) s" } ?? ""
+            AppLog.write("Ask Lantern: \(link.kind) task is agent \(agent.id)\(after)")
+        }
         if !messages.isEmpty { updated.transcript = Array(messages.suffix(60)) }
         if updated != link { turns[i].task = updated }
     }
@@ -632,8 +640,10 @@ final class Assistant: ObservableObject {
         turns[i].taskProblem = nil
         turns[i].task = TaskLink(
             kind: p.kind.rawValue, folder: p.folder, prompt: p.prompt, inTerminal: !model.tmuxAvailable, signIn: signIn ? true : nil,
-            images: p.images.isEmpty ? nil : p.images.map(\.path)
+            images: p.images.isEmpty ? nil : p.images.map(\.path), startedAt: Date()
         )
+        let how = signIn ? "in a Terminal window to sign in" : model.tmuxAvailable ? "in the background" : "in a Terminal window"
+        AppLog.write("Ask Lantern: starting \(p.kind.rawValue) \(how)")
         let started = model.launchTask(
             prompt: p.prompt, agent: p.kind, folder: p.folder, background: model.tmuxAvailable && !signIn, screenshot: p.screenshot,
             images: p.images, context: p.context
@@ -641,14 +651,60 @@ final class Assistant: ObservableObject {
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
             switch outcome {
             case .started(let session):
+                AppLog.write("Ask Lantern: \(p.kind.rawValue) started, session \(session ?? "none (a Terminal window)")")
                 if let session { self.turns[i].task?.session = session }
                 self.turns[i].started = "Started \(p.kind.displayName) in \(URL(fileURLWithPath: p.folder).lastPathComponent)"
             case .failed(let message):
+                AppLog.write("Ask Lantern: \(p.kind.rawValue) couldn't start: \(message)")
                 self.turns[i].task?.error = message
             }
         }
-        if !started { turns[i].task?.error = "Another session is still starting. Try again in a moment." }
+        if !started {
+            AppLog.write("Ask Lantern: \(p.kind.rawValue) not started, another session is still starting")
+            turns[i].task?.error = "Another session is still starting. Try again in a moment."
+        }
+        checkSeen(turn: turn)
         Analytics.shared.capture("assistant_task", ["kind": p.kind.rawValue])
+    }
+
+    /// A minute after a task started, notes in the log if Lantern still can't see its agent, with
+    /// the sessions it can see, so Send Logs shows why the task stayed on "Getting started".
+    private func checkSeen(turn: UUID) {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(60))
+            guard let self, let model, let link = turns.first(where: { $0.id == turn })?.task,
+                  link.agentId == nil, link.error == nil, !link.inTerminal, agent(for: link) == nil else { return }
+            let panes = model.agents.compactMap { a in a.tmux.map { "\(a.id) at \($0.socket.map { "-L \($0) " } ?? "")\($0.target)" } }
+            AppLog.write("Ask Lantern: \(link.kind) session \(link.session ?? "unknown") not seen after 60 s; agents in tmux: \(panes.isEmpty ? "none" : panes.joined(separator: ", "))")
+        }
+    }
+
+    /// The latest tasks, for Send Logs: what each shows and what Lantern knows about it. Never
+    /// the message or the folder.
+    func reportLines() -> String {
+        let all = turns + conversations.flatMap(\.turns).filter { t in !turns.contains { $0.id == t.id } }
+        let tasks = all.compactMap(\.task).filter { !($0.sent ?? false) }
+            .sorted { ($0.startedAt ?? .distantPast) > ($1.startedAt ?? .distantPast) }.prefix(5)
+        guard !tasks.isEmpty else { return "none" }
+        let stamp = ISO8601DateFormatter()
+        return tasks.map { link in
+            var parts = [link.kind, "started \(link.startedAt.map(stamp.string) ?? "?")", "session \(link.session ?? "none")"]
+            if let id = link.agentId { parts.append("agent \(id)") }
+            if let seen = link.seenAt, let start = link.startedAt { parts.append("seen after \(Int(seen.timeIntervalSince(start))) s") }
+            parts.append("shows: \(shown(link))")
+            return "- " + parts.joined(separator: ", ")
+        }.joined(separator: "\n")
+    }
+
+    /// What the conversation shows for a task (TaskView's status, in words).
+    private func shown(_ link: TaskLink) -> String {
+        let agent = agent(for: link)
+        if let error = link.error { return "couldn't start it: \(error)" }
+        if link.signIn == true, agent?.state != .working { return "needs sign-in in a Terminal window" }
+        if let agent { return "agent \(agent.state)" }
+        if link.inTerminal { return "running in a Terminal window" }
+        if link.agentId != nil || !link.transcript.isEmpty { return "closed" }
+        return "Getting started (no agent seen yet)"
     }
 
     /// The project you named (matched against recent folders and agents' folders); otherwise
