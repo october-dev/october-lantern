@@ -159,7 +159,7 @@ struct WelcomeView: View {
 
             PermissionCard(
                 symbol: "cursorarrow.click.2", title: "Accessibility", allowed: accessAllowed,
-                why: "Lets agents use your apps for you: click, type and read windows in the background, with their own cursor, while you keep working. Lantern also uses it to see which window you're in.",
+                why: "Lets agents use your apps for you: click, type and read windows with their own cursor, in front of you or in the background if you ask. Lantern also uses it to see which window you're in.",
                 next: accessAsked
                     ? "In Privacy & Security › Accessibility, switch on October Lantern. This page updates by itself."
                     : "macOS opens a list of apps: switch on October Lantern, then come back here."

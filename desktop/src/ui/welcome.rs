@@ -253,7 +253,7 @@ fn apps(ui: &mut Ui, cx: &mut Ctx) {
         ui.spacing_mut().item_spacing.y = 8.0;
         c::label(ui, "How it works", 13.5, Weight::Semibold, t::INK);
         for line in [
-            "They work in the background with their own cursor, so you can keep using your computer.",
+            "They work with their own cursor, in front of you so you can watch, or in the background if you ask.",
             "They only use your apps for something you asked them to do.",
             "Lantern downloads Cua Driver (open source) for this the first time.",
             "Turn it off anytime in Settings.",

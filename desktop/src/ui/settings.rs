@@ -307,7 +307,7 @@ fn general(ui: &mut Ui, cx: &mut Ctx) {
         caption(
             ui,
             &format!(
-                "Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) in the background, with their own cursor, without taking over your mouse. Uses Cua Driver (open source).{status}"
+                "Agents Lantern starts can see and work your apps (your browser, forms, desktop apps) with their own cursor, without taking over your mouse. They bring the app to the front so you can watch, or work in the background when you ask them to. Uses Cua Driver (open source).{status}"
             ),
         );
         toggle(ui, cx, "Ask before agents act", cx.model.prefs.ask_first, SettingChange::AskFirst);
