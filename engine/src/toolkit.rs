@@ -6,6 +6,7 @@
 //! before every start. Everything under "## Your notes" is the user's and survives rebuilds.
 
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", windows))]
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
