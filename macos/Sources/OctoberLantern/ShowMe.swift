@@ -240,16 +240,18 @@ final class ShowMe: ObservableObject {
         case "showing":
             let now = Date().timeIntervalSince1970 * 1000
             live = m.live == true && (m.issuedAt ?? .infinity) <= now && (m.expiresAt ?? 0) > now
-            if let r = m.target?.image, r.count == 4 { marker = live ? nil : CGRect(x: r[0], y: r[1], width: r[2], height: r[3]) }
+            // The picture is marked too, as a backup to the ring on screen.
+            if let r = m.target?.image, r.count == 4 { marker = CGRect(x: r[0], y: r[1], width: r[2], height: r[3]) }
             if live, let rect = m.target?.image {
-                let remaining = min(1.5, ((m.expiresAt ?? now) - now) / 1000)
+                // Until Next, Look again, Stop or the screen changing (the engine says "hide"),
+                // and never past the engine's lease.
+                let remaining = ((m.expiresAt ?? now) - now) / 1000
                 showRing(rect, remaining: remaining)
                 let revision = cueRevision, run = runId
                 ringExpiry = Task { @MainActor in
                     try? await Task.sleep(for: .seconds(remaining))
                     guard !Task.isCancelled, open, runId == run, cueRevision == revision else { return }
                     ring?.orderOut(nil); live = false
-                    marker = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
                 }
             }
             phase = .showing
@@ -287,13 +289,14 @@ final class ShowMe: ObservableObject {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
         panel.ignoresMouseEvents = true; panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        panel.contentView = NSHostingView(rootView: VStack(spacing: 3) {
-            Text("Lantern · Step \(step)").font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.black).padding(3).background(Color.orange, in: Capsule())
-            RoundedRectangle(cornerRadius: 6).stroke(Color.orange, lineWidth: 3)
-                .frame(width: max(8, target.width), height: max(8, target.height))
-        }.padding(5))
-        panel.setFrame(CGRect(x: target.minX - 5, y: target.minY - 5, width: max(8, target.width) + 10, height: max(8, target.height) + 32), display: true)
+        // Never smaller than 28 points, so a small control is still easy to spot.
+        let size = CGSize(width: max(28, target.width + 8), height: max(28, target.height + 8))
+        // At the top of the screen (the menu bar), the label goes under the ring.
+        let below = target.midY + size.height / 2 + 34 > screen.frame.maxY
+        panel.contentView = NSHostingView(rootView: ShowMeRing(step: step, size: size, labelBelow: below).padding(10))
+        let width = max(size.width, 110) + 20
+        let y = target.midY - size.height / 2 - (below ? 34 : 10)
+        panel.setFrame(CGRect(x: target.midX - width / 2, y: y, width: width, height: size.height + 44), display: true)
         if let view = panel.contentView {
             view.wantsLayer = true
             let expiry = CABasicAnimation(keyPath: "opacity")
@@ -305,7 +308,39 @@ final class ShowMe: ObservableObject {
         ring = panel; panel.orderFrontRegardless()
     }
 
-    // MARK: The card
+    /// The orange ring Lantern draws around the control, with the step's label above it; it pulses
+/// gently so it catches the eye (still, with Reduce Motion).
+private struct ShowMeRing: View {
+    let step: Int
+    let size: CGSize
+    var labelBelow = false
+    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        VStack(spacing: 4) {
+            if !labelBelow { label }
+            RoundedRectangle(cornerRadius: 8).stroke(Color.orange, lineWidth: 4)
+                .frame(width: size.width, height: size.height)
+                .shadow(color: .orange.opacity(0.8), radius: pulse ? 10 : 4)
+                .scaleEffect(pulse ? 1.06 : 1)
+            if labelBelow { label }
+        }
+        .frame(maxWidth: .infinity, alignment: .top)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
+        }
+    }
+
+    private var label: some View {
+        Text("Lantern · Step \(step)").font(.system(size: 12, weight: .bold))
+            .foregroundStyle(.black).padding(.horizontal, 7).padding(.vertical, 3)
+            .background(Color.orange, in: Capsule())
+    }
+}
+
+// MARK: The card
 
     static let cardWidth: CGFloat = 320
 
@@ -369,7 +404,7 @@ struct ShowMeCard: View {
                 .padding(8).background(RoundedRectangle(cornerRadius: 8).fill(Theme.faint))
             }
             status
-            if !show.live, show.marker != nil, let picture = show.picture { marked(picture) }
+            if show.marker != nil, let picture = show.picture { marked(picture) }
             buttons
         }
         .padding(14)
@@ -391,7 +426,7 @@ struct ShowMeCard: View {
             if show.instruction.isEmpty { working("Finding it…") } else { instruction }
         case .showing:
             instruction
-            Text(show.live ? "Lantern's pointer is on it. Do this step, then press Next." : "It's marked on the picture below.")
+            Text(show.live ? "It's circled on your screen in orange. Do this step, then press Next." : "It's marked on the picture below.")
                 .font(.system(size: 11)).foregroundStyle(Theme.muted)
         case .notVisible:
             instruction
@@ -425,8 +460,9 @@ struct ShowMeCard: View {
                 GeometryReader { geo in
                     if let m = show.marker, picture.size.width > 0 {
                         let s = geo.size.width / picture.size.width
-                        RoundedRectangle(cornerRadius: 4).stroke(Theme.amber, lineWidth: 2.5)
-                            .frame(width: max(m.width * s, 10) + 8, height: max(m.height * s, 10) + 8)
+                        RoundedRectangle(cornerRadius: 5).stroke(Color.orange, lineWidth: 3)
+                            .frame(width: max(m.width * s, 14) + 10, height: max(m.height * s, 14) + 10)
+                            .shadow(color: .orange.opacity(0.9), radius: 4)
                             .position(x: m.midX * s, y: m.midY * s)
                     }
                 }

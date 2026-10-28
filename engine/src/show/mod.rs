@@ -7,11 +7,12 @@
 //! 2. `show.captured` (the display's place on screen and the picture's size) → the coordinator reads
 //!    the visible windows' controls through Cua Driver and hands the app what to send October
 //!    (`showQuery`).
-//! 3. `show.result` (October's answer) → the coordinator checks it against that capture and points
-//!    a short native highlight at the control (`showState` "showing"), or, without a usable driver, tells the app
-//!    where to mark its picture instead.
-//! 4. While it points, the coordinator watches the target's window. If the window moves or the app
-//!    opens another one, it hides the pointer and looks again (another capture, the next step).
+//! 3. `show.result` (October's answer) → the coordinator checks it against that capture and has
+//!    the app ring the place on screen (`showState` "showing"); an app that can only mark its
+//!    picture (`markedOnly`) marks that instead.
+//! 4. While the ring shows, the coordinator watches the control's window (or, for a place found
+//!    only on the picture, every window on the display). If one moves, closes or another opens, it
+//!    hides the ring and looks again (another capture, the next step).
 //!    `show.next` (the person says they did it) looks again too; `show.stop` ends the guide.
 //!
 //! Every message carries the guide's id, its step and its round; anything for an older guide, step
@@ -146,18 +147,18 @@ struct Run {
     started: Instant,
     touched: Instant,
     /// October's id for this guide, from its first answer: later rounds belong to it.
-    pointer_live: bool,
-    target_image: Option<Rect>,
     goal: Option<String>,
     capture: Option<Capture>,
     capture_id: String,
     controls: Vec<Control>,
-    /// The window the pointer is on and where it was, while it shows.
-    watching: Option<(i64, i64, Rect, usize)>,
+    /// What would make the pointer wrong, while it shows.
+    watching: Option<Watch>,
     /// Instructions of the steps already shown, for October's next round.
     shown: Vec<String>,
     pending_instruction: Option<String>,
     excluded: Vec<i64>,
+    /// The app can only mark its picture (no on-screen pointer yet: Windows, Linux).
+    marked_only: bool,
 }
 
 struct Coordinator {
@@ -208,8 +209,6 @@ impl Coordinator {
                     round: 0,
                     started: now,
                     touched: now,
-                    pointer_live: false,
-                    target_image: None,
                     goal: None,
                     capture: None,
                     capture_id: String::new(),
@@ -218,6 +217,7 @@ impl Coordinator {
                     shown: Vec::new(),
                     pending_instruction: None,
                     excluded: Vec::new(),
+                    marked_only: false,
                 });
                 self.ask_for_capture();
             }
@@ -316,6 +316,7 @@ impl Coordinator {
         run.capture = Some(capture);
         run.controls = controls;
         run.excluded = c.exclude_pids;
+        run.marked_only = c.marked_only;
         run.phase = Phase::Asking;
         run.touched = Instant::now();
         let elements: Vec<Value> = run
@@ -387,20 +388,21 @@ impl Coordinator {
                 let window = run.controls.iter().find(|c| c.screen == screen).map(|c| c.window_id);
                 let original = run.controls.clone();
                 let excluded = run.excluded.clone();
-                // Live highlighting is restricted to a semantic control that still matches the
-                // capture. Pixel-only answers use the explicitly captured-picture presentation.
-                let same = window.is_some() && self.read_controls(&capture, &excluded) == original;
-                let live = same && self.point(screen, window);
+                // A known control is pointed at only if the window's controls still match the
+                // capture. A place October found on the picture (the menu bar, something the driver
+                // can't name) was just captured, so it's pointed at too.
+                let live = !run.marked_only && (window.is_none() || self.read_controls(&capture, &excluded) == original);
+                if live {
+                    self.watch(window, capture.display, &excluded);
+                }
                 if let Some(run) = &mut self.run {
                     run.touched = Instant::now();
-                    run.pointer_live = live;
-                    run.target_image = Some(image);
                 }
                 let target = json!({"image": [round1(image.x), round1(image.y), round1(image.w), round1(image.h)]});
-                self.state(
-                    "showing",
-                    json!({"target": target, "live": live, "issuedAt": crate::hooks::now_ms(), "expiresAt": crate::hooks::now_ms()+1500}),
-                );
+                // The pointer stays until Next, Look again or Stop, or until the screen changes
+                // under it (`tick`); the guide's idle limit bounds it.
+                let now = crate::hooks::now_ms();
+                self.state("showing", json!({"target": target, "live": live, "issuedAt": now, "expiresAt": now + IDLE.as_millis() as u64}));
             }
             Some(Guidance::NotVisible) => {
                 run.phase = Phase::Waiting;
@@ -418,22 +420,32 @@ impl Coordinator {
         }
     }
 
-    /// Moves Show me's cursor to `screen`'s center and starts watching its window. False when there
-    /// is no driver to point with (the app marks its picture instead).
-    fn point(&mut self, _screen: Rect, window: Option<i64>) -> bool {
+    /// Starts watching what the pointer depends on: the control's window, or, for a place on the
+    /// picture, every window on the display. Without a driver nothing is watched; the pointer
+    /// stays until Next, Look again or Stop.
+    fn watch(&mut self, window: Option<i64>, display: Rect, excluded: &[i64]) {
         if self.active_epoch != self.epoch.load(std::sync::atomic::Ordering::SeqCst) {
-            return false;
+            return;
         }
-        let Some(id) = window else {
-            return false;
-        };
-        let Some((pid, bounds, count)) = self.window_now(id) else {
-            return false;
+        let watch = match window {
+            Some(id) => self.window_now(id).map(|(_, bounds, count)| Watch::Window(id, bounds, count)),
+            None => self.screen_now(display, excluded).map(|windows| Watch::Screen(display, windows)),
         };
         if let Some(run) = &mut self.run {
-            run.watching = Some((pid, id, bounds, count));
+            run.watching = watch;
         }
-        true
+    }
+
+    /// The windows on `display` (but Lantern's own), with their bounds, in a fixed order.
+    fn screen_now(&mut self, display: Rect, excluded: &[i64]) -> Option<Vec<(i64, Rect)>> {
+        let list = self.driver()?.call("list_windows", json!({}), Duration::from_secs(2)).ok()?;
+        let mut windows: Vec<(i64, Rect)> = windows_of(&list)
+            .into_iter()
+            .filter(|w| !excluded.contains(&w.pid) && overlaps(&w.bounds, &display))
+            .map(|w| (w.window_id, w.bounds))
+            .collect();
+        windows.sort_by_key(|w| w.0);
+        Some(windows)
     }
 
     /// The window's owner, bounds, and how many windows its app shows, if it's still on screen.
@@ -467,30 +479,22 @@ impl Coordinator {
         if run.started.elapsed() >= LIFETIME || run.touched.elapsed() >= IDLE {
             return self.end(Some("expired"));
         }
-        // A live point is a short cue, never an indefinitely trusted screenshot coordinate.
-        // After the lease, retain only the explicitly captured-picture presentation.
-        if run.pointer_live && run.touched.elapsed() >= Duration::from_millis(1500) {
-            let image = run.target_image;
-            self.hide();
-            if let Some(run) = &mut self.run {
-                run.pointer_live = false;
-                run.watching = None;
-            }
-            if let Some(r) = image {
-                self.state("showing", json!({"target":{"image":[r.x,r.y,r.w,r.h]},"live":false}));
-            }
-            return;
-        }
-        let Some(run) = &self.run else { return };
-        let Some((_, window_id, bounds, count)) = run.watching else { return };
+        let Some(watching) = run.watching.clone() else { return };
         if run.phase != Phase::Showing {
             return;
         }
-        match self.window_now(window_id) {
-            Some((_, now, n)) if now == bounds && n == count => {}
+        let excluded = run.excluded.clone();
+        let unchanged = match watching {
+            Watch::Window(window_id, bounds, count) => {
+                matches!(self.window_now(window_id), Some((_, now, n)) if now == bounds && n == count)
+            }
+            Watch::Screen(display, windows) => self.screen_now(display, &excluded).is_some_and(|now| now == windows),
+        };
+        match unchanged {
+            true => {}
             // Moved, resized, closed, or a new window (a dialog or menu opened): the pointer may be
             // wrong now, so hide it and look again.
-            _ => {
+            false => {
                 self.hide();
                 if let Some(run) = &mut self.run {
                     run.watching = None;
@@ -514,6 +518,15 @@ impl Coordinator {
         }
         self.run = None;
     }
+}
+
+/// What the pointer depends on while it shows (see `Coordinator::watch`).
+#[derive(Clone)]
+enum Watch {
+    /// A known control's window: its id, bounds, and how many windows its app shows.
+    Window(i64, Rect, usize),
+    /// A place on the picture: the display, and its windows with their bounds.
+    Screen(Rect, Vec<(i64, Rect)>),
 }
 
 enum Guidance {
@@ -690,7 +703,7 @@ mod tests {
         let query = take().into_iter().find(|v| v["type"] == "showQuery").unwrap();
         assert_eq!(query["round"], 1);
         let capture_id = query["captureId"].as_str().unwrap().to_string();
-        // No driver here: the answer is marked on the picture, not pointed at live.
+        // A place on the picture is pointed at on screen too (nothing to watch without a driver).
         c.handle(Cmd::Result {
             run_id: "r1".into(),
             round: 1,
@@ -698,7 +711,8 @@ mod tests {
             result: json!({"goalId": "g1", "guidance": {"kind": "target", "box": [250, 150, 20, 10]}, "instruction": "Click the gear."}),
         });
         let showing = take().into_iter().find(|v| v["phase"] == "showing").unwrap();
-        assert_eq!(showing["live"], false);
+        assert_eq!(showing["live"], true);
+        assert!(showing["expiresAt"].as_u64().unwrap() - showing["issuedAt"].as_u64().unwrap() >= IDLE.as_millis() as u64);
         assert_eq!(showing["target"]["image"], json!([250.0, 150.0, 20.0, 10.0]));
         assert_eq!(c.run.as_ref().unwrap().goal.as_deref(), Some("g1"));
         // Next: step 2, and the next query names the goal and what was shown.
@@ -708,6 +722,25 @@ mod tests {
         assert_eq!((next["step"].as_u64(), next["round"].as_u64()), (Some(2), Some(2)));
         assert_eq!(next["goalId"], "g1");
         assert_eq!(next["shown"], json!(["Click the gear."]));
+    }
+
+    #[test]
+    fn an_app_that_can_only_mark_its_picture_is_never_told_to_point() {
+        let _guard = SERIAL.lock().unwrap();
+        take();
+        let mut c = coordinator();
+        c.handle(Cmd::Start { run_id: "r1".into() });
+        let Cmd::Captured(mut capture) = captured("r1", 1) else { unreachable!() };
+        capture.marked_only = true;
+        c.handle(Cmd::Captured(capture));
+        let id = take().into_iter().find(|v| v["type"] == "showQuery").unwrap()["captureId"].as_str().unwrap().to_string();
+        c.handle(Cmd::Result {
+            run_id: "r1".into(),
+            round: 1,
+            capture_id: id,
+            result: json!({"guidance": {"kind": "target", "box": [250, 150, 20, 10]}}),
+        });
+        assert_eq!(take().into_iter().find(|v| v["phase"] == "showing").unwrap()["live"], false);
     }
 
     #[test]
