@@ -481,8 +481,17 @@ impl Lantern {
             in_terminal: !in_lantern,
             sign_in,
             images: task.images.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+            started_at: time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).ok(),
             ..Default::default()
         });
+        let how = if sign_in {
+            "in a terminal window to sign in"
+        } else if in_lantern {
+            "in the background"
+        } else {
+            "in a terminal window"
+        };
+        crate::app_log::write(format_args!("Ask Lantern: starting {} {how}", task.kind.as_str()));
         let request = SessionRequest {
             kind: task.kind,
             folder: task.folder,
@@ -499,6 +508,7 @@ impl Lantern {
         if !self.launch(request)
             && let Some(link) = self.task_link(task.turn)
         {
+            crate::app_log::write(format_args!("Ask Lantern: {} not started, another session is still starting", link.kind.as_str()));
             link.error = Some("Another session is still starting. Try again in a moment.".into());
         }
     }
@@ -513,13 +523,21 @@ impl Lantern {
         let Some(link) = t.task.as_mut() else { return };
         match outcome {
             LaunchOutcome::Started { session } => {
+                crate::app_log::write(format_args!(
+                    "Ask Lantern: {} started, session {}",
+                    link.kind.as_str(),
+                    session.as_deref().unwrap_or("none (a terminal window)")
+                ));
                 if session.is_some() {
                     link.session = session;
                 }
                 let started = format!("Started {} in {}", link.kind.display_name(), folder_name(&link.folder));
                 t.started = Some(started);
             }
-            LaunchOutcome::Failed(message) => link.error = Some(message),
+            LaunchOutcome::Failed(message) => {
+                crate::app_log::write(format_args!("Ask Lantern: {} couldn't start: {message}", link.kind.as_str()));
+                link.error = Some(message);
+            }
         }
         self.track_tasks();
     }
@@ -538,8 +556,40 @@ impl Lantern {
                 let link = turn.task.as_ref()?;
                 let agent = model.task_agent(link).map(|agent| agent.id.as_str());
                 let mut updated = link.clone();
-                if updated.agent_id.is_none() {
-                    updated.agent_id = agent.map(str::to_string);
+                let now = time::OffsetDateTime::now_utc();
+                if updated.agent_id.is_none()
+                    && let Some(agent) = agent
+                {
+                    updated.agent_id = Some(agent.to_string());
+                    updated.seen_at = now.format(&time::format_description::well_known::Rfc3339).ok();
+                    crate::app_log::write(format_args!("Ask Lantern: {} task is agent {agent}", link.kind.as_str()));
+                }
+                // A minute on, still no agent: the log says what Lantern could see instead.
+                let started = link
+                    .started_at
+                    .as_deref()
+                    .and_then(|at| time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok());
+                if updated.agent_id.is_none()
+                    && updated.error.is_none()
+                    && !updated.in_terminal
+                    && !updated.unseen_noted
+                    && started.is_some_and(|at| now - at > time::Duration::seconds(60))
+                {
+                    updated.unseen_noted = true;
+                    let sessions: Vec<String> = model
+                        .agents
+                        .iter()
+                        .filter_map(|a| {
+                            let at = a.tmux.as_ref().map(|t| t.target.clone()).or_else(|| a.route.as_ref()?.session.clone())?;
+                            Some(format!("{} at {at}", a.id))
+                        })
+                        .collect();
+                    crate::app_log::write(format_args!(
+                        "Ask Lantern: {} session {} not seen after 60 s; agents in Lantern sessions: {}",
+                        link.kind.as_str(),
+                        link.session.as_deref().unwrap_or("unknown"),
+                        if sessions.is_empty() { "none".into() } else { sessions.join(", ") }
+                    ));
                 }
                 if Some(turn.id) == latest
                     && let Some(watched) = &model.assistant.watched

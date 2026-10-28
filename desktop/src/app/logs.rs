@@ -26,6 +26,20 @@ impl Lantern {
             *kinds.entry(agent.kind.display_name().to_string()).or_default() += 1;
         }
         let kinds: Vec<String> = kinds.into_iter().map(|(kind, n)| format!("{kind} ×{n}")).collect();
+        let agents: Vec<String> = model
+            .agents
+            .iter()
+            .map(|a| {
+                let pane = a.tmux.as_ref().map(|t| format!(" pane {}", t.target)).unwrap_or_default();
+                let via = a.route.as_ref().map_or("none", |r| r.via.as_str());
+                format!(
+                    "- {} {:?} via {via}{pane}{}",
+                    a.id,
+                    a.state,
+                    a.route.as_ref().and_then(|r| r.session.as_deref()).map(|s| format!(" session {s}")).unwrap_or_default()
+                )
+            })
+            .collect();
         format!(
             "October Lantern {} ({} {})\nEngine: {:?}\nEngine restarts in the last 5 minutes: {}\nAgents: {}\nComputer use: {}\nSigned in to October: {}\nUpdate: {}\nInstalled at: {}\n",
             env!("CARGO_PKG_VERSION"),
@@ -38,7 +52,7 @@ impl Lantern {
             if self.session.is_some() { "yes" } else { "no" },
             model.system.update.as_ref().map_or("not checked".into(), |u| format!("{} (newer: {})", u.version, u.newer)),
             std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.display().to_string())).unwrap_or_default(),
-        )
+        ) + &format!("Ask Lantern tasks, newest first:\n{}\nEach agent:\n{}\n", model.task_report(), agents.join("\n"))
     }
 
     pub(super) fn logs_sent(&mut self, result: Result<Value, String>) {

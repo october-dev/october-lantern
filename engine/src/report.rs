@@ -32,7 +32,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut details = String::new();
     std::io::stdin().take(256 * 1024).read_to_string(&mut details).context("reading the app's details")?;
     let code = format!("LAN-{}", uuid::Uuid::new_v4().simple().to_string()[..8].to_ascii_uppercase());
-    let text = build(&code, &app, &app_version, &details);
+    let text = build(&code, &app, &app_version, &details, &seen());
     // The signed-in person's October token (from the app's environment, never an argument), so
     // the report is tied to their account.
     let token = std::env::var("LANTERN_REPORT_TOKEN").ok().filter(|t| !t.is_empty());
@@ -53,7 +53,7 @@ pub fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn build(code: &str, app: &str, app_version: &str, details: &str) -> String {
+fn build(code: &str, app: &str, app_version: &str, details: &str, seen: &str) -> String {
     let now = time::OffsetDateTime::now_utc().format(&time::format_description::well_known::Rfc3339).unwrap_or_default();
     let os = sysinfo::System::long_os_version().unwrap_or_else(|| std::env::consts::OS.into());
     let mut text = format!(
@@ -68,6 +68,7 @@ fn build(code: &str, app: &str, app_version: &str, details: &str) -> String {
         let size = entry.metadata().map(|m| if m.is_dir() { "folder".to_string() } else { format!("{} bytes", m.len()) });
         text.push_str(&format!("{}  {}\n", entry.file_name().to_string_lossy(), size.unwrap_or_default()));
     }
+    text.push_str(seen);
     let mut logs: Vec<PathBuf> = ["logs/app.log", "logs/engine.log", "logs/engine-previous.log", "october-bus.log", "cua-driver.log"]
         .iter()
         .map(|name| dir.join(name))
@@ -92,6 +93,72 @@ fn build(code: &str, app: &str, app_version: &str, details: &str) -> String {
         }
         text.truncate(cut);
         text.push_str("\n[report cut to fit]\n");
+    }
+    text
+}
+
+/// What's there right now, for when the logs don't say why: the agents Lantern can start,
+/// Lantern's own tmux sessions (an agent it started that never showed up is still one of these),
+/// and each agent's latest hook event. Names, states and times only; never what anyone said.
+fn seen() -> String {
+    let mut text = String::new();
+    let installed = crate::launch::installed();
+    let names = |kinds: &[crate::model::Kind]| kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ");
+    text.push_str(&format!(
+        "\n== Agents Lantern can start ==\nInstalled: {}\nSigned in: {}\nNever set up: {}\ntmux: {}\n",
+        names(&installed.kinds),
+        names(&installed.signed_in),
+        names(&installed.never_set_up),
+        if installed.tmux { crate::tmux::tmux_bin() } else { "not found" },
+    ));
+    let now = crate::hooks::now_ms() / 1000;
+    let ago = |at: u64| match now.saturating_sub(at) {
+        s if s < 120 => format!("{s} s ago"),
+        s if s < 7200 => format!("{} min ago", s / 60),
+        s => format!("{} h ago", s / 3600),
+    };
+    text.push_str(&format!("\n== Lantern's sessions (tmux -L {}) ==\n", crate::launch::LANTERN_SOCKET));
+    let format = "#{session_name}\t#{session_created}\t#{pane_pid}\t#{pane_current_command}\t#{pane_dead}";
+    let panes = crate::run::output(
+        crate::tmux::command().args(["-L", crate::launch::LANTERN_SOCKET, "list-panes", "-a", "-F", format]),
+        Duration::from_secs(5),
+    );
+    match panes {
+        Ok(out) if out.status.success() => {
+            let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+            for line in listed.lines() {
+                let f: Vec<&str> = line.split('\t').collect();
+                let [session, created, pid, command, dead] = f[..] else { continue };
+                let created = created.parse().map(ago).unwrap_or_default();
+                let dead = if dead == "1" { ", ended" } else { "" };
+                text.push_str(&format!("{session}: started {created}, pid {pid}, running {command}{dead}\n"));
+            }
+            if listed.trim().is_empty() {
+                text.push_str("none\n");
+            }
+        }
+        Ok(out) => text.push_str(&format!("none ({})\n", String::from_utf8_lossy(&out.stderr).trim())),
+        Err(error) => text.push_str(&format!("couldn't ask tmux: {error:#}\n")),
+    }
+    text.push_str("\n== Agents' latest hook events ==\n");
+    let mut events: Vec<(u64, String)> = std::fs::read_dir(crate::hooks::events_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let event: serde_json::Value = serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()?;
+            let at = event["at"].as_u64()? / 1000;
+            Some((at, format!("{name}: {} from {}, {}", event["state"].as_str()?, event["source"].as_str().unwrap_or("?"), ago(at))))
+        })
+        .collect();
+    events.sort_by_key(|e| std::cmp::Reverse(e.0));
+    for (_, line) in events.iter().take(30) {
+        text.push_str(line);
+        text.push('\n');
+    }
+    if events.is_empty() {
+        text.push_str("none\n");
     }
     text
 }
@@ -180,6 +247,21 @@ fn save(code: &str, text: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// `text` with `word` replaced wherever it isn't part of a longer word.
+fn whole_word(text: &str, word: &str, with: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(word) {
+        let (before, after) = (&rest[..at], &rest[at + word.len()..]);
+        let joined = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
+        out.push_str(before);
+        out.push_str(if joined(before.chars().next_back()) || joined(after.chars().next()) { word } else { with });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Takes secrets out, best effort (October Desktop's rules): tokens and keys by their shape,
 /// values after secret-sounding names (`API_KEY=`, `"accessToken":`), `Bearer` tokens and
 /// passwords in URLs. The home folder's path becomes `~`, which also keeps the person's name out.
@@ -190,6 +272,11 @@ pub fn redact(text: &str, home: &str) -> String {
         if home.contains('\\') {
             text = text.replace(&home.replace('\\', "/"), "~").replace(&home.replace('\\', "\\\\"), "~");
         }
+    }
+    // The user name alone, too: Lantern's session names carry their folder's name.
+    let name = home.rsplit(['/', '\\']).next().unwrap_or_default();
+    if name.len() >= 3 {
+        text = whole_word(&text, name, "user");
     }
     let text = url_credentials(&text);
     let word = |b: u8| b.is_ascii_alphanumeric() || b"_-./+".contains(&b);
@@ -304,8 +391,14 @@ mod tests {
     }
 
     #[test]
+    fn the_user_name_in_session_names_stays_home() {
+        let out = redact("claude-harsh-68256: started 3 min ago\nharshly worded\n/Users/harsh/x", "/Users/harsh");
+        assert_eq!(out, "claude-user-68256: started 3 min ago\nharshly worded\n~/x");
+    }
+
+    #[test]
     fn a_report_names_itself_and_says_what_the_app_said() {
-        let text = build("LAN-TEST0001", "windows", "0.6.8", "Engine: stopped\n");
+        let text = build("LAN-TEST0001", "windows", "0.6.8", "Engine: stopped\n", "\n== Agents Lantern can start ==\n");
         assert!(text.starts_with("October Lantern problem report LAN-TEST0001\n"));
         assert!(text.contains("App: windows 0.6.8") && text.contains("Engine: stopped"));
         assert!(text.len() <= TOTAL + 64);
