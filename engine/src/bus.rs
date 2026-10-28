@@ -250,8 +250,8 @@ pub fn ensure_ready() -> Result<()> {
     Ok(())
 }
 
-/// One word of an agent's command line. Unix launches go through the login shell, so words are
-/// quoted for it; Windows launches pass each word as its own argument, untouched.
+/// One word of an agent's command line. Unix launch payloads use a clean POSIX shell, so words
+/// are quoted for it; Windows launches pass each word as its own argument, untouched.
 fn word(s: &str) -> String {
     if cfg!(windows) { s.to_string() } else { quote(s) }
 }

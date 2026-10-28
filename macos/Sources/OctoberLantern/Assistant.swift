@@ -670,10 +670,11 @@ final class Assistant: ObservableObject {
     /// A minute after a task started, notes in the log if Lantern still can't see its agent, with
     /// the sessions it can see, so Send Logs shows why the task stayed on "Getting started".
     private func checkSeen(turn: UUID) {
+        guard let started = turns.first(where: { $0.id == turn })?.task?.startedAt else { return }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(60))
             guard let self, let model, let link = turns.first(where: { $0.id == turn })?.task,
-                  link.agentId == nil, link.error == nil, !link.inTerminal, agent(for: link) == nil else { return }
+                  link.startedAt == started, link.agentId == nil, link.error == nil, !link.inTerminal, agent(for: link) == nil else { return }
             let panes = model.agents.compactMap { a in a.tmux.map { "\(a.id) at \($0.socket.map { "-L \($0) " } ?? "")\($0.target)" } }
             AppLog.write("Ask Lantern: \(link.kind) session \(link.session ?? "unknown") not seen after 60 s; agents in tmux: \(panes.isEmpty ? "none" : panes.joined(separator: ", "))")
         }

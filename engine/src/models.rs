@@ -1,13 +1,14 @@
 //! Which models an agent can start with, and the flag that picks one.
 //!
-//! Agents that can list their models are asked, through the user's login shell (so they see the
-//! same accounts and config as in a terminal): Codex (`codex debug models`), Grok (`grok models`),
+//! Agents that can list their models are asked directly with the launch environment (so they
+//! see the same exported accounts and config): Codex (`codex debug models`), Grok (`grok models`),
 //! OpenCode (`opencode models`) and Pi (`--list-models`). Signed-in October uses its live account
 //! catalogue; otherwise its CLI lists its own models. Claude Code and
 //! Gemini CLI can't list theirs but take short names for the current models, which are offered
 //! instead. Any model id can also be typed in the app.
 
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -16,8 +17,6 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::launch::program;
-#[cfg(unix)]
-use crate::launch::shell;
 use crate::model::Kind;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -138,7 +137,7 @@ fn known(kind: Kind) -> Vec<Model> {
     names.iter().map(|(id, label)| Model { id: (*id).into(), label: (*label).into(), group: None }).collect()
 }
 
-/// Runs `<agent> <args>` in the user's login shell, with a time limit.
+/// Runs `<agent> <args>` directly, with a time limit.
 #[cfg(windows)]
 fn ask(kind: Kind, args: &str) -> Option<String> {
     let bin = crate::platform::find_on_path(program(kind))?;
@@ -146,11 +145,11 @@ fn ask(kind: Kind, args: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Runs `<agent> <args>` in the user's login shell, with a time limit.
+/// Runs `<agent> <args>` directly, with a time limit.
 #[cfg(unix)]
 fn ask(kind: Kind, args: &str) -> Option<String> {
-    let script = format!("{} {args} 2>/dev/null", program(kind));
-    let out = crate::run::output(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(20)).ok()?;
+    let mut cmd = crate::environment::login().command(program(kind)).ok()?;
+    let out = crate::run::output(cmd.args(args.split_whitespace()), Duration::from_secs(20)).ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -183,7 +182,7 @@ pub(crate) fn parse_bullets(out: &str) -> Vec<Model> {
 }
 
 /// `--list-models` (Pi, October): a table whose first two columns are provider and model. Only
-/// rows after its header count (a login shell may print other things first).
+/// rows after its header count (the CLI may print other things first).
 pub(crate) fn parse_table(out: &str) -> Vec<Model> {
     out.lines()
         .skip_while(|l| !l.trim_start().starts_with("provider"))

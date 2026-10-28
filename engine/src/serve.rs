@@ -314,7 +314,7 @@ pub fn run() -> Result<()> {
     emit(&json!({"type": "hello", "protocol": 3, "version": env!("CARGO_PKG_VERSION")}));
     crate::elog::line(format_args!("engine {} started (pid {})", env!("CARGO_PKG_VERSION"), std::process::id()));
     crate::hooks::refresh_hook_binary();
-    // Checking installed agents runs a login shell, so do it off the main loop.
+    // The first discovery harvests the login environment once; keep it off the main loop.
     std::thread::spawn(emit_installed);
     // The toolkit list is kept, not rebuilt before each start: refresh it now if it's old.
     std::thread::spawn(crate::toolkit::refresh_if_stale);

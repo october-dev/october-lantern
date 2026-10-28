@@ -10,8 +10,6 @@ use std::process::Command;
 use std::time::{Duration, SystemTime};
 
 use crate::hooks::support_dir;
-#[cfg(unix)]
-use crate::launch::shell;
 use crate::transcripts::home;
 
 pub const NOTES_HEADING: &str = "## Your notes";
@@ -154,14 +152,10 @@ fn on_path<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     names.filter(|n| crate::platform::find_on_path(n).is_some()).map(String::from).collect()
 }
 
-/// Which of these programs the user's login shell can run.
+/// Executables on the same cached environment/PATH as agent launches.
 #[cfg(unix)]
 fn on_path<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let names: Vec<&str> = names.collect();
-    let script = format!("for c in {}; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c\"; done", names.join(" "));
-    crate::run::output(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(15))
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).filter(|l| names.contains(&l.as_str())).collect())
-        .unwrap_or_default()
+    names.filter(|name| crate::environment::login().find(name).is_some()).map(String::from).collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -217,7 +211,7 @@ fn machine() -> Option<String> {
 fn models(ollama: bool) -> Vec<String> {
     let mut out = Vec::new();
     #[cfg(unix)]
-    let list_ollama = || crate::run::output(Command::new(shell()).args(["-lic", "ollama list 2>/dev/null"]), Duration::from_secs(10));
+    let list_ollama = || crate::run::output(crate::environment::login().command("ollama")?.arg("list"), Duration::from_secs(10));
     #[cfg(windows)]
     let list_ollama = || {
         let bin = crate::platform::find_on_path("ollama").ok_or_else(|| anyhow::anyhow!("ollama isn't on PATH"))?;

@@ -8,9 +8,42 @@ use base64::Engine;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+fn launch_var(name: &str) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        crate::environment::login().get(name).map(PathBuf::from)
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os(name).map(PathBuf::from)
+    }
+}
+
+fn config_home() -> PathBuf {
+    #[cfg(unix)]
+    {
+        launch_var("HOME").unwrap_or_else(crate::platform::home)
+    }
+    #[cfg(windows)]
+    {
+        crate::platform::home()
+    }
+}
+
+pub(crate) fn claude_config_file() -> PathBuf {
+    #[cfg(unix)]
+    {
+        launch_var("CLAUDE_CONFIG_DIR").unwrap_or_else(config_home).join(".claude.json")
+    }
+    #[cfg(windows)]
+    {
+        crate::platform::home().join(".claude.json")
+    }
+}
+
 /// In the order Ask Lantern prefers them.
 pub fn signed_in() -> Vec<Kind> {
-    signed_in_at(&crate::platform::home(), &|var| std::env::var_os(var).map(PathBuf::from))
+    signed_in_at(&config_home(), &launch_var)
 }
 
 pub(crate) fn signed_in_at(home: &Path, env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Kind> {
@@ -37,7 +70,7 @@ pub(crate) fn signed_in_at(home: &Path, env: &dyn Fn(&str) -> Option<PathBuf>) -
 /// nobody sees, so the app shows them instead. Anything that might be signed in (an API key
 /// from the environment, say) isn't listed.
 pub fn never_set_up() -> Vec<Kind> {
-    never_set_up_at(&crate::platform::home(), &|var| std::env::var_os(var).map(PathBuf::from))
+    never_set_up_at(&config_home(), &launch_var)
 }
 
 pub(crate) fn never_set_up_at(home: &Path, env: &dyn Fn(&str) -> Option<PathBuf>) -> Vec<Kind> {

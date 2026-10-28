@@ -5,8 +5,8 @@
 //! Terminal window attached to it; "background" mode leaves it detached until you open it.
 //! Without tmux, the agent runs directly in a new Terminal window.
 //!
-//! Agents are started through the user's login shell (`$SHELL -lic`), so they get the same PATH
-//! and API keys as in a terminal they opened themselves.
+//! Unix agents start directly with a once-harvested exported environment. No interactive shell
+//! startup runs in the agent pane; aliases/functions are not executable installations.
 
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
@@ -85,14 +85,6 @@ pub fn program(kind: Kind) -> &'static str {
     }
 }
 
-#[cfg_attr(windows, allow(dead_code))]
-pub(crate) fn shell() -> String {
-    std::env::var("SHELL")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() })
-}
-
 /// Single-quote for POSIX shells.
 pub fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
@@ -111,10 +103,8 @@ pub struct Installed {
     pub never_set_up: Vec<Kind>,
 }
 
-/// Which agents are installed, according to the user's login shell. Cached: it takes a moment;
-/// `refresh` forgets it, so an agent installed while Lantern runs shows up. A shell whose
-/// startup files take longer than 10 s isn't believed: the usual install folders are looked in
-/// instead, and the shell is asked again a minute later. On Windows, looked up each time (it's quick).
+/// Executables on the same PATH used for Unix launches. Refresh checks installations again;
+/// exported shell configuration is harvested once per engine lifetime (restart to reload it).
 pub fn on_path() -> std::borrow::Cow<'static, Installed> {
     #[cfg(windows)]
     {
@@ -128,36 +118,23 @@ pub fn on_path() -> std::borrow::Cow<'static, Installed> {
     #[cfg(unix)]
     {
         let mut cache = ON_PATH.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((i, expires)) = cache.as_ref()
-            && expires.is_none_or(|t| Instant::now() < t)
-        {
+        if let Some(i) = cache.as_ref() {
             return std::borrow::Cow::Owned(i.clone());
         }
-        let names: Vec<&str> = ALL.iter().map(|k| program(*k)).collect();
-        let script = format!("for c in {}; do command -v \"$c\" >/dev/null 2>&1 && echo \"$c\"; done", names.join(" "));
-        let shell_found: Option<Vec<String>> =
-            crate::deliver::output_within(Command::new(shell()).args(["-lic", &script]), Duration::from_secs(10), false)
-                .ok()
-                .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(|l| l.trim().to_string()).collect());
-        let found = shell_found.clone().unwrap_or_else(|| {
-            in_install_folders(&names, &crate::transcripts::home(), &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"])
-        });
+        let env = crate::environment::login();
         let i = Installed {
-            kinds: ALL.iter().copied().filter(|k| found.iter().any(|f| f == program(*k))).collect(),
+            kinds: ALL.iter().copied().filter(|k| env.find(program(*k)).is_some()).collect(),
             tmux: Path::new(tmux::tmux_bin()).is_absolute(),
             signed_in: Vec::new(),
             never_set_up: Vec::new(),
         };
-        // A guess from the folders is kept for a minute, so starting an agent doesn't wait on the
-        // slow shell again.
-        let expires = shell_found.is_none().then(|| Instant::now() + Duration::from_secs(60));
-        *cache = Some((i.clone(), expires));
+        *cache = Some(i.clone());
         std::borrow::Cow::Owned(i)
     }
 }
 
 #[cfg(unix)]
-static ON_PATH: std::sync::Mutex<Option<(Installed, Option<Instant>)>> = std::sync::Mutex::new(None);
+static ON_PATH: std::sync::Mutex<Option<Installed>> = std::sync::Mutex::new(None);
 
 /// Look for agents again on the next `on_path` (the app asks when it might have missed one: a
 /// panel opened, or nothing to start a task with).
@@ -166,28 +143,6 @@ pub fn refresh() {
     {
         *ON_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
-}
-
-/// `names` found in the folders their installers use, for when the login shell is too slow to
-/// say what's on PATH.
-#[cfg_attr(windows, allow(dead_code))]
-fn in_install_folders(names: &[&str], home: &Path, system: &[&str]) -> Vec<String> {
-    let mut dirs: Vec<PathBuf> =
-        [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin", ".volta/bin", ".cargo/bin", ".opencode/bin"]
-            .iter()
-            .map(|d| home.join(d))
-            .collect();
-    dirs.extend(system.iter().map(PathBuf::from));
-    // nvm and fnm keep one bin folder per Node.js version.
-    for root in [".nvm/versions/node", ".local/share/fnm/node-versions", "Library/Application Support/fnm/node-versions"] {
-        if let Ok(entries) = std::fs::read_dir(home.join(root)) {
-            for e in entries.flatten() {
-                dirs.push(e.path().join("bin"));
-                dirs.push(e.path().join("installation/bin"));
-            }
-        }
-    }
-    names.iter().filter(|n| dirs.iter().any(|d| d.join(n).is_file())).map(|n| n.to_string()).collect()
 }
 
 /// Which agents can be started: those on the user's PATH, and October when Lantern's own October
@@ -470,35 +425,86 @@ pub(crate) fn agent_command_with(
     cmd
 }
 
+/// Build one launch's final environment before resolving its executable. Private Bus/card and
+/// October credentials override harvested configuration. The payload is consumed before exec.
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn unix_command(
+    kind: Kind,
+    cwd: &Path,
+    prompt: Option<&str>,
+    images: &[&Path],
+    model: Option<&str>,
+    bus: Option<&crate::bus::Attach>,
+    extra: &LaunchEnv,
+) -> Result<Vec<u8>> {
+    unix_command_in(crate::environment::login().clone(), kind, cwd, prompt, images, model, bus, extra)
+}
+
+#[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
+fn unix_command_in(
+    mut env: crate::environment::Environment,
+    kind: Kind,
+    cwd: &Path,
+    prompt: Option<&str>,
+    images: &[&Path],
+    model: Option<&str>,
+    bus: Option<&crate::bus::Attach>,
+    extra: &LaunchEnv,
+) -> Result<Vec<u8>> {
+    env.overlay(&extra.env)?;
+    if let Some(bus) = bus {
+        env.overlay(&bus.env)?;
+    }
+    env.overlay(&hands_free_env(kind, extra.ask_first).iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>())?;
+    if let Some(prefix) = &extra.path_prefix {
+        env.prepend(Path::new(prefix))?;
+    }
+    let binary = match &extra.program {
+        Some(path) => PathBuf::from(path),
+        None => env.find(program(kind)).with_context(|| format!("{} isn't executable on the launch PATH", agent_name(kind)))?,
+    };
+    if !binary.is_absolute() || !crate::environment::executable(&binary) {
+        bail!("the agent executable is missing");
+    }
+    let mut direct = extra.clone();
+    direct.program = Some(binary.to_string_lossy().into_owned());
+    direct.path_prefix = None;
+    direct.env.clear();
+    let bus_command = bus.map(|b| crate::bus::Attach { args: b.args.clone(), wrap: b.wrap.clone(), ..Default::default() });
+    let mut command = env.exports();
+    command.extend_from_slice(agent_command_with(kind, cwd, prompt, images, model, bus_command.as_ref(), &direct).as_bytes());
+    Ok(command)
+}
+
 /// Keep app credentials and the first message out of shell/tmux arguments (and tmux's retained
-/// pane_start_command). After login setup, a noninteractive POSIX shell reads the private file
-/// and removes it before exec; interactive shell history never reads its credential lines.
+/// pane_start_command). A clean noninteractive POSIX shell reads the private file and removes
+/// it before exporting the launch environment and executing the agent.
 #[cfg(unix)]
 struct LaunchScript(Option<PathBuf>);
 
 #[cfg(unix)]
 impl LaunchScript {
-    fn new(command: &str) -> Result<Self> {
+    fn new(command: impl AsRef<[u8]>) -> Result<Self> {
         Self::in_dir(&support_dir().join("launch"), command)
     }
 
-    fn in_dir(dir: &Path, command: &str) -> Result<Self> {
+    fn in_dir(dir: &Path, command: impl AsRef<[u8]>) -> Result<Self> {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         crate::bus::create_private_dir(dir)?;
         let path = dir.join(format!("agent-{}.sh", uuid::Uuid::new_v4().simple()));
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
         let script = Self(Some(path.clone()));
-        writeln!(file, "/bin/rm -f -- {} || exit 1\n{command}", quote(&path.to_string_lossy()))?;
+        writeln!(file, "/bin/rm -f -- {} || exit 1", quote(&path.to_string_lossy()))?;
+        file.write_all(command.as_ref())?;
+        writeln!(file)?;
         Ok(script)
     }
 
     fn command(&self) -> String {
-        format!("exec {} -lic {}", quote(&shell()), quote(&self.reader_command()))
-    }
-
-    fn reader_command(&self) -> String {
-        format!("exec /bin/sh {}", quote(&self.0.as_ref().unwrap().to_string_lossy()))
+        format!("exec /usr/bin/env -i /bin/sh {}", quote(&self.0.as_ref().unwrap().to_string_lossy()))
     }
 
     /// The terminal now owns consumption; dropping a failed launch still removes its secret file.
@@ -681,7 +687,7 @@ pub(crate) fn hands_free_env(kind: Kind, ask_first: bool) -> &'static [(&'static
 /// key: the folder's path, with `/` on Windows too). Only when Claude Code has its file already,
 /// and only that folder's entry changes.
 pub(crate) fn trust_claude_folder(folder: &Path) -> Result<()> {
-    trust_claude_folder_in(&crate::platform::home().join(".claude.json"), folder)
+    trust_claude_folder_in(&crate::subscriptions::claude_config_file(), folder)
 }
 
 pub(crate) fn trust_claude_folder_in(file: &Path, folder: &Path) -> Result<()> {
@@ -1033,7 +1039,7 @@ fn launch_tmux(
         }
         let name = format!("{}-{}", kind.as_str(), now_ms());
         check_launch_deadline(deadline)?;
-        let script = LaunchScript::new(&agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra))?;
+        let script = LaunchScript::new(unix_command(kind, cwd, prompt, images, model, bus.as_ref(), extra)?)?;
         open_in_terminal(&name, &script.command())?;
         script.handed_off();
         if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
@@ -1045,14 +1051,10 @@ fn launch_tmux(
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let safe: String = project.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).take(24).collect();
     let session = extra.session.clone().unwrap_or_else(|| format!("{}-{}-{}", kind.as_str(), safe, now_ms() % 100_000));
-    let script = LaunchScript::new(&agent_command_with(kind, cwd, prompt, images, model, bus.as_ref(), extra))?;
-    let status = &mut tmux::command();
-    let status = status
-        .args(["-L", LANTERN_SOCKET, "new-session", "-d", "-s", &session, "-x", "200", "-y", "50", "-c"])
-        .arg(cwd)
-        .arg(script.command());
+    let script = LaunchScript::new(unix_command(kind, cwd, prompt, images, model, bus.as_ref(), extra)?)?;
+    let mut status = tmux_start_command(LANTERN_SOCKET, &session, cwd, &script);
     check_launch_deadline(deadline)?;
-    let out = crate::run::output(status, Duration::from_secs(10)).context("starting tmux")?;
+    let out = crate::run::output(&mut status, Duration::from_secs(10)).context("starting tmux")?;
     if !out.status.success() {
         bail!("tmux couldn't start the session");
     }
@@ -1073,6 +1075,18 @@ fn launch_tmux(
         type_first_prompt(&pane, kind, p).context("the session started, but its first message wasn't sent")?;
     }
     Ok(Launched { session: Some(session), bus_problem, launch: None })
+}
+
+#[cfg(unix)]
+fn tmux_start_command(socket: &str, session: &str, cwd: &Path, script: &LaunchScript) -> Command {
+    let mut command = tmux::command();
+    command
+        .args(["-L", socket, "new-session", "-d", "-s", session, "-x", "200", "-y", "50", "-c"])
+        .arg(cwd)
+        // Multiple argv words bypass tmux's default-shell -c (zsh -c still reads .zshenv).
+        .args(["/usr/bin/env", "-i", "/bin/sh"])
+        .arg(script.0.as_ref().unwrap());
+    command
 }
 
 pub(crate) fn check_launch_deadline(deadline: Instant) -> Result<()> {
@@ -1292,14 +1306,117 @@ mod private_launch_tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn login_shell_consumes_a_private_file_without_putting_credentials_in_argv() {
+    fn tmux_executes_the_private_payload_without_its_default_shell_or_stale_environment() {
+        if !Path::new(tmux::tmux_bin()).is_absolute() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("lantern-tmux-env-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        struct Fixture {
+            dir: PathBuf,
+            socket: String,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = tmux::command().args(["-L", &self.socket, "kill-server"]).status();
+                let _ = std::fs::remove_dir_all(&self.dir);
+            }
+        }
+        let fixture = Fixture { dir: dir.clone(), socket: format!("lantern-env-{}", uuid::Uuid::new_v4().simple()) };
+        let run =
+            |args: &[&str]| crate::run::output(tmux::command().args(["-L", &fixture.socket]).args(args), Duration::from_secs(3)).unwrap();
+        assert!(run(&["-f", "/dev/null", "new-session", "-d", "-s", "keeper", "/bin/sleep", "30"]).status.success());
+        let shell = dir.join("startup-shell");
+        let called = dir.join("startup-called");
+        std::fs::write(&shell, format!("#!/bin/sh\nprintf yes > {}\nexec /bin/sh \"$@\"\n", quote(&called.to_string_lossy()))).unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(run(&["set-option", "-g", "default-shell", shell.to_str().unwrap()]).status.success());
+        assert!(run(&["set-environment", "-g", "LANTERN_STALE_SECRET", "must-not-reach-child"]).status.success());
+        // Negative control: the old single-string seam really invokes this startup shell.
+        assert!(run(&["new-session", "-d", "-s", "negative-control", "exec /bin/sleep 30"]).status.success());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !called.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::remove_file(&called).unwrap();
+        let receipt = dir.join("receipt");
+        let binary = dir.join("fixture-runtime");
+        std::fs::write(&binary,"#!/bin/sh\nprintf '%s|%s|%s|%s' \"$TEST_TOKEN\" \"$GOOSE_MODE\" \"${LANTERN_STALE_SECRET-absent}\" \"$PATH\" > \"$TEST_RECEIPT\"\nexec /bin/sleep 30\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let env = crate::environment::Environment::new(
+            [("PATH".into(), "/usr/bin:/bin".into()), ("GOOSE_MODE".into(), "ask".into())].into_iter().collect(),
+            &dir,
+        );
+        let extra = LaunchEnv {
+            program: Some(binary.to_string_lossy().into_owned()),
+            env: vec![("TEST_RECEIPT".into(), receipt.to_string_lossy().into_owned()), ("TEST_TOKEN".into(), "app-value".into())],
+            path_prefix: Some(dir.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let bus = crate::bus::Attach {
+            env: vec![("TEST_TOKEN".into(), "private-bus-value".into())],
+            wrap: vec![quote("/usr/bin/env")],
+            ..Default::default()
+        };
+        let body = unix_command_in(env, Kind::Goose, &dir, None, &[], None, Some(&bus), &extra).unwrap();
+        let script = LaunchScript::in_dir(&dir.join("private"), body).unwrap();
+        let path = script.0.as_ref().unwrap().clone();
+        let mut command = tmux_start_command(&fixture.socket, "agent", &dir, &script);
+        assert!(!format!("{command:?}").contains("private-bus-value"));
+        assert!(crate::run::output(&mut command, Duration::from_secs(3)).unwrap().status.success());
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !receipt.exists() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let text = std::fs::read_to_string(&receipt).unwrap();
+        assert!(text.starts_with("private-bus-value|auto|absent|"), "{text}");
+        assert!(text.contains(&format!("{}:", dir.display())));
+        assert!(!called.exists(), "tmux must not invoke its default shell");
+        assert!(!path.exists(), "the private environment payload must be consumed before exec");
+        let out = run(&["display-message", "-p", "-t", "agent:0.0", "#{pane_start_command}"]);
+        let start = String::from_utf8_lossy(&out.stdout);
+        assert!(!start.contains("private-bus-value") && !start.contains("must-not-reach-child"));
+        assert!(start.contains("/usr/bin/env -i /bin/sh"));
+    }
+
+    #[test]
+    fn private_environment_round_trips_quotes_newlines_and_non_utf8_without_evaluation() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let dir = std::env::temp_dir().join(format!("lantern-export-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let injected = dir.join("must-not-exist");
+        let value = format!("quote'\n$(touch {})`touch {}`", quote(&injected.to_string_lossy()), quote(&injected.to_string_lossy()));
+        let values = [
+            ("BASH_VERSINFO".into(), "must-not-assign-the-reader-readonly-array".into()),
+            ("TEST_VALUE".into(), value.clone().into()),
+            ("TEST_BYTES".into(), std::ffi::OsString::from_vec(vec![255, 254, b'\''])),
+        ]
+        .into_iter()
+        .collect();
+        let env = crate::environment::Environment::new(values, &dir);
+        let mut body = env.exports();
+        body.extend_from_slice(b"exec /usr/bin/env -0");
+        let script = LaunchScript::in_dir(&dir, body).unwrap();
+        let out = crate::run::output(Command::new("/bin/sh").args(["-c", &script.command()]), Duration::from_secs(3)).unwrap();
+        assert!(out.status.success());
+        let get = |key: &[u8]| out.stdout.split(|b| *b == 0).find_map(|r| r.strip_prefix(key));
+        assert_eq!(get(b"TEST_VALUE="), Some(value.as_bytes()));
+        assert_eq!(get(b"TEST_BYTES="), Some(std::ffi::OsStr::from_bytes(&[255, 254, b'\'']).as_bytes()));
+        assert!(!injected.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn clean_reader_consumes_a_private_file_without_putting_credentials_in_argv() {
         let dir = std::env::temp_dir().join(format!("lantern-private-launch-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         for shell in ["/bin/bash", "/bin/zsh"].into_iter().filter(|shell| Path::new(shell).is_file()) {
             let result = dir.join("receipt");
             let script = LaunchScript::in_dir(
                 &dir,
-                &format!(
+                format!(
                     "LANTERN_TEST_TOKEN={} exec /bin/sh -c {}",
                     quote("dummy-secret-not-a-real-token"),
                     quote(&format!("printf '%s' \"$LANTERN_TEST_TOKEN\" > {}", quote(&result.to_string_lossy())))
@@ -1317,7 +1434,7 @@ mod private_launch_tests {
             } else {
                 command.args(["-d", "-f"]);
             }
-            let output = command.args(["-lic", &script.reader_command()]).output().unwrap();
+            let output = command.args(["-c", &script.command()]).output().unwrap();
             assert!(output.status.success(), "{shell}: {}", String::from_utf8_lossy(&output.stderr));
             assert_eq!(std::fs::read_to_string(&result).unwrap(), "dummy-secret-not-a-real-token");
             assert!(!path.exists(), "The file must disappear before the agent starts");
@@ -1334,22 +1451,6 @@ mod private_launch_tests {
 #[cfg(test)]
 mod install_folder_tests {
     use super::*;
-
-    #[test]
-    fn agents_are_found_in_their_install_folders_when_the_shell_is_too_slow() {
-        let home = std::env::temp_dir().join(format!("lantern-install-folders-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&home);
-        for dir in [".local/bin", ".nvm/versions/node/v24.1.0/bin"] {
-            std::fs::create_dir_all(home.join(dir)).unwrap();
-        }
-        std::fs::write(home.join(".local/bin/claude"), "").unwrap();
-        std::fs::write(home.join(".nvm/versions/node/v24.1.0/bin/codex"), "").unwrap();
-        // A folder named like an agent isn't one.
-        std::fs::create_dir_all(home.join(".local/bin/gemini")).unwrap();
-        let found = in_install_folders(&["claude", "codex", "gemini", "lantern-test-not-an-agent"], &home, &[]);
-        assert_eq!(found, ["claude", "codex"]);
-        std::fs::remove_dir_all(&home).unwrap();
-    }
 
     #[test]
     fn messages_name_agents_as_the_apps_do() {

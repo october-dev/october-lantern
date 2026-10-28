@@ -38,7 +38,7 @@ jobs:
             engine -> ../build/target
             desktop -> ../build/target
       - name: Install Linux runtime dependencies
-        run: sudo apt-get update && sudo apt-get install -y tmux sqlite3 libgl1 libxkbcommon0 libwayland-client0
+        run: sudo apt-get update && sudo apt-get install -y tmux sqlite3 libgl1 libxkbcommon0 libwayland-client0 zsh fish
       - name: Check Rust engine and desktop
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/build/target

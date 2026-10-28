@@ -147,7 +147,15 @@ fn seen() -> String {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
-            let event: serde_json::Value = serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()?;
+            if !e.file_type().ok()?.is_file() || e.metadata().ok()?.len() > 64 * 1024 {
+                return None;
+            }
+            let mut data = Vec::new();
+            std::fs::File::open(e.path()).ok()?.take(64 * 1024 + 1).read_to_end(&mut data).ok()?;
+            if data.len() > 64 * 1024 {
+                return None;
+            }
+            let event: serde_json::Value = serde_json::from_slice(&data).ok()?;
             let at = event["at"].as_u64()? / 1000;
             Some((at, format!("{name}: {} from {}, {}", event["state"].as_str()?, event["source"].as_str().unwrap_or("?"), ago(at))))
         })
@@ -250,15 +258,15 @@ fn save(code: &str, text: &str) -> Result<PathBuf> {
 /// `text` with `word` replaced wherever it isn't part of a longer word.
 fn whole_word(text: &str, word: &str, with: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find(word) {
-        let (before, after) = (&rest[..at], &rest[at + word.len()..]);
+    let mut previous_end = 0;
+    for (at, _) in text.match_indices(word) {
+        let end = at + word.len();
         let joined = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
-        out.push_str(before);
-        out.push_str(if joined(before.chars().next_back()) || joined(after.chars().next()) { word } else { with });
-        rest = after;
+        out.push_str(&text[previous_end..at]);
+        out.push_str(if joined(text[..at].chars().next_back()) || joined(text[end..].chars().next()) { word } else { with });
+        previous_end = end;
     }
-    out.push_str(rest);
+    out.push_str(&text[previous_end..]);
     out
 }
 
@@ -394,6 +402,7 @@ mod tests {
     fn the_user_name_in_session_names_stays_home() {
         let out = redact("claude-harsh-68256: started 3 min ago\nharshly worded\n/Users/harsh/x", "/Users/harsh");
         assert_eq!(out, "claude-user-68256: started 3 min ago\nharshly worded\n~/x");
+        assert_eq!(whole_word("harshharsh harsh-harsh harshÉ", "harsh", "user"), "harshharsh user-user harshÉ");
     }
 
     #[test]

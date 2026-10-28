@@ -17,6 +17,8 @@ mod console;
 mod control;
 mod deliver;
 mod elog;
+#[cfg(unix)]
+mod environment;
 mod harness;
 mod history;
 mod hooks;
