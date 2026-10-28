@@ -394,6 +394,8 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
                         quiet(ui, "Running.");
                     }
                 }
+            } else if let Some(note) = &link.note {
+                c::label(ui, note, 11.0, Weight::Regular, t::AMBER);
             } else if link.in_terminal {
                 c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
             } else if link.agent_id.is_some() || !link.transcript.is_empty() {

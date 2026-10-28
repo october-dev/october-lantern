@@ -246,6 +246,9 @@ pub struct Launched {
     pub bus_problem: Option<String>,
     /// Its id for cards (see `cards`), when it got the card tools.
     pub launch: Option<String>,
+    /// The user's shell stopped to ask something before the agent could start, and was shown in
+    /// a terminal window to answer it (see `shell_question`): what to tell them.
+    pub shell_question: Option<String>,
 }
 
 /// How a harness takes its first message on the command line: as the last argument (after
@@ -493,8 +496,15 @@ impl LaunchScript {
         Ok(script)
     }
 
+    /// Through the login shell, with the startup questions it can be told not to ask turned off
+    /// (oh-my-zsh's "Would you like to update?", Powerlevel10k's setup): nobody sees them in a
+    /// background session, so the agent would never start.
     fn command(&self) -> String {
-        format!("exec {} -lic {}", quote(&shell()), quote(&self.reader_command()))
+        format!(
+            "DISABLE_AUTO_UPDATE=true POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true exec {} -lic {}",
+            quote(&shell()),
+            quote(&self.reader_command())
+        )
     }
 
     fn reader_command(&self) -> String {
@@ -813,7 +823,7 @@ fn launch_session(
     if let Some(p) = prompt.filter(|_| !takes_prompt_arg(kind)) {
         type_first_prompt_in_session(&session, kind, p).context("the session started, but its first message wasn't sent")?;
     }
-    Ok(Launched { session: Some(session), bus_problem, launch: None })
+    Ok(Launched { session: Some(session), bus_problem, launch: None, shell_question: None })
 }
 
 /// `type_first_prompt` for a Lantern session: once the agent runs in it and its screen settles.
@@ -1039,7 +1049,7 @@ fn launch_tmux(
         if let Some(b) = bus.as_ref().filter(|b| b.on_bus) {
             crate::bus::link_when_ready(b.id.clone());
         }
-        return Ok(Launched { session: None, bus_problem, launch: None });
+        return Ok(Launched { session: None, bus_problem, launch: None, shell_question: None });
     }
 
     let project = cwd.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1062,9 +1072,18 @@ fn launch_tmux(
         crate::bus::link_when_ready(b.id.clone());
     }
 
+    let attach = format!("exec {} -L {} attach -t {}", quote(tmux::tmux_bin()), LANTERN_SOCKET, quote(&session));
+    let mut asked = None;
     if mode == Mode::Terminal {
-        let attach = format!("exec {} -L {} attach -t {}", quote(tmux::tmux_bin()), LANTERN_SOCKET, quote(&session));
         open_in_terminal(&session, &attach)?;
+    } else if let Some(question) = shell_question(&session) {
+        // Shown where it can be answered; the agent starts once it is.
+        crate::elog::line(format_args!("launch: the shell in {session} is asking {question:?}; opening it in a terminal window"));
+        open_in_terminal(&session, &attach)?;
+        asked = Some(format!(
+            "Your shell stopped to ask \u{201c}{question}\u{201d} before {} could start. It's open in a Terminal window: answer it there, and it starts.",
+            display_name(kind)
+        ));
     }
 
     // Harnesses without a prompt argument get the first prompt typed in once their UI is up.
@@ -1072,7 +1091,47 @@ fn launch_tmux(
         let pane = TmuxPane { socket: Some(LANTERN_SOCKET.into()), target: session.clone(), pane_id: format!("{session}:0.0") };
         type_first_prompt(&pane, kind, p).context("the session started, but its first message wasn't sent")?;
     }
-    Ok(Launched { session: Some(session), bus_problem, launch: None })
+    Ok(Launched { session: Some(session), bus_problem, launch: None, shell_question: asked })
+}
+
+/// Waits a few seconds for the login shell to hand over to the agent. One still in front after
+/// that, with a question on its last line, is waiting for an answer nobody can see (a shell
+/// framework asking to update, a prompt theme's setup): that question.
+#[cfg(unix)]
+fn shell_question(session: &str) -> Option<String> {
+    let shell = shell();
+    let name = Path::new(&shell).file_name()?.to_string_lossy().into_owned();
+    asking(LANTERN_SOCKET, session, &name, Duration::from_secs(8))
+}
+
+/// `shell_question` on any tmux server, for `name`d shells.
+#[cfg(unix)]
+fn asking(socket: &str, session: &str, name: &str, wait: Duration) -> Option<String> {
+    let pane = format!("{session}:0.0");
+    let ask = |args: &[&str]| {
+        let out = crate::run::output(tmux::command().args(["-L", socket]).args(args), Duration::from_secs(3)).ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let deadline = Instant::now() + wait;
+    loop {
+        let command = ask(&["display-message", "-p", "-t", &pane, "#{pane_current_command}"])?;
+        if command.trim().trim_start_matches('-') != name {
+            return None;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let screen = ask(&["capture-pane", "-p", "-t", &pane])?;
+    screen.lines().map(str::trim).rfind(|l| !l.is_empty()).filter(|l| is_question(l)).map(str::to_string)
+}
+
+/// A line a program waits on an answer to: a question, a `[Y/n]`, or a prompt ending in `:`.
+#[cfg(unix)]
+fn is_question(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    line.contains('?') || line.ends_with(':') || lower.contains("[y/n]") || lower.contains("(y/n)")
 }
 
 pub(crate) fn check_launch_deadline(deadline: Instant) -> Result<()> {
@@ -1358,5 +1417,44 @@ mod install_folder_tests {
         assert_eq!(agent_name(Kind::Cursor), "Cursor");
         // October Bus names are unchanged.
         assert_eq!(display_name(Kind::Gemini), "gemini");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod shell_question_tests {
+    use super::*;
+
+    #[test]
+    fn startup_questions_are_recognised() {
+        assert!(is_question("[oh-my-zsh] Would you like to update? [Y/n]"));
+        assert!(is_question("Choice [ynq]:"));
+        assert!(is_question("Proceed (y/n)"));
+        assert!(!is_question("Last login: Wed Oct 28 14:23:38 on ttys001"));
+        let script = LaunchScript::in_dir(&std::env::temp_dir().join(format!("lantern-q-{}", std::process::id())), "true").unwrap();
+        assert!(script.command().starts_with("DISABLE_AUTO_UPDATE=true POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true exec "));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_stuck_on_a_question_is_noticed() {
+        if !installed().tmux {
+            return;
+        }
+        let socket = format!("lantern-test-{}", std::process::id());
+        let start = |session: &str, script: &str| {
+            let ok = tmux::command()
+                .args(["-L", &socket, "new-session", "-d", "-s", session, "-x", "80", "-y", "10", "/bin/zsh", "-fc", script])
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        };
+        start("stuck", "printf '[oh-my-zsh] Would you like to update? [Y/n] '; read x");
+        start("handed", "exec sleep 30");
+        let found = asking(&socket, "stuck", "zsh", Duration::from_secs(1));
+        let fine = asking(&socket, "handed", "zsh", Duration::from_secs(1));
+        let _ = tmux::command().args(["-L", &socket, "kill-server"]).status();
+        assert_eq!(found.as_deref(), Some("[oh-my-zsh] Would you like to update? [Y/n]"));
+        assert_eq!(fine, None);
     }
 }

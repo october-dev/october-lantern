@@ -507,7 +507,12 @@ mod tests {
             routines
                 .receipt(
                     &operation,
-                    Ok(crate::launch::Launched { session: Some("fixture".into()), bus_problem: None, launch: Some(launch.clone()) }),
+                    Ok(crate::launch::Launched {
+                        session: Some("fixture".into()),
+                        bus_problem: None,
+                        launch: Some(launch.clone()),
+                        shell_question: None,
+                    }),
                 )
                 .unwrap();
             if let Some(outcome) = outcome {

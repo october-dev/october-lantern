@@ -97,6 +97,8 @@ final class AppModel: ObservableObject {
     /// Who started the launch in flight, when it isn't the panel: Ask Lantern keeps the agent in
     /// its own conversation, so the panel doesn't switch to it.
     private var launchReport: ((LaunchOutcome) -> Void)?
+    /// The last launch's warning, for its report.
+    private var launchNote: String?
     /// An agent Ask Lantern shows inside its conversation: its messages, read every two seconds
     /// like an open chat's.
     @Published private(set) var watchedAgentId: String?
@@ -185,7 +187,7 @@ final class AppModel: ObservableObject {
         engine.onLaunched = { [weak self] session in
             if let report = self?.launchReport {
                 self?.launchReport = nil
-                return report(.started(session: session))
+                return report(.started(session: session, note: self?.launchNote))
             }
             guard let self, !self.previewClosed else { return }
             self.openWhenSeen = (session, Date().addingTimeInterval(30))
@@ -1047,7 +1049,8 @@ final class AppModel: ObservableObject {
             if launchReport != nil {
                 if ok {
                     // The tmux session (if any) comes right after, in onLaunched.
-                    DispatchQueue.main.async { [weak self] in self?.reportLaunch(.started(session: nil)) }
+                    launchNote = message
+                    DispatchQueue.main.async { [weak self] in self?.reportLaunch(.started(session: nil, note: message)) }
                 } else {
                     reportLaunch(.failed(message ?? "unknown error"))
                 }
@@ -1106,6 +1109,7 @@ struct LaunchPreview: Equatable {
 
 /// How a launch for Ask Lantern went: started (in a tmux session when it has one), or why not.
 enum LaunchOutcome {
-    case started(session: String?)
+    /// `note`: what you need to do for it to go on (the engine's warning).
+    case started(session: String?, note: String? = nil)
     case failed(String)
 }

@@ -530,7 +530,7 @@ pub fn run() -> Result<()> {
                         ) {
                             Ok(l) => json!({
                                 "type": "launchResult", "requestId": request_id, "ok": true, "session": l.session, "launch": l.launch,
-                                "warning": l.bus_problem.map(|p| format!("Started without October Bus: {p}"))
+                                "warning": l.shell_question.or(l.bus_problem.map(|p| format!("Started without October Bus: {p}")))
                             }),
                             Err(e) => json!({"type": "launchResult", "requestId": request_id, "ok": false, "message": format!("{e:#}")}),
                         };

@@ -269,7 +269,7 @@ impl Lantern {
             return self.launch_failed(message.unwrap_or_else(|| "unknown error".into()));
         }
         if let Some(turn) = self.launching.report.take() {
-            return self.assistant_launched(turn, LaunchOutcome::Started { session });
+            return self.assistant_launched(turn, LaunchOutcome::Started { session, note: message });
         }
         if let Some(session) = session.filter(|_| !self.launching.preview_closed) {
             self.launching.open_when_seen = Some((session, Instant::now() + PREVIEW_WAIT));

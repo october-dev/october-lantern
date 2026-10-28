@@ -531,6 +531,8 @@ pub struct TaskLink {
     /// When it was started, and when Lantern first saw its agent (RFC 3339): for Send Logs.
     pub started_at: Option<String>,
     pub seen_at: Option<String>,
+    /// What the engine said needs doing for it to go on (a question the shell asked).
+    pub note: Option<String>,
     /// The app log already says its agent wasn't seen in time.
     #[serde(skip)]
     pub unseen_noted: bool,
@@ -1099,6 +1101,9 @@ impl Model {
         }
         if let Some(agent) = agent {
             return format!("agent {:?}", agent.state);
+        }
+        if let Some(note) = &link.note {
+            return note.clone();
         }
         if link.in_terminal {
             return "running in a terminal window".into();

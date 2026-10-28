@@ -69,6 +69,8 @@ final class Assistant: ObservableObject {
         /// When it was started, and when Lantern first saw its agent: for Send Logs.
         var startedAt: Date?
         var seenAt: Date?
+        /// What the engine said needs doing for it to go on (a question the shell asked).
+        var note: String?
     }
 
     struct Conversation: Identifiable, Codable {
@@ -650,7 +652,8 @@ final class Assistant: ObservableObject {
         ) { [weak self] outcome in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }) else { return }
             switch outcome {
-            case .started(let session):
+            case .started(let session, let note):
+                self.turns[i].task?.note = note
                 AppLog.write("Ask Lantern: \(p.kind.rawValue) started, session \(session ?? "none (a Terminal window)")")
                 if let session { self.turns[i].task?.session = session }
                 self.turns[i].started = "Started \(p.kind.displayName) in \(URL(fileURLWithPath: p.folder).lastPathComponent)"
@@ -702,6 +705,7 @@ final class Assistant: ObservableObject {
         if let error = link.error { return "couldn't start it: \(error)" }
         if link.signIn == true, agent?.state != .working { return "needs sign-in in a Terminal window" }
         if let agent { return "agent \(agent.state)" }
+        if let note = link.note { return note }
         if link.inTerminal { return "running in a Terminal window" }
         if link.agentId != nil || !link.transcript.isEmpty { return "closed" }
         return "Getting started (no agent seen yet)"
@@ -914,6 +918,8 @@ private struct TaskCard: View {
             case .idle: note("Open, but not working on anything.", color: Theme.muted)
             case .unknown: note("Running.", color: Theme.muted)
             }
+        } else if let message = link.note {
+            note(message, color: Theme.amber)
         } else if link.inTerminal {
             note("Running in a Terminal window.", color: Theme.muted)
         } else if link.agentId != nil || !link.transcript.isEmpty {

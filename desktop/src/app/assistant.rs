@@ -67,7 +67,11 @@ impl Asking {
 /// has one), or why not.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum LaunchOutcome {
-    Started { session: Option<String> },
+    /// `note`: what the person needs to do for it to go on (the engine's warning).
+    Started {
+        session: Option<String>,
+        note: Option<String>,
+    },
     Failed(String),
 }
 
@@ -522,7 +526,8 @@ impl Lantern {
         let Some(t) = self.model.assistant.turns.iter_mut().find(|t| t.id == turn) else { return };
         let Some(link) = t.task.as_mut() else { return };
         match outcome {
-            LaunchOutcome::Started { session } => {
+            LaunchOutcome::Started { session, note } => {
+                link.note = note;
                 crate::app_log::write(format_args!(
                     "Ask Lantern: {} started, session {}",
                     link.kind.as_str(),
