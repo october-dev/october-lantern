@@ -205,17 +205,28 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
 fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
-        question(ui, turn);
-        if !turn.images.is_empty() {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                for path in &turn.images {
-                    if thumbnail(ui, cx, path, 40.0).on_hover_text("Open this image").clicked() {
-                        cx.emit(UiAction::OpenImage(path.clone()));
-                    }
+        egui::Frame::new()
+            .outer_margin(Margin { left: 28, ..Default::default() })
+            .inner_margin(Margin::same(10))
+            .corner_radius(14)
+            .fill(t::opacity(t::AMBER, 0.22))
+            .stroke(Stroke::new(1.0, t::opacity(t::AMBER, 0.3)))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                c::label(ui, "You", 10.5, Weight::Medium, t::AMBER);
+                question(ui, turn);
+                if !turn.images.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        for path in &turn.images {
+                            if thumbnail(ui, cx, path, 40.0).on_hover_text("Open this image").clicked() {
+                                cx.emit(UiAction::OpenImage(path.clone()));
+                            }
+                        }
+                    });
                 }
             });
-        }
+        c::label(ui, "Lantern", 10.5, Weight::Medium, t::MUTED);
         if turn.answer.is_empty() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -223,14 +234,19 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
                 c::label(ui, "Thinking…", 12.0, Weight::Regular, t::MUTED);
             });
         } else {
-            if let Some(link) = c::markdown_linked(
+            let (response, link) = c::markdown_linked(
                 ui,
                 &turn.answer,
                 MarkdownStyle { size: 12.5, color: answer_color(turn.failed, turn.upgrade.is_some()), ..Default::default() },
                 2.0,
-            )
-            .1
-            {
+            );
+            response.context_menu(|ui| {
+                if ui.button("Copy message").clicked() {
+                    ui.ctx().copy_text(turn.answer.clone());
+                    ui.close();
+                }
+            });
+            if let Some(link) = link {
                 cx.emit(UiAction::OpenUrl(link));
             }
         }
@@ -276,22 +292,23 @@ pub(super) fn upgrade_button(ui: &mut Ui, cx: &mut Ctx, url: &str, from: &'stati
 /// (Swift `TurnView.long`).
 fn question(ui: &mut Ui, turn: &AssistantTurn) {
     let long = turn.question.chars().count() > 180 || turn.question.split('\n').count() > 3;
-    if !long {
-        c::label(ui, &turn.question, 12.5, Weight::Semibold, t::INK);
-        return;
-    }
     let id = ui.make_persistent_id(("question-expanded", turn.id));
     let expanded = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     let mut job = egui::text::LayoutJob::single_section(
         turn.question.clone(),
-        egui::TextFormat { font_id: t::font(12.5, Weight::Regular), color: t::white(0.85), ..Default::default() },
+        egui::TextFormat { font_id: t::font(12.5, Weight::Regular), color: t::INK, ..Default::default() },
     );
     job.wrap.max_width = ui.available_width();
-    if !expanded {
+    if long && !expanded {
         job.wrap.max_rows = 4;
     }
-    ui.add(egui::Label::new(job));
-    if c::plain_button(ui, if expanded { "Show less" } else { "Show more" }, 11.0, Weight::Semibold, t::MUTED).clicked() {
+    ui.add(egui::Label::new(job).selectable(true)).context_menu(|ui| {
+        if ui.button("Copy message").clicked() {
+            ui.ctx().copy_text(turn.question.clone());
+            ui.close();
+        }
+    });
+    if long && c::plain_button(ui, if expanded { "Show less" } else { "Show more" }, 11.0, Weight::Semibold, t::MUTED).clicked() {
         ui.data_mut(|data| data.insert_temp(id, !expanded));
     }
 }

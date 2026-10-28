@@ -893,29 +893,41 @@ private struct TurnView: View {
     private var long: Bool { turn.question.count > 180 || turn.question.split(separator: "\n").count > 3 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if long {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(turn.question).font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.85))
-                        .lineLimit(expanded ? nil : 4)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 28)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("You").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.amber)
+                    Text(turn.question).font(.system(size: 12.5)).foregroundStyle(Theme.ink)
+                        .textSelection(.enabled)
+                        .lineLimit(long && !expanded ? 4 : nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
-                }
-            } else {
-                Text(turn.question).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if let images = turn.images, !images.isEmpty {
-                HStack(spacing: 6) {
-                    ForEach(images, id: \.self) { path in
-                        Button { NSWorkspace.shared.open(URL(fileURLWithPath: path)) } label: {
-                            Thumbnail(url: URL(fileURLWithPath: path), size: 40)
+                        .contextMenu {
+                            Button("Copy message") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(turn.question, forType: .string)
+                            }
                         }
-                        .buttonStyle(.plain).help("Open this image")
+                    if long {
+                        Button(expanded ? "Show less" : "Show more") { expanded.toggle() }
+                            .buttonStyle(.plain).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)
+                    }
+                    if let images = turn.images, !images.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(images, id: \.self) { path in
+                                Button { NSWorkspace.shared.open(URL(fileURLWithPath: path)) } label: {
+                                    Thumbnail(url: URL(fileURLWithPath: path), size: 40)
+                                }
+                                .buttonStyle(.plain).help("Open this image")
+                            }
+                        }
                     }
                 }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.amber.opacity(0.22)))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.amber.opacity(0.3)))
             }
+            Text("Lantern").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.muted)
             if turn.answer.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -927,6 +939,12 @@ private struct TurnView: View {
                     .foregroundStyle(turn.upgrade != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contextMenu {
+                        Button("Copy message") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(turn.answer, forType: .string)
+                        }
+                    }
             }
             if let url = turn.upgrade { UpgradeButton(url: url, from: "assistant") }
             if let started = turn.started, turn.task == nil {
