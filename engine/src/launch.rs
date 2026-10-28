@@ -1437,7 +1437,8 @@ mod shell_question_tests {
     #[cfg(unix)]
     #[test]
     fn a_shell_stuck_on_a_question_is_noticed() {
-        if !installed().tmux {
+        // A real zsh, as it sits at oh-my-zsh's question (not every Linux has one).
+        if !installed().tmux || !Path::new("/bin/zsh").exists() {
             return;
         }
         let socket = format!("lantern-test-{}", std::process::id());
