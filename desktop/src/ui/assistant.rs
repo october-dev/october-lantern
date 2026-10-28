@@ -519,7 +519,7 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                 c::label(ui, "Sign in to ask Lantern", 13.0, Weight::Semibold, t::INK);
                 c::label(
                     ui,
-                    "Ask anything about your agents, or tell Lantern what to do. Free accounts get 20 questions a day.",
+                    "Ask anything about your agents, or tell Lantern what to do. Free accounts get 5 questions a day.",
                     11.5,
                     Weight::Regular,
                     t::MUTED,
@@ -948,7 +948,7 @@ mod tests {
         let has = |value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(actions.is_empty());
         assert!(has("Sign in to ask Lantern"));
-        assert!(has("Ask anything about your agents, or tell Lantern what to do. Free accounts get 20 questions a day."));
+        assert!(has("Ask anything about your agents, or tell Lantern what to do. Free accounts get 5 questions a day."));
         assert!(!has("Connect to October"), "the card's own header stays in the October panel");
         assert!(!has("Sign in to October to ask Lantern anything"));
         for (title, provider) in [("Google", Provider::Google), ("GitHub", Provider::GitHub), ("Apple", Provider::Apple)] {

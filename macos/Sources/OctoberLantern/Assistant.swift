@@ -1181,7 +1181,7 @@ struct AskBox: View {
                 // Sign in right here; afterwards Lantern comes back to this box.
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Sign in to ask Lantern").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                    Text("Ask anything about your agents, or tell Lantern what to do. Free accounts get 20 questions a day.")
+                    Text("Ask anything about your agents, or tell Lantern what to do. Free accounts get 5 questions a day.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                     AccountCard(account: account, showsHeader: false)
                 }

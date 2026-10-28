@@ -28,7 +28,7 @@ What the website needs for the beta. Product facts come from [product guide](doc
 - **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply; browsers, only to read the page address for Point & Ask), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only for Point & Ask and new-session screenshots), Accessibility (only if you let Lantern see which window or document is open, or the selected text). No Full Disk Access.
 - **FAQ entries** from the product guide FAQ, especially "Why did macOS ask whether Lantern can control Terminal?" and "How do I uninstall it?".
 - **Support contact:** hey@october.dev. The app's Report a Problem uses the same address.
-- **Point & Ask** (0.4+): press ⌃⌥P or the pill's dotted-box button, drag a box around anything on screen, then **Ask** (October's AI answers in a card, needs October sign-in; Pro and Max use the plan's Assistant credit, the free plan gets 20 questions a day) or **Send to @agent**. Exact wording and privacy: the product guide's Point & Ask entries.
+- **Point & Ask** (0.4+): press ⌃⌥P or the pill's dotted-box button, drag a box around anything on screen, then **Ask** (October's AI answers in a card, needs October sign-in; Pro and Max use the plan's Assistant credit, the free plan gets 5 questions a day) or **Send to @agent**. Exact wording and privacy: the product guide's Point & Ask entries.
 - **Ask Lantern** (0.5+): click the lantern; the box at the bottom of Waiting. Ask anything and October's AI answers, knowing what your agents are doing ("which agent needs me first?"). Ask it to do something and it starts an agent on it after a 3-second Starting… Cancel card.
 
 ## Don't claim
