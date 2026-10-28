@@ -75,6 +75,35 @@ pub fn small_button(ui: &mut Ui, title: &str, icon: Icon) -> Response {
     response
 }
 
+/// What Show me does, shown when you hover its button (Swift `ShowMeButton.explanation`).
+pub const SHOW_ME_EXPLANATION: &str =
+    "Lantern points at each step on your screen, one at a time, until you're done. Each step sends a picture of your screen to October.";
+
+/// Swift `ShowMeButton`: an amber capsule (13 semibold, horizontal 14 / vertical 7) that says what it
+/// does on hover.
+pub fn show_me_button(ui: &mut Ui, title: &str) -> Response {
+    let galley = ui.painter().layout_no_wrap(title.into(), theme::font(13.0, Weight::Semibold), theme::AMBER);
+    let size = egui::vec2(14.0 + 14.0 + 6.0 + galley.size().x + 14.0, galley.size().y + 14.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), title));
+    let hot = response.hovered() || response.has_focus();
+    ui.painter().rect_filled(rect, rect.height() / 2.0, theme::opacity(theme::AMBER, if hot { 0.24 } else { 0.14 }));
+    ui.painter().rect_stroke(
+        rect,
+        rect.height() / 2.0,
+        Stroke::new(1.0, theme::opacity(theme::AMBER, if hot { 0.7 } else { 0.4 })),
+        egui::StrokeKind::Inside,
+    );
+    paint_icon(
+        ui.painter(),
+        Rect::from_center_size(egui::pos2(rect.left() + 21.0, rect.center().y), Vec2::splat(13.0)),
+        Icon::PointAsk,
+        theme::AMBER,
+    );
+    ui.painter().galley(egui::pos2(rect.left() + 34.0, rect.center().y - galley.size().y / 2.0), galley, theme::AMBER);
+    response.on_hover_text(SHOW_ME_EXPLANATION)
+}
+
 /// A text-only plain button, retaining native keyboard focus and accessible button semantics.
 pub fn text_button(ui: &mut Ui, title: &str, size: f32, weight: Weight, color: Color32) -> Response {
     ui.add(egui::Button::new(text(title, size, weight, color)).frame(false).min_size(Vec2::ZERO))

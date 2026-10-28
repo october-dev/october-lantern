@@ -469,3 +469,48 @@ struct ShowMeCard: View {
         .buttonStyle(.plain)
     }
 }
+
+/// The button that starts Show me (Ask Lantern's answers, Point & Ask). Hovering says what it does
+/// and what it sends; Lantern's panels don't take focus, so a system tooltip wouldn't show.
+struct ShowMeButton: View {
+    var title = "Show me on screen"
+    let action: () -> Void
+    @State private var hovering = false
+
+    static let explanation = "Lantern points at each step on your screen, one at a time, until you're done. Each step sends a picture of your screen to October."
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: "hand.point.up.left.fill").font(.system(size: 13, weight: .semibold))
+                Text(title).font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(Theme.amber)
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .background(Capsule().fill(Theme.amber.opacity(hovering ? 0.24 : 0.14)))
+            .overlay(Capsule().strokeBorder(Theme.amber.opacity(hovering ? 0.7 : 0.4)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in withAnimation(.easeOut(duration: 0.15)) { hovering = inside } }
+        .overlay(alignment: .topLeading) {
+            // Above the button: a point at its top-left corner, with the note growing upwards.
+            if hovering {
+                Color.clear.frame(width: 0, height: 0).overlay(alignment: .bottomLeading) {
+                    Text(Self.explanation)
+                        .font(.system(size: 11.5)).foregroundStyle(Theme.ink)
+                        .frame(width: 230, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color(white: 0.07)))
+                        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Theme.stroke))
+                        .fixedSize()
+                        .padding(.bottom, 6)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .zIndex(hovering ? 1 : 0)
+        .accessibilityHint(Self.explanation)
+    }
+}

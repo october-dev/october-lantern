@@ -272,7 +272,7 @@ fn input(ui: &mut Ui, cx: &mut Ctx) {
         .corner_radius(11)
         .inner_margin(Margin { left: 11, right: 6, top: 7, bottom: 7 })
         .show(ui, |ui| {
-            if cx.model.prefs.show_me && ui.small_button("Show me on screen").clicked() {
+            if cx.model.prefs.show_me && super::components::show_me_button(ui, "Show me on screen").clicked() {
                 cx.emit(UiAction::StartShow(cx.inputs.point_ask.clone()));
             }
             let width = (ui.available_width() - 28.0).max(1.0);

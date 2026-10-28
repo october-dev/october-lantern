@@ -1009,11 +1009,7 @@ private struct TurnView: View {
             }
             if let note = turn.note { Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted) }
             if !turn.answer.isEmpty, !turn.failed, turn.task == nil, turn.started == nil, Preferences.shared.showMe {
-                Button { Assistant.shared.showMe(turn.question) } label: {
-                    Label("Show me on screen", systemImage: "hand.point.up.left").font(.system(size: 11.5, weight: .medium))
-                }
-                .buttonStyle(.plain).foregroundStyle(Theme.amber)
-                .help("Lantern points at it on your screen, step by step")
+                ShowMeButton { Assistant.shared.showMe(turn.question) }.padding(.top, 2)
             }
             if let problem = turn.taskProblem {
                 Text(problem).font(.system(size: 11.5)).foregroundStyle(Theme.amber).fixedSize(horizontal: false, vertical: true)

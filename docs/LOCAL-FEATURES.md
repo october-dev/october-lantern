@@ -38,7 +38,7 @@ Select an area, then ask about its picture or send it to an agent. On Mac the ca
 
 ## Show me
 
-Ask Lantern, Point & Ask and a task's **Show me** hand-off use the same guide. Each look uploads a picture of the whole selected display and a bounded list of visible controls to October's dedicated guidance endpoint. Lantern's own windows are excluded. Control-list field values are omitted; the picture can still contain visible sensitive content. Pictures are held in memory by the guide and discarded on cancellation.
+Ask Lantern, Point & Ask and a task's **Show me** hand-off use the same guide. Its button (an amber **Show me on screen** under an answer, **Show me** in Point & Ask) says on hover what it does and that each step sends a picture of the screen to October. Each look uploads a picture of the whole selected display and a bounded list of visible controls to October's dedicated guidance endpoint. Lantern's own windows are excluded. Control-list field values are omitted; the picture can still contain visible sensitive content. Pictures are held in memory by the guide and discarded on cancellation.
 
 Show me observes through Cua; its allowlist contains no click, type or pointer-movement tool. Mac uses a short, pass-through native ring and step label only for a revalidated semantic control. The renderer independently expires the cue after 1.5 seconds, leaving a marked captured picture. Pixel-only targets and Windows/Linux use a clearly labelled captured picture. Use **Look again** after changing the screen, **Next** after completing a step, or **Stop**. Capture/run/round IDs and cancellation epochs reject late work. Limits are eight steps, sixteen looks, ten minutes total and two minutes idle.
 

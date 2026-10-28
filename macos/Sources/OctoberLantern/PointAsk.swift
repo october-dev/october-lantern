@@ -652,12 +652,7 @@ struct PointAskCard: View {
             }
             Spacer()
             if point.canShowMe {
-                Button { point.showMe() } label: {
-                    Label("Show me", systemImage: "hand.point.up.left").font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Theme.ink).padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Capsule().fill(Theme.faint)).overlay(Capsule().strokeBorder(Theme.stroke))
-                }
-                .buttonStyle(.plain).help("Lantern points at it on your screen, step by step")
+                ShowMeButton(title: "Show me") { point.showMe() }
             }
             if account.signedIn {
                 primaryButton(point.asking ? "Asking…" : "Ask ⏎", enabled: !point.asking && point.canSendSelection) { point.ask() }
