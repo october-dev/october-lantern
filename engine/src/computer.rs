@@ -550,7 +550,13 @@ mod tests {
         assert!(!endpoint_absent(path).unwrap());
         drop(listener);
         assert!(endpoint.exists(), "A closed listener leaves a stale socket file");
-        assert!(endpoint_absent(path).unwrap());
+        // A helper forked by a parallel test can inherit the listener until exec closes it.
+        // It is correctly reported live until then; wait for actual release, as the driver does.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !endpoint_absent(path).unwrap() {
+            assert!(Instant::now() < deadline, "the closed listener's endpoint did not become absent");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         std::fs::remove_dir_all(folder).unwrap();
     }
 
