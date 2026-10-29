@@ -101,7 +101,7 @@ enum OctoberAI {
             let task = Task {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
-                    let key = request.ownKey ? await MainActor.run { OwnKey.shared.answering } : nil
+                    let key = request.ownKey ? await OwnKey.shared.answering() : nil
                     try await ask(request, token: token, key: key, into: continuation)
                     continuation.finish()
                 } catch {

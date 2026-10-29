@@ -54,8 +54,12 @@ final class OwnKey: ObservableObject {
     init(load: Bool = true) {
         state = load ? .loading : .none
         guard load else { return }
-        Task { await reload() }
+        loading = Task { await reload() }
     }
+
+    /// The first read of the Keychain, which a question waits for (so it never goes to October's
+    /// AI just because Lantern had only just started).
+    private var loading: Task<Void, Never>?
 
     /// For tests and snapshots: a key that's already there, without the Keychain.
     static func detached(_ saved: Saved?) -> OwnKey {
@@ -120,7 +124,11 @@ final class OwnKey: ObservableObject {
         plan?.byok == false ? nil : saved
     }
 
-    var answering: Saved? { Self.answering(saved, plan: OctoberAccount.shared.plan?.lantern) }
+    /// The key for the next question, once the Keychain has been read.
+    func answering() async -> Saved? {
+        await loading?.value
+        return Self.answering(saved, plan: OctoberAccount.shared.plan?.lantern)
+    }
 
     /// The headers for `POST /api/lantern/ask`: all of them, or none.
     nonisolated static func headers(_ key: Saved?) -> [String: String] {
