@@ -183,6 +183,8 @@ enum Support {
             var failures: [String] = []
 
             if OctoberAccount.shared.signedIn { OctoberAccount.shared.signOut() }
+            await OwnKey.shared.remove()
+            if OwnKey.shared.saved != nil { failures.append("Removing your own AI key from the Keychain. Delete \"dev.october.lantern.ai-key\" in Keychain Access.") }
             PhoneModel.shared.stop()
             model.stop()
 

@@ -19,12 +19,21 @@ struct AccountCard: View {
                     Text(account.signedIn ? "Connected to October" : "Connect to October")
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                     Text(detail).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                    ForEach(Self.lanternLines(account.plan?.lantern), id: \.self) { line in
+                        Text(line).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
+                    }
                 }
                 Spacer(minLength: 8)
                 if account.signedIn {
+                    Button(account.loadingPlan ? "Refreshing…" : "Refresh") { account.refreshPlan() }
+                        .buttonStyle(SecondaryButtonStyle()).disabled(account.loadingPlan)
+                        .help("Reads your plan again, after buying or starting the trial in the browser")
                     Button("Sign Out") { account.signOut() }.buttonStyle(SecondaryButtonStyle())
                 }
             }
+            }
+            if account.signedIn, Self.offersUpgrade(account.plan) {
+                OfferButtons(from: "account")
             }
 
             if !account.signedIn {
@@ -82,6 +91,27 @@ struct AccountCard: View {
         guard let s = account.session else { return "Sign in with your October account." }
         let plan = account.plan.map { " · \($0.plan.capitalized) plan" } ?? ""
         return (s.email ?? "Signed in") + plan
+    }
+
+    /// "Lantern Lifetime" or "Pro trial · ends Nov 1", then the daily questions on October's AI.
+    static func lanternLines(_ lantern: OctoberAccount.Plan.Lantern?, now: Date = Date()) -> [String] {
+        guard let lantern else { return [] }
+        var lines: [String] = []
+        if lantern.lifetime {
+            lines.append("Lantern Lifetime")
+        } else if let end = lantern.trialEnd(now: now) {
+            lines.append("Pro trial · ends \(end.formatted(date: .abbreviated, time: .omitted))")
+        }
+        if lantern.dailyQuestions > 0 {
+            lines.append("Up to \(lantern.dailyQuestions) question\(lantern.dailyQuestions == 1 ? "" : "s") a day on October's AI")
+        }
+        return lines
+    }
+
+    /// The trial and Lifetime are offered to a free account that has neither.
+    static func offersUpgrade(_ plan: OctoberAccount.Plan?, now: Date = Date()) -> Bool {
+        guard let plan, plan.plan == "free" else { return false }
+        return !(plan.lantern?.lifetime ?? false) && plan.lantern?.trialEnd(now: now) == nil
     }
 
     private func signInWithEmail() {

@@ -47,11 +47,50 @@ final class OctoberAccount: ObservableObject {
             let mobile: Flag?
         }
         let features: Features?
+        /// What this account gets in Lantern: Lantern Lifetime, the Pro trial (until
+        /// `trialEndsAt`), whether your own AI key may answer, and the daily questions on October's AI.
+        let lantern: Lantern?
+        struct Lantern: Decodable, Equatable {
+            let lifetime: Bool
+            let trialEndsAt: Date?
+            let byok: Bool
+            let dailyQuestions: Int
+
+            enum CodingKeys: String, CodingKey { case lifetime, trialEndsAt, byok, dailyQuestions }
+
+            init(lifetime: Bool, trialEndsAt: Date?, byok: Bool, dailyQuestions: Int) {
+                self.lifetime = lifetime; self.trialEndsAt = trialEndsAt; self.byok = byok; self.dailyQuestions = dailyQuestions
+            }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                lifetime = try c.decodeIfPresent(Bool.self, forKey: .lifetime) ?? false
+                byok = try c.decodeIfPresent(Bool.self, forKey: .byok) ?? false
+                dailyQuestions = try c.decodeIfPresent(Int.self, forKey: .dailyQuestions) ?? 0
+                trialEndsAt = try c.decodeIfPresent(String.self, forKey: .trialEndsAt).flatMap(Self.date)
+            }
+
+            /// ISO 8601, with or without fractions of a second (PostgreSQL sends them).
+            static func date(_ text: String) -> Date? {
+                let f = ISO8601DateFormatter()
+                f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let d = f.date(from: text) { return d }
+                f.formatOptions = [.withInternetDateTime]
+                return f.date(from: text)
+            }
+
+            /// The trial's end, while it's still running.
+            func trialEnd(now: Date = Date()) -> Date? {
+                trialEndsAt.flatMap { $0 > now ? $0 : nil }
+            }
+        }
     }
 
     @Published private(set) var session: Session?
     @Published private(set) var plan: Plan?
     @Published private(set) var signingIn = false
+    /// Refresh on the account card is reading the plan again.
+    @Published private(set) var loadingPlan = false
     /// Bumped when you sign in (not when a saved sign-in is restored), so the app can come
     /// forward and say so.
     @Published private(set) var signedInCount = 0
@@ -83,11 +122,13 @@ final class OctoberAccount: ObservableObject {
 
     /// An account that doesn't touch the Keychain or October's servers (for tests).
     /// `signedIn`: with a made-up session, for drawing the signed-in views.
-    static func detached(signedIn: Bool = false) -> OctoberAccount {
+    /// `plan`: as `GET /api/plan` would answer.
+    static func detached(signedIn: Bool = false, plan: Plan? = nil) -> OctoberAccount {
         let a = OctoberAccount(restore: false)
         a.store = ({ _ in }, {})
         a.offline = true
         if signedIn { a.session = Session(accessToken: "", refreshToken: "", expiresAt: .distantFuture, userId: "preview", email: "you@example.com") }
+        a.plan = plan
         return a
     }
 
@@ -307,8 +348,25 @@ final class OctoberAccount: ObservableObject {
         }
     }
 
+    /// Reads the plan again (the account card's Refresh), so something bought in the browser
+    /// shows without restarting Lantern.
+    func refreshPlan() {
+        guard signedIn, !loadingPlan else { return }
+        Task {
+            loadingPlan = true
+            defer { loadingPlan = false }
+            guard let token = await accessToken() else { return }
+            await loadPlan(token: token)
+        }
+    }
+
     func loadPlan() async {
-        guard let token = session?.accessToken, !offline else { return }
+        guard let token = session?.accessToken else { return }
+        await loadPlan(token: token)
+    }
+
+    private func loadPlan(token: String) async {
+        guard !offline else { return }
         let g = generation
         var req = URLRequest(url: Self.planURL)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -368,44 +426,71 @@ extension Data {
     }
 }
 
-/// The session in the login Keychain, readable only by Lantern.
-private enum Keychain {
-    static let service = "dev.october.lantern.session"
-    static let account = "october"
+/// Lantern's items in the login Keychain, readable only by Lantern: the October session, and
+/// your own AI key (`OwnKey`), each under its own service so one never replaces the other.
+enum Keychain {
+    struct Item {
+        let service: String
+        let account: String
+    }
 
-    static func save(_ s: OctoberAccount.Session) {
-        guard let data = try? JSONEncoder().encode(s) else { return }
-        delete()
-        let item: [String: Any] = [
+    static let session = Item(service: "dev.october.lantern.session", account: "october")
+
+    /// The Keychain refused (locked, or denied): `status` is its OSStatus.
+    struct Unavailable: Error { let status: OSStatus }
+
+    static func write(_ data: Data, to item: Item) throws {
+        try? remove(item)
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrService as String: item.service,
+            kSecAttrAccount as String: item.account,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecValueData as String: data,
         ]
-        SecItemAdd(item as CFDictionary, nil)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw Unavailable(status: status) }
     }
 
-    static func load() -> OctoberAccount.Session? {
+    /// The item's data, nil when there is none; throws when the Keychain can't be read.
+    static func read(_ item: Item) throws -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrService as String: item.service,
+            kSecAttrAccount as String: item.account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var out: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        let status = SecItemCopyMatching(query as CFDictionary, &out)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess, let data = out as? Data else { throw Unavailable(status: status) }
+        return data
+    }
+
+    static func remove(_ item: Item) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: item.service,
+            kSecAttrAccount as String: item.account,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw Unavailable(status: status) }
+    }
+
+    // The October session.
+    static func save(_ s: OctoberAccount.Session) {
+        guard let data = try? JSONEncoder().encode(s) else { return }
+        try? write(data, to: session)
+    }
+
+    static func load() -> OctoberAccount.Session? {
+        guard let data = try? read(session) else { return nil }
         return try? JSONDecoder().decode(OctoberAccount.Session.self, from: data)
     }
 
     static func delete() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
+        try? remove(session)
     }
 }
 

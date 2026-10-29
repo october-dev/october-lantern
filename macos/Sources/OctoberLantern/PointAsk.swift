@@ -37,8 +37,10 @@ final class PointAsk: ObservableObject {
         let question: String
         var answer: String
         var failed = false
-        /// Out of free questions or credit: where to upgrade.
-        var upgrade: URL?
+        /// What the failed answer offers (the trial and Lifetime, your key's settings, October's AI).
+        var fix: OctoberAI.Fix?
+        /// Your own key answered: its provider.
+        var via: String?
         /// About the account, e.g. free questions left today.
         var note: String?
     }
@@ -216,6 +218,30 @@ final class PointAsk: ObservableObject {
             turns: turns.dropLast().filter { !$0.failed }.map { ($0.question, $0.answer) }, question: question,
             image: shot.flatMap(Self.jpeg), context: context.lines.joined(separator: "\n"), mode: "point_task"
         )
+        run(request, question: question, index: index, turnID: turnID)
+    }
+
+    /// The request whose own-key provider failed before answering, for "Ask October's AI instead".
+    private var retry: (turn: UUID, request: OctoberAI.Request)?
+
+    func canAskOctober(_ id: UUID) -> Bool { retry?.turn == id }
+
+    /// Ask October's AI instead: the same question again, without your key.
+    func askOctober(_ id: UUID) {
+        guard !asking, let retry, retry.turn == id, let index = turns.firstIndex(where: { $0.id == id }) else { return }
+        self.retry = nil
+        var request = retry.request
+        request.ownKey = false
+        turns[index].answer = ""
+        turns[index].failed = false
+        turns[index].fix = nil
+        turns[index].via = nil
+        asking = true
+        Analytics.shared.capture("own_key_fallback", [:])
+        run(request, question: turns[index].question, index: index, turnID: id)
+    }
+
+    private func run(_ request: OctoberAI.Request, question: String, index: Int, turnID: UUID) {
         askTask = Task {
             do {
                 var work: (prompt: String, agent: String?, project: String?)?
@@ -223,6 +249,7 @@ final class PointAsk: ObservableObject {
                     guard !Task.isCancelled, index < turns.count, turns[index].id == turnID else { return }
                     switch piece {
                     case .text(let text): turns[index].answer += text
+                    case .via(let provider): turns[index].via = provider
                     case .note(let note): turns[index].note = note
                     case .task(let prompt, let agent, let project, _): work = (prompt, agent, project)
                     case .guide: break
@@ -240,9 +267,14 @@ final class PointAsk: ObservableObject {
             } catch {
                 if !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID {
                     let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    var fix = (error as? OctoberAI.Failure)?.fix
+                    // Never after part of an answer: it could repeat work the answer started.
+                    if fix == .useOctober {
+                        if turns[index].answer.isEmpty { retry = (turnID, request) } else { fix = nil }
+                    }
                     turns[index].answer += (turns[index].answer.isEmpty ? "" : "\n\n") + message
                     turns[index].failed = true
-                    turns[index].upgrade = (error as? OctoberAI.Failure)?.upgradeURL
+                    turns[index].fix = fix
                 }
             }
             guard !Task.isCancelled, turns.indices.contains(index), turns[index].id == turnID else { return }
@@ -595,11 +627,15 @@ struct PointAskCard: View {
                                 }
                             } else {
                                 Text(Self.markdown(turn.answer)).font(.system(size: 12.5)).lineSpacing(2)
-                                    .foregroundStyle(turn.upgrade != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
+                                    .foregroundStyle(turn.fix != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                                     .textSelection(.enabled)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
-                            if let url = turn.upgrade { UpgradeButton(url: url, from: "point_ask") }
+                            if let via = turn.via, !turn.failed { ViaLabel(provider: via) }
+                            if let fix = turn.fix {
+                                FixButtons(fix: fix, from: "point_ask", useOctober: point.canAskOctober(turn.id)
+                                    ? { point.askOctober(turn.id) } : nil)
+                            }
                             if let note = turn.note {
                                 Text(note).font(.system(size: 11)).foregroundStyle(Theme.muted)
                             }

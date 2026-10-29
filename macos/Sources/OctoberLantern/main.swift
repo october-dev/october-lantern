@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         switch piece {
                         case .text(let t): print(t, terminator: "")
                         case .note(let n): print("\n[note] \(n)")
+                        case .via(let p): print("[via \(p)]")
                         case .task(let prompt, let agent, let project, let to): print("\n[task] agent=\(agent ?? "-") project=\(project ?? "-") to=\(to ?? "-") prompt=\(prompt)")
                         case .guide(let g, let goal): print("\n[guide] \(g ?? [:]) goal=\(goal ?? "-")")
                         }
@@ -209,12 +210,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         present(welcomeWindow)
     }
 
-    func showSettings(tab: Int = 0) {
+    /// Settings, on page `tab` when one is named (an open window turns to it).
+    func showSettings(tab: Int? = nil) {
+        let view = SettingsView(model: model, onShowWelcome: { [weak self] in self?.showWelcome() }, tab: tab ?? 0)
         if settingsWindow == nil {
-            settingsWindow = makeWindow(
-                title: "October Lantern Settings",
-                content: SettingsView(model: model, onShowWelcome: { [weak self] in self?.showWelcome() }, tab: tab)
-            )
+            settingsWindow = makeWindow(title: "October Lantern Settings", content: view)
+        } else if tab != nil {
+            settingsWindow?.contentViewController = NSHostingController(rootView: view)
         }
         present(settingsWindow)
     }

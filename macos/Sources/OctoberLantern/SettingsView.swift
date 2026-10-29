@@ -153,9 +153,10 @@ struct SettingsView: View {
     private var october: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Lantern works on its own. Signing in to October adds Ask and Point & Ask answers; October Desktop shows its agents here.")
+                Text("Lantern works on its own. Signing in to October adds Ask and Point & Ask answers, from October's AI or your own AI key; October Desktop shows its agents here.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 AccountCard()
+                OwnKeyCard()
                 DesktopCard(model: model)
             }
             .padding(20)
@@ -228,7 +229,7 @@ struct SettingsView: View {
             }
             Section {
                 Button("Uninstall October Lantern…", role: .destructive) { Support.uninstall(model: model) }
-                Text("Signs out of October, removes the hooks (restoring your agents' settings), support files and settings, then moves the app to the Trash.")
+                Text("Signs out of October, removes your own AI key, the hooks (restoring your agents' settings), support files and settings, then moves the app to the Trash.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

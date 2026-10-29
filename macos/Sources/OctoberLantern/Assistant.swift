@@ -36,8 +36,11 @@ final class Assistant: ObservableObject {
         var task: TaskLink?
         /// Why no agent could be started for this answer's task.
         var taskProblem: String?
-        /// Out of free questions or credit: where to upgrade.
-        var upgrade: URL?
+        /// What the failed answer offers: the trial and Lifetime, your key's settings, or asking
+        /// October's AI instead.
+        var fix: OctoberAI.Fix?
+        /// Your own key answered: its provider ("OpenAI").
+        var via: String?
         /// Images you added to this message (paths in the screenshots folder).
         var images: [String]?
     }
@@ -431,12 +434,37 @@ final class Assistant: ObservableObject {
             context: agentSummary(question: question, images: images.count), mode: "chat"
         )
         if jpegs.count > 1 { request.images = jpegs }
+        run(request, turn: id)
+    }
+
+    /// Questions whose own-key provider failed before answering, for "Ask October's AI instead".
+    /// Only in memory: a reopened conversation doesn't offer it.
+    private var retries: [UUID: OctoberAI.Request] = [:]
+
+    func canAskOctober(_ id: UUID) -> Bool { retries[id] != nil }
+
+    /// Ask October's AI instead: the same question, for the same turn, without your key.
+    func askOctober(_ id: UUID) {
+        guard !asking, var request = retries.removeValue(forKey: id), let i = turns.firstIndex(where: { $0.id == id }),
+              turns[i].answer.isEmpty || turns[i].fix == .useOctober else { return }
+        turns[i].answer = ""
+        turns[i].failed = false
+        turns[i].fix = nil
+        turns[i].via = nil
+        request.ownKey = false
+        asking = true
+        Analytics.shared.capture("own_key_fallback", [:])
+        run(request, turn: id)
+    }
+
+    private func run(_ request: OctoberAI.Request, turn id: UUID) {
         task = Task {
             do {
                 for try await piece in OctoberAI.stream(request) {
                     guard !Task.isCancelled, let i = turns.firstIndex(where: { $0.id == id }) else { return }
                     switch piece {
                     case .text(let t): turns[i].answer += t
+                    case .via(let p): turns[i].via = p
                     case .note(let n): turns[i].note = n
                     case .task(let prompt, let agent, let project, let to):
                         if let to, let running = model?.agents.first(where: { $0.isLive && $0.handle == to }) {
@@ -455,9 +483,14 @@ final class Assistant: ObservableObject {
             } catch {
                 if let i = turns.firstIndex(where: { $0.id == id }) {
                     let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    var fix = (error as? OctoberAI.Failure)?.fix
+                    // Never after part of an answer: it could repeat work the answer started.
+                    if fix == .useOctober {
+                        if turns[i].answer.isEmpty { retries[id] = request } else { fix = nil }
+                    }
                     turns[i].answer += (turns[i].answer.isEmpty ? "" : "\n\n") + message
                     turns[i].failed = true
-                    turns[i].upgrade = (error as? OctoberAI.Failure)?.upgradeURL
+                    turns[i].fix = fix
                 }
             }
             guard !Task.isCancelled else { return }
@@ -984,7 +1017,10 @@ private struct TurnView: View {
                 .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.amber.opacity(0.22)))
                 .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.amber.opacity(0.3)))
             }
-            Text("Lantern").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.muted)
+            HStack(spacing: 4) {
+                Text("Lantern").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.muted)
+                if let via = turn.via { ViaLabel(provider: via) }
+            }
             if turn.answer.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -993,7 +1029,7 @@ private struct TurnView: View {
             } else {
                 Text((try? AttributedString(markdown: turn.answer, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(turn.answer))
                     .font(.system(size: 12.5)).lineSpacing(2)
-                    .foregroundStyle(turn.upgrade != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
+                    .foregroundStyle(turn.fix != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contextMenu {
@@ -1003,7 +1039,10 @@ private struct TurnView: View {
                         }
                     }
             }
-            if let url = turn.upgrade { UpgradeButton(url: url, from: "assistant") }
+            if let fix = turn.fix {
+                FixButtons(fix: fix, from: "assistant", useOctober: fix == .useOctober && Assistant.shared.canAskOctober(turn.id)
+                    ? { Assistant.shared.askOctober(turn.id) } : nil)
+            }
             if let started = turn.started, turn.task == nil {
                 Label(started, systemImage: "play.circle.fill").font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.green)
             }
@@ -1052,23 +1091,67 @@ struct Thumbnail: View {
     }
 }
 
-/// Opens October's pricing page, under an answer that hit a plan limit.
-struct UpgradeButton: View {
-    let url: URL
+/// Start free trial and Buy Lifetime, on October's Lantern page (`base`, the server's upgrade link
+/// when it's October's own): under an answer that hit a plan limit, and on the account card.
+struct OfferButtons: View {
+    var base: URL = OctoberAI.lanternPage
     let from: String
 
     var body: some View {
+        HStack(spacing: 6) {
+            button("Start free trial", .trial)
+            button("Buy Lifetime", .lifetime)
+        }
+    }
+
+    private func button(_ title: String, _ offer: OctoberAI.Offer) -> some View {
         Button {
-            Analytics.shared.capture("upgrade_opened", ["from": from])
-            NSWorkspace.shared.open(url)
+            Analytics.shared.capture("upgrade_opened", ["from": from, "offer": offer.rawValue])
+            NSWorkspace.shared.open(OctoberAI.offerURL(offer, base: base))
         } label: {
             HStack(spacing: 3) {
-                Text("Upgrade to October Pro")
+                Text(title)
                 Image(systemName: "arrow.up.forward").font(.system(size: 9, weight: .semibold))
             }
         }
         .buttonStyle(SecondaryButtonStyle())
-        .help("Opens October's plans in your browser")
+        .help("Opens October's Lantern page in your browser")
+    }
+}
+
+/// What a failed answer offers: the trial and Lifetime, your key's settings, or (only before any
+/// answer came back) asking October's AI instead.
+struct FixButtons: View {
+    let fix: OctoberAI.Fix
+    let from: String
+    /// Asks the same question again without your key; nil where that isn't possible.
+    var useOctober: (() -> Void)?
+
+    var body: some View {
+        switch fix {
+        case .upgrade(let url): OfferButtons(base: url, from: from)
+        case .editKey: Button("Edit key") { Self.openKeySettings() }.buttonStyle(SecondaryButtonStyle())
+        case .openSettings: Button("Open Settings") { Self.openKeySettings() }.buttonStyle(SecondaryButtonStyle())
+        case .useOctober:
+            if let useOctober {
+                Button("Ask October's AI instead", action: useOctober).buttonStyle(SecondaryButtonStyle())
+                    .help("Asks again with October's AI, which uses your October allowance")
+            }
+        }
+    }
+
+    /// Settings › October, where your own key is.
+    static func openKeySettings() {
+        (NSApp.delegate as? AppDelegate)?.showSettings(tab: 2)
+    }
+}
+
+/// "via OpenAI": your own key answered.
+struct ViaLabel: View {
+    let provider: String
+    var body: some View {
+        Text("via \(provider)").font(.system(size: 10.5)).foregroundStyle(Theme.muted)
+            .help("Your own \(provider) key answered; \(provider) bills you for it.")
     }
 }
 
@@ -1177,7 +1260,7 @@ struct AskBox: View {
                 // Sign in right here; afterwards Lantern comes back to this box.
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Sign in to ask Lantern").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                    Text("Ask anything about your agents, or tell Lantern what to do. Free accounts get 5 questions a day.")
+                    Text("Ask anything about your agents, or tell Lantern what to do.")
                         .font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                     AccountCard(account: account, showsHeader: false)
                 }
