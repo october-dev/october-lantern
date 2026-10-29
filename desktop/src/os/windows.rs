@@ -2,7 +2,7 @@
 //! icon, its notifications (shown by Windows as toasts) and the global shortcut; the rest are
 //! plain calls. Screenshots capture the display under the pointer with Lantern's own window left
 //! out; dictation records through the system's audio mapper and transcribes with whisper.cpp.
-use super::Event;
+use super::{Event, Secret};
 use crate::settings::Settings;
 use anyhow::{Context, Result, bail};
 use std::cell::RefCell;
@@ -15,8 +15,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_PIPE_CONNECTED, ERROR_SUCCESS, GetLastError, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, POINT, STILL_ACTIVE,
-    WPARAM,
+    CloseHandle, ERROR_NOT_FOUND, ERROR_PIPE_CONNECTED, ERROR_SUCCESS, GetLastError, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, POINT,
+    STILL_ACTIVE, WPARAM,
 };
 use windows_sys::Win32::Security::Credentials::{
     CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredDeleteW, CredFree, CredReadW, CredWriteW,
@@ -358,39 +358,71 @@ pub fn autostart_executable(enable: bool, executable: &Path) -> Result<()> {
     Ok(())
 }
 
-// ---------- sign-in, in Credential Manager ----------
+// ---------- secrets, in Credential Manager ----------
 
-const CREDENTIAL: &str = "dev.october.lantern/refresh-token";
+/// Each secret is its own generic credential.
+fn credential_target(secret: Secret) -> &'static str {
+    match secret {
+        Secret::SignIn => "dev.october.lantern/refresh-token",
+        Secret::AiKey => "dev.october.lantern/ai-key",
+    }
+}
 
-pub fn secret_store(token: &str) -> Result<()> {
-    let mut target = wide(CREDENTIAL);
-    let mut blob = token.as_bytes().to_vec();
+pub fn secret_store(secret: Secret, value: &str) -> Result<()> {
+    let mut target = wide(credential_target(secret));
+    let mut blob = value.as_bytes().to_vec();
     let mut credential: CREDENTIALW = unsafe { std::mem::zeroed() };
     credential.Type = CRED_TYPE_GENERIC;
     credential.TargetName = target.as_mut_ptr();
     credential.CredentialBlobSize = blob.len() as u32;
     credential.CredentialBlob = blob.as_mut_ptr();
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
-    anyhow::ensure!(unsafe { CredWriteW(&credential, 0) } != 0, "Credential Manager could not save sign-in");
+    anyhow::ensure!(unsafe { CredWriteW(&credential, 0) } != 0, "Credential Manager couldn't save it (error {})", unsafe {
+        GetLastError()
+    });
     Ok(())
 }
 
-pub fn secret_lookup() -> Result<String> {
-    let target = wide(CREDENTIAL);
+/// `None` when nothing is saved; any other failure to read Credential Manager is an error.
+pub fn secret_lookup(secret: Secret) -> Result<Option<String>> {
+    let target = wide(credential_target(secret));
     let mut credential: *mut CREDENTIALW = std::ptr::null_mut();
-    anyhow::ensure!(unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } != 0, "No saved October sign-in");
-    let token = unsafe {
+    if unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) } == 0 {
+        let error = unsafe { GetLastError() };
+        anyhow::ensure!(error == ERROR_NOT_FOUND, "Credential Manager couldn't read it (error {error})");
+        return Ok(None);
+    }
+    let value = unsafe {
         let c = &*credential;
         let bytes = std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize).to_vec();
         CredFree(credential.cast());
         bytes
     };
-    Ok(String::from_utf8(token)?.trim().to_owned())
+    let value = String::from_utf8(value)?.trim().to_owned();
+    Ok((!value.is_empty()).then_some(value))
 }
 
-pub fn secret_clear() {
-    let target = wide(CREDENTIAL);
-    unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) };
+pub fn secret_clear(secret: Secret) -> Result<()> {
+    let target = wide(credential_target(secret));
+    if unsafe { CredDeleteW(target.as_ptr(), CRED_TYPE_GENERIC, 0) } == 0 {
+        let error = unsafe { GetLastError() };
+        anyhow::ensure!(error == ERROR_NOT_FOUND, "Credential Manager couldn't remove it (error {error})");
+    }
+    Ok(())
+}
+
+/// This computer's offset from UTC now, in seconds (daylight saving included).
+pub fn utc_offset_seconds() -> i32 {
+    use windows_sys::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    let mut zone: TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    // UTC = local + bias (minutes); 1: standard time, 2: daylight time, 0: no daylight saving.
+    let bias = match unsafe { GetTimeZoneInformation(&mut zone) } {
+        1 => zone.Bias + zone.StandardBias,
+        2 => zone.Bias + zone.DaylightBias,
+        0 => zone.Bias,
+        _ => 0,
+    };
+    -bias * 60
 }
 
 // ---------- tray, notifications and the global shortcut ----------

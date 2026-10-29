@@ -1,6 +1,6 @@
 //! Linux desktop integration. Portals retain the user's choice of screen and shortcuts on
 //! Wayland; Lantern never bypasses a denied portal request.
-use super::Event;
+use super::{Event, Secret};
 use crate::settings::{Settings, data_dir, private_write};
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -499,25 +499,59 @@ impl Drop for Recording {
 pub fn process_alive(pid: u32) -> bool {
     std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
-const SECRET: [&str; 4] = ["application", "dev.october.lantern", "credential", "refresh-token"];
-/// Saves the October refresh token in the Secret Service keyring.
-pub fn secret_store(token: &str) -> Result<()> {
+/// Each secret is its own Secret Service item, told apart by its `credential` attribute.
+fn secret_attributes(secret: Secret) -> [&'static str; 4] {
+    let credential = match secret {
+        Secret::SignIn => "refresh-token",
+        Secret::AiKey => "ai-key",
+    };
+    ["application", "dev.october.lantern", "credential", credential]
+}
+/// Saves a secret in the Secret Service keyring.
+pub fn secret_store(secret: Secret, value: &str) -> Result<()> {
+    let label = match secret {
+        Secret::SignIn => "--label=October Lantern",
+        Secret::AiKey => "--label=October Lantern AI key",
+    };
     let mut child = Command::new("secret-tool")
-        .args(["store", "--label=October Lantern"])
-        .args(SECRET)
+        .args(["store", label])
+        .args(secret_attributes(secret))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    child.stdin.take().context("Secret Service input unavailable")?.write_all(token.as_bytes())?;
-    anyhow::ensure!(child.wait()?.success(), "Secret Service could not save sign-in");
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Couldn't run secret-tool (libsecret-tools)")?;
+    child.stdin.take().context("Secret Service input unavailable")?.write_all(value.as_bytes())?;
+    let output = child.wait_with_output()?;
+    anyhow::ensure!(output.status.success(), "Secret Service couldn't save it: {}", String::from_utf8_lossy(&output.stderr).trim());
     Ok(())
 }
-pub fn secret_lookup() -> Result<String> {
-    let output = Command::new("secret-tool").arg("lookup").args(SECRET).output()?;
-    anyhow::ensure!(output.status.success(), "No saved October sign-in");
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+/// `None` when nothing is saved: `secret-tool lookup` then exits 1 and says nothing. Not being
+/// able to run it, or anything it says on stderr (a locked or missing keyring), is an error.
+pub fn secret_lookup(secret: Secret) -> Result<Option<String>> {
+    let output = Command::new("secret-tool")
+        .arg("lookup")
+        .args(secret_attributes(secret))
+        .output()
+        .context("Couldn't run secret-tool (libsecret-tools)")?;
+    let problem = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    anyhow::ensure!(problem.is_empty(), "Secret Service: {problem}");
+    let value = if output.status.success() { String::from_utf8(output.stdout)?.trim().to_owned() } else { String::new() };
+    Ok((!value.is_empty()).then_some(value))
 }
-pub fn secret_clear() {
-    let _ = Command::new("secret-tool").arg("clear").args(SECRET).output();
+pub fn secret_clear(secret: Secret) -> Result<()> {
+    let output = Command::new("secret-tool")
+        .arg("clear")
+        .args(secret_attributes(secret))
+        .output()
+        .context("Couldn't run secret-tool (libsecret-tools)")?;
+    let problem = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    anyhow::ensure!(output.status.success() || problem.is_empty(), "Secret Service couldn't remove it: {problem}");
+    Ok(())
+}
+/// This computer's offset from UTC now, in seconds (`date +%z`: "+0530").
+pub fn utc_offset_seconds() -> i32 {
+    let output = Command::new("date").arg("+%z").output().ok().filter(|output| output.status.success());
+    let text = output.map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()).unwrap_or_default();
+    super::parse_utc_offset(&text).unwrap_or(0)
 }

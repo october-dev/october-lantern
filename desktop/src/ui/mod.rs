@@ -86,6 +86,13 @@ pub struct UiState {
     pub account_email: String,
     #[serde(skip)]
     pub account_password: String,
+    /// Your own AI key's form: the key typed is never kept anywhere else.
+    pub own_key_provider: crate::own_key::AiProvider,
+    #[serde(skip)]
+    pub own_key_input: String,
+    pub own_key_model: String,
+    /// Editing a saved key (the form shows instead of the saved key).
+    pub own_key_editing: bool,
     #[serde(skip)]
     pub desktop_flow: Option<(bool, f64)>,
     #[serde(skip)]
@@ -252,12 +259,21 @@ pub enum UiAction {
     SubmitAssistant,
     /// "New chat": the current one stays in Recent.
     ClearAssistant,
-    /// Opens October's plans from an answer that hit a plan limit; `from` is "assistant" or
-    /// "point_ask" (counted).
+    /// Opens one of Lantern's offers (`offer` "trial" or "lifetime", at `url`); `from` says where
+    /// ("assistant", "point_ask", "show_me", "account", "own_key"; counted).
     OpenUpgrade {
         url: String,
         from: &'static str,
+        offer: &'static str,
     },
+    /// Asks this turn's question again with October's AI, after your provider refused or failed.
+    AskOctoberInstead {
+        turn: u64,
+    },
+    PointAskOctoberInstead {
+        turn: usize,
+    },
+    ShowWithOctoberInstead,
     /// "Share usage counts".
     SetShareUsage(bool),
     /// Download October Harness again after a failed install (Welcome's Try again).
@@ -282,6 +298,13 @@ pub enum UiAction {
     },
     CancelSignIn,
     SignOut,
+    /// Fetches the plan again (after buying in the browser).
+    RefreshPlan,
+    /// Saves your own AI key in the keyring (its `Debug` hides the key).
+    SaveOwnKey(crate::own_key::OwnKey),
+    RemoveOwnKey,
+    /// Settings, at the October page with your own key.
+    OpenOwnKeySettings,
     DesktopConnect,
     DesktopCancelPairing,
     DesktopDisconnect,

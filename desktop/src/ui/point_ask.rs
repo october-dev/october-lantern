@@ -229,7 +229,7 @@ fn conversation(ui: &mut Ui, cx: &mut Ctx) {
                                     ui,
                                     &turn.answer,
                                     MarkdownStyle {
-                                        color: super::assistant::answer_color(turn.failed, turn.upgrade.is_some()),
+                                        color: super::assistant::answer_color(turn.failed, turn.fix.is_some()),
                                         ..Default::default()
                                     },
                                     2.0,
@@ -241,8 +241,11 @@ fn conversation(ui: &mut Ui, cx: &mut Ctx) {
                                 if let Some(note) = &turn.note {
                                     c::label(ui, note, 11.0, Weight::Regular, t::MUTED);
                                 }
-                                if let Some(url) = &turn.upgrade {
-                                    super::assistant::upgrade_button(ui, cx, url, "point_ask");
+                                if let Some(provider) = &turn.via {
+                                    super::assistant::via(ui, provider);
+                                }
+                                if let Some(fix) = &turn.fix {
+                                    super::assistant::fix_buttons(ui, cx, fix, "point_ask", UiAction::PointAskOctoberInstead { turn: i });
                                 }
                             });
                         });

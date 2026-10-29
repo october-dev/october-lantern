@@ -7,14 +7,17 @@
 //! or text-only retry silently discards attached pictures.
 //!
 //! What's sent: the question, earlier turns, the context lines (the app and window for Point &
-//! Ask, a summary of the agents for Ask Lantern) and Point & Ask's screenshot. Nothing else.
+//! Ask, a summary of the agents for Ask Lantern) and Point & Ask's screenshot. Nothing else; with
+//! your own AI key, also that key, its provider and model (headers October passes on, never keeps).
+use crate::model::Fix;
+use crate::own_key::OwnKey;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read};
 use std::time::Duration;
 
 const ASK: &str = "https://www.october.dev/api/lantern/ask";
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Request {
     /// Earlier questions and answers in this conversation.
     pub turns: Vec<(String, String)>,
@@ -28,6 +31,24 @@ pub struct Request {
     /// "chat" for Ask Lantern (its own prompt on the server); `None` for Point & Ask.
     pub mode: Option<String>,
     pub guidance: Option<Value>,
+    /// Your own AI key may answer (when one is given to `stream`); off for "Ask October's AI
+    /// instead".
+    pub use_own_key: bool,
+}
+
+impl Default for Request {
+    fn default() -> Self {
+        Self {
+            turns: Vec::new(),
+            question: String::new(),
+            image: None,
+            images: Vec::new(),
+            context: String::new(),
+            mode: None,
+            guidance: None,
+            use_own_key: true,
+        }
+    }
 }
 
 /// A piece of the answer, or something to show with it.
@@ -48,6 +69,8 @@ pub enum Piece {
         /// A running agent (its handle) to send it to instead of starting one.
         to: Option<String>,
     },
+    /// Your own key answered (`start.tier` "byok"): its provider ("OpenAI").
+    Via(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +89,13 @@ pub enum Failure {
     Invalid(String),
     /// The person (or a newer question) cancelled it.
     Cancelled,
+    /// Your provider didn't accept your own key.
+    OwnKey(String),
+    /// Your provider couldn't use the model set with your key.
+    OwnModel(String),
+    /// Your provider refused (its rate limit or billing) or failed: October's AI can be asked
+    /// instead.
+    Provider(String),
 }
 
 impl std::fmt::Display for Failure {
@@ -74,37 +104,65 @@ impl std::fmt::Display for Failure {
             Self::SignedOut => "Sign in to October to ask.",
             Self::NotDeployed => "October's AI isn't available right now.",
             Self::Cancelled => "Cancelled.",
-            Self::Plan { message: m, .. } | Self::Limited(m) | Self::Unavailable(m) | Self::Invalid(m) => m,
+            Self::Plan { message: m, .. }
+            | Self::Limited(m)
+            | Self::Unavailable(m)
+            | Self::Invalid(m)
+            | Self::OwnKey(m)
+            | Self::OwnModel(m)
+            | Self::Provider(m) => m,
         })
     }
 }
 
-/// October's pricing page.
-pub const PRICING: &str = "https://www.october.dev/pricing";
+/// Where Lantern's offers are bought: the Pro trial and Lantern Lifetime.
+pub const LANTERN: &str = "https://www.october.dev/lantern";
 
 impl Failure {
-    /// Where to upgrade, when a plan would help.
-    pub fn upgrade(&self) -> Option<&str> {
+    /// What the failed answer offers.
+    pub fn fix(&self) -> Option<Fix> {
         match self {
-            Self::Plan { upgrade, .. } => Some(upgrade),
+            Self::Plan { upgrade, .. } => Some(Fix::Upgrade(upgrade.clone())),
+            Self::OwnKey(_) => Some(Fix::EditKey),
+            Self::OwnModel(_) => Some(Fix::OpenSettings),
+            Self::Provider(_) => Some(Fix::UseOctober),
             _ => None,
         }
     }
 }
 
-/// The server's upgrade link when it's October's own, else the pricing page.
+/// The server's upgrade link when it's October's own, else Lantern's offers page.
 fn upgrade_url(value: &Value) -> String {
-    value
-        .as_str()
-        .and_then(|s| url::Url::parse(s).ok())
-        .filter(|url| url.scheme() == "https" && matches!(url.host_str(), Some("www.october.dev" | "october.dev")))
-        .map(|url| url.to_string())
-        .unwrap_or_else(|| PRICING.into())
+    value.as_str().and_then(|s| url::Url::parse(s).ok()).filter(october_url).map(|url| url.to_string()).unwrap_or_else(|| LANTERN.into())
 }
 
-/// Stream exactly the requested capability. Never downgrade modes or discard pictures.
-pub fn stream(request: &Request, token: &str, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
-    ask(request, token, sink)
+fn october_url(url: &url::Url) -> bool {
+    url.scheme() == "https" && matches!(url.host_str(), Some("www.october.dev" | "october.dev"))
+}
+
+/// The offers, from Lantern: `offer` "trial" or "lifetime" on October's page `base` (its own query
+/// replaced), or on Lantern's offers page when `base` isn't October's.
+pub fn offer_url(base: &str, offer: &str) -> String {
+    let mut url = url::Url::parse(base).ok().filter(october_url).unwrap_or_else(|| url::Url::parse(LANTERN).expect("a valid URL"));
+    url.set_query(Some(&format!("offer={offer}&ref=app")));
+    url.set_fragment(None);
+    url.to_string()
+}
+
+/// Stream exactly the requested capability. Never downgrade modes or discard pictures. `own_key`
+/// answers when the request allows it.
+pub fn stream(request: &Request, token: &str, own_key: Option<&OwnKey>, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
+    ask(request, token, own_key.filter(|_| request.use_own_key), sink)
+}
+
+/// Your own key for October to pass on: all three headers, or none; the model only when set.
+pub fn byok_headers(request: &Request, own_key: Option<&OwnKey>) -> Vec<(&'static str, String)> {
+    let Some(key) = own_key.filter(|_| request.use_own_key) else { return Vec::new() };
+    let mut headers = vec![("X-Lantern-Byok-Provider", key.provider.id().to_string()), ("X-Lantern-Byok-Key", key.key.clone())];
+    if !key.model.trim().is_empty() {
+        headers.push(("X-Lantern-Byok-Model", key.model.trim().to_string()));
+    }
+    headers
 }
 
 fn agent() -> ureq::Agent {
@@ -170,13 +228,12 @@ pub fn ask_body(request: &Request) -> Value {
     body
 }
 
-fn ask(request: &Request, token: &str, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
-    let response = agent()
-        .post(ASK)
-        .header("Authorization", &format!("Bearer {token}"))
-        .header("Accept", "text/event-stream")
-        .send_json(ask_body(request))
-        .map_err(|error| Failure::Unavailable(format!("Couldn't reach October: {error}")))?;
+fn ask(request: &Request, token: &str, own_key: Option<&OwnKey>, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
+    let mut post = agent().post(ASK).header("Authorization", &format!("Bearer {token}")).header("Accept", "text/event-stream");
+    for (name, value) in byok_headers(request, own_key) {
+        post = post.header(name, &value);
+    }
+    let response = post.send_json(ask_body(request)).map_err(|error| Failure::Unavailable(format!("Couldn't reach October: {error}")))?;
     let status = response.status().as_u16();
     if status == 404 || status == 405 {
         return Err(Failure::NotDeployed);
@@ -185,17 +242,26 @@ fn ask(request: &Request, token: &str, sink: &mut dyn FnMut(Piece) -> bool) -> R
     if status != 200 {
         return Err(failure(status, &read_some(&mut body)));
     }
-    read_ask_events(body, sink)
+    read_ask_events(body, own_key.map(|key| key.provider.label()), sink)
 }
 
-/// Lantern's endpoint: `delta` text, then `done` (with an optional task and account note).
-pub fn read_ask_events(reader: impl Read, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
+/// Lantern's endpoint: `start` (who answers), `delta` text, then `done` (with an optional task and
+/// account note). `own_key`: the provider of the key sent, named when it answered.
+pub fn read_ask_events(reader: impl Read, own_key: Option<&str>, sink: &mut dyn FnMut(Piece) -> bool) -> Result<(), Failure> {
     for line in BufReader::new(reader.take(4 * 1024 * 1024)).lines() {
         let line = line.map_err(|error| Failure::Unavailable(format!("October's answer was cut off: {error}")))?;
         let Some(event) = line.strip_prefix("data:").and_then(|payload| serde_json::from_str::<Value>(payload.trim()).ok()) else {
             continue;
         };
         match event["type"].as_str() {
+            Some("start") => {
+                if event["tier"] == "byok"
+                    && let Some(provider) = own_key
+                    && !sink(Piece::Via(provider.into()))
+                {
+                    return Err(Failure::Cancelled);
+                }
+            }
             Some("delta") => {
                 if let Some(text) = event["text"].as_str()
                     && !sink(Piece::Text(text.into()))
@@ -259,11 +325,25 @@ pub fn failure(status: u16, body: &[u8]) -> Failure {
         message: message.clone().unwrap_or_else(|| default.into()),
         upgrade: upgrade_url(&error["upgradeUrl"]),
     };
+    let said = |default: &str| message.clone().unwrap_or_else(|| default.into());
+    // Your own key's problems first: their statuses (400, 402, 429) mean other things otherwise.
+    match code {
+        "byok_requires_plan" => return plan("Your own key needs Lantern Lifetime or the Pro trial."),
+        "byok_key_invalid" => return Failure::OwnKey(said("Your AI provider didn't accept your key. Check it in Settings.")),
+        "byok_model_unavailable" => {
+            return Failure::OwnModel(said("Your AI provider couldn't use that model. Check the model in Settings."));
+        }
+        "byok_provider_limited" => return Failure::Provider(said("Your AI provider refused the question: its rate limit or billing.")),
+        "byok_provider_failed" => {
+            return Failure::Provider(said("Your AI provider didn't answer. Try again, or ask October's AI instead."));
+        }
+        _ => {}
+    }
     match (status, code) {
         (401, _) => Failure::SignedOut,
         (_, "plan_required") => plan("This needs an October Pro or Max plan."),
         (402, _) | (_, "credit_exhausted") => plan("You've used this period's October AI credit."),
-        (_, "free_limit") => plan("That's today's free questions. Upgrade to October Pro for more."),
+        (_, "free_limit") => plan("You've used today's free questions. They reset at midnight UTC."),
         (429, _) => Failure::Limited(message.unwrap_or_else(|| "Too many questions for now. Try again in a minute.".into())),
         (400, _) => Failure::Invalid(message.unwrap_or_else(|| "October's AI couldn't read the request.".into())),
         _ => Failure::Unavailable(message.unwrap_or_else(|| format!("October's AI isn't available right now ({status}). Try again soon."))),
@@ -294,7 +374,7 @@ mod tests {
         let sse = "event: start\ndata: {\"type\":\"start\"}\n\ndata: {\"type\":\"delta\",\"text\":\"On \"}\n\ndata: {\"type\":\"delta\",\"text\":\"it.\"}\n\n\
                    data: {\"type\":\"done\",\"task\":{\"prompt\":\"fix the wifi\",\"agent\":\"claude\"},\"remaining\":{\"kind\":\"free\",\"questions\":3}}\n\n\
                    data: {\"type\":\"delta\",\"text\":\"ignored after done\"}\n";
-        let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), sink));
+        let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), None, sink));
         assert_eq!(result, Ok(()));
         assert_eq!(
             pieces,
@@ -309,22 +389,23 @@ mod tests {
 
     #[test]
     fn a_blank_task_starts_nothing_and_an_error_event_is_not_an_answer() {
-        let (pieces, _) = collect(|sink| read_ask_events("data: {\"type\":\"done\",\"task\":{\"prompt\":\"  \"}}\n".as_bytes(), sink));
+        let (pieces, _) =
+            collect(|sink| read_ask_events("data: {\"type\":\"done\",\"task\":{\"prompt\":\"  \"}}\n".as_bytes(), None, sink));
         assert!(pieces.is_empty());
-        let (_, result) = collect(|sink| read_ask_events("data: {\"type\":\"error\",\"message\":\"overloaded\"}\n".as_bytes(), sink));
+        let (_, result) = collect(|sink| read_ask_events("data: {\"type\":\"error\",\"message\":\"overloaded\"}\n".as_bytes(), None, sink));
         assert_eq!(result, Err(Failure::Unavailable("overloaded".into())));
     }
 
     #[test]
     fn a_cancelled_sink_stops_the_stream() {
         let sse = "data: {\"type\":\"delta\",\"text\":\"a\"}\ndata: {\"type\":\"delta\",\"text\":\"b\"}\n";
-        assert_eq!(read_ask_events(sse.as_bytes(), &mut |_| false), Err(Failure::Cancelled));
+        assert_eq!(read_ask_events(sse.as_bytes(), None, &mut |_| false), Err(Failure::Cancelled));
     }
 
     #[test]
     fn a_truncated_stream_keeps_partial_text_and_reports_failure() {
         for sse in ["", "data: {\"type\":\"delta\",\"text\":\"Partial answer\"}\n", "data: {\"type\":\"done\""] {
-            let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), sink));
+            let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), None, sink));
             assert!(matches!(result, Err(Failure::Unavailable(_))), "EOF without a terminal receipt is not completion");
             if sse.contains("Partial answer") {
                 assert_eq!(pieces, [Piece::Text("Partial answer".into())]);
@@ -345,17 +426,108 @@ mod tests {
     fn failures_map_like_the_mac() {
         let body = |code: &str, message: &str| json!({"error": {"code": code, "message": message}}).to_string().into_bytes();
         assert_eq!(failure(401, b""), Failure::SignedOut);
-        let plan = |message: &str| Failure::Plan { message: message.into(), upgrade: PRICING.into() };
+        let plan = |message: &str| Failure::Plan { message: message.into(), upgrade: LANTERN.into() };
         assert_eq!(failure(403, &body("plan_required", "")), plan(""));
         assert_eq!(failure(402, b"{}"), plan("You've used this period's October AI credit."));
         assert_eq!(failure(429, &body("free_limit", "Out of free questions")), plan("Out of free questions"));
         assert_eq!(failure(429, &body("rate_limited", "Slow down")), Failure::Limited("Slow down".into()), "not a plan problem");
         let ours = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://www.october.dev/pricing?from=lantern"}});
-        assert_eq!(failure(402, ours.to_string().as_bytes()).upgrade(), Some("https://www.october.dev/pricing?from=lantern"));
+        let upgrade = |failure: Failure| match failure.fix() {
+            Some(Fix::Upgrade(url)) => url,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(upgrade(failure(402, ours.to_string().as_bytes())), "https://www.october.dev/pricing?from=lantern");
         let theirs = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://evil.example/pay"}});
-        assert_eq!(failure(402, theirs.to_string().as_bytes()).upgrade(), Some(PRICING), "only October's own links");
+        assert_eq!(upgrade(failure(402, theirs.to_string().as_bytes())), LANTERN, "only October's own links");
+        assert_eq!(failure(429, &body("free_limit", "")), plan(""), "the server's message as it is");
+        assert_eq!(
+            failure(429, br#"{"error":{"code":"free_limit"}}"#),
+            plan("You've used today's free questions. They reset at midnight UTC.")
+        );
         assert_eq!(failure(400, b"not json"), Failure::Invalid("October's AI couldn't read the request.".into()));
         assert_eq!(failure(503, b""), Failure::Unavailable("October's AI isn't available right now (503). Try again soon.".into()));
+    }
+
+    #[test]
+    fn your_own_keys_problems_come_first_and_say_what_to_do() {
+        let body = |code: &str, message: Option<&str>| json!({"error": {"code": code, "message": message}}).to_string().into_bytes();
+        let needs = failure(402, &body("byok_requires_plan", None));
+        assert_eq!(needs.to_string(), "Your own key needs Lantern Lifetime or the Pro trial.");
+        assert_eq!(needs.fix(), Some(Fix::Upgrade(LANTERN.into())));
+        let cases = [
+            (
+                400,
+                "byok_key_invalid",
+                Failure::OwnKey("Your AI provider didn't accept your key. Check it in Settings.".into()),
+                Fix::EditKey,
+            ),
+            (
+                400,
+                "byok_model_unavailable",
+                Failure::OwnModel("Your AI provider couldn't use that model. Check the model in Settings.".into()),
+                Fix::OpenSettings,
+            ),
+            (
+                429,
+                "byok_provider_limited",
+                Failure::Provider("Your AI provider refused the question: its rate limit or billing.".into()),
+                Fix::UseOctober,
+            ),
+            (
+                502,
+                "byok_provider_failed",
+                Failure::Provider("Your AI provider didn't answer. Try again, or ask October's AI instead.".into()),
+                Fix::UseOctober,
+            ),
+        ];
+        for (status, code, expected, fix) in cases {
+            let got = failure(status, &body(code, None));
+            assert_eq!(got, expected, "{code}");
+            assert_eq!(got.fix(), Some(fix), "{code}");
+        }
+        assert_eq!(failure(400, &body("byok_key_invalid", Some("OpenAI said: bad key"))), Failure::OwnKey("OpenAI said: bad key".into()));
+    }
+
+    #[test]
+    fn offers_open_lanterns_page_on_october_only() {
+        assert_eq!(offer_url(LANTERN, "trial"), "https://www.october.dev/lantern?offer=trial&ref=app");
+        assert_eq!(offer_url(LANTERN, "lifetime"), "https://www.october.dev/lantern?offer=lifetime&ref=app");
+        assert_eq!(offer_url("https://october.dev/lantern?from=x#top", "trial"), "https://october.dev/lantern?offer=trial&ref=app");
+        assert_eq!(offer_url("https://evil.example/lantern", "lifetime"), "https://www.october.dev/lantern?offer=lifetime&ref=app");
+        assert_eq!(offer_url("http://www.october.dev/lantern", "trial"), "https://www.october.dev/lantern?offer=trial&ref=app");
+        let none = json!({"error": {"code": "free_limit"}});
+        assert_eq!(failure(429, none.to_string().as_bytes()).fix(), Some(Fix::Upgrade(LANTERN.into())));
+    }
+
+    #[test]
+    fn your_key_goes_as_three_headers_or_none() {
+        let key = |model: &str| OwnKey::new(crate::own_key::AiProvider::Anthropic, "sk-ant-1", model).unwrap();
+        let request = Request::default();
+        assert!(request.use_own_key, "real questions may use your key");
+        let names =
+            |headers: Vec<(&'static str, String)>| headers.into_iter().map(|(name, value)| format!("{name}: {value}")).collect::<Vec<_>>();
+        assert_eq!(
+            names(byok_headers(&request, Some(&key("claude-sonnet-4-5")))),
+            ["X-Lantern-Byok-Provider: anthropic", "X-Lantern-Byok-Key: sk-ant-1", "X-Lantern-Byok-Model: claude-sonnet-4-5"]
+        );
+        assert_eq!(names(byok_headers(&request, Some(&key("")))), ["X-Lantern-Byok-Provider: anthropic", "X-Lantern-Byok-Key: sk-ant-1"]);
+        assert!(byok_headers(&request, None).is_empty());
+        let october = Request { use_own_key: false, ..Default::default() };
+        assert!(byok_headers(&october, Some(&key("x"))).is_empty(), "Ask October's AI instead");
+        assert!(!format!("{october:?}").contains("sk-ant"), "the request never carries the key");
+    }
+
+    #[test]
+    fn a_byok_start_names_the_provider_that_answered() {
+        let sse = "data: {\"type\":\"start\",\"tier\":\"byok\",\"model\":\"gpt-4.1\"}\ndata: {\"type\":\"delta\",\"text\":\"Hi\"}\ndata: {\"type\":\"done\"}\n";
+        let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), Some("OpenAI"), sink));
+        assert_eq!(result, Ok(()));
+        assert_eq!(pieces, [Piece::Via("OpenAI".into()), Piece::Text("Hi".into())]);
+        let october = sse.replace("byok", "free");
+        let (pieces, _) = collect(|sink| read_ask_events(october.as_bytes(), Some("OpenAI"), sink));
+        assert_eq!(pieces, [Piece::Text("Hi".into())], "October's AI answered");
+        let (pieces, _) = collect(|sink| read_ask_events(sse.as_bytes(), None, sink));
+        assert_eq!(pieces, [Piece::Text("Hi".into())], "no key was sent");
     }
 
     #[test]
@@ -418,7 +590,7 @@ mod tests {
     #[test]
     fn invalid_task_is_an_explicit_failure_not_a_started_task() {
         let sse = "data: {\"type\":\"done\",\"task\":null,\"taskError\":\"No task was started.\"}\n";
-        let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), sink));
+        let (pieces, result) = collect(|sink| read_ask_events(sse.as_bytes(), None, sink));
         assert!(pieces.is_empty());
         assert_eq!(result, Err(Failure::Unavailable("No task was started.".into())));
     }

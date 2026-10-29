@@ -486,8 +486,10 @@ pub struct AssistantTurn {
     pub task: Option<TaskLink>,
     /// Why no agent could be started for this answer's task.
     pub task_problem: Option<String>,
-    /// Out of free questions or credit: where to upgrade.
-    pub upgrade: Option<String>,
+    /// What the failed answer offers: upgrading, fixing your own key, or asking October's AI.
+    pub fix: Option<Fix>,
+    /// Your own key's provider answered ("OpenAI").
+    pub via: Option<String>,
     /// Images you added to this message (paths in the screenshots folder).
     pub images: Vec<String>,
 }
@@ -658,8 +660,26 @@ pub struct AskTurn {
     pub answer: String,
     pub failed: bool,
     pub note: Option<String>,
-    /// Out of free questions or credit: where to upgrade.
-    pub upgrade: Option<String>,
+    /// What the failed answer offers (see `AssistantTurn::fix`).
+    pub fix: Option<Fix>,
+    /// Your own key's provider answered ("OpenAI").
+    pub via: Option<String>,
+}
+
+/// What a failed answer offers, beside its message (Swift `AnswerFix`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Fix {
+    /// Out of free questions or credit, or your own key needs a plan: the trial and Lifetime
+    /// offers, from this October page.
+    Upgrade(String),
+    /// Your provider didn't take your key: Settings, to change it.
+    EditKey,
+    /// Your provider couldn't use the model: Settings.
+    OpenSettings,
+    /// Your provider refused or failed before answering: ask again with October's AI (never
+    /// automatic). Only while Lantern still has the question in memory.
+    UseOctober,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -693,6 +713,64 @@ pub struct PointAskModel {
 pub struct Account {
     pub email: String,
     pub plan: Option<String>,
+    /// What the plan gives in Lantern; `None` when October's plan didn't say.
+    pub lantern: Option<LanternRights>,
+}
+
+/// `lantern` in October's `/api/plan` (SQL `lantern_rights`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LanternRights {
+    pub lifetime: bool,
+    /// When the Pro trial ends (milliseconds since the epoch).
+    pub trial_ends_ms: Option<f64>,
+    /// Your own AI key may answer.
+    pub byok: bool,
+    /// October's AI questions a day (0: not known).
+    pub daily_questions: u64,
+}
+
+impl LanternRights {
+    pub fn from_plan(plan: &serde_json::Value) -> Option<Self> {
+        let lantern = plan.get("lantern").filter(|value| value.is_object())?;
+        Some(Self {
+            lifetime: lantern["lifetime"] == true,
+            trial_ends_ms: lantern["trialEndsAt"].as_str().and_then(parse_iso8601),
+            byok: lantern["byok"] == true,
+            daily_questions: lantern["dailyQuestions"].as_u64().unwrap_or(0),
+        })
+    }
+
+    pub fn trial_running(&self, now_ms: f64) -> bool {
+        self.trial_ends_ms.is_some_and(|ends| ends > now_ms)
+    }
+}
+
+/// Your own AI key, as the views may know it: never the key itself (see `own_key`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum KeyStatus {
+    /// Still being read from the keyring.
+    #[default]
+    Loading,
+    Missing,
+    Saved {
+        provider: crate::own_key::AiProvider,
+        /// "…abcd"
+        ending: String,
+        model: String,
+    },
+    /// The keyring couldn't be used (locked, or no Secret Service): nothing is saved elsewhere.
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OwnKeyState {
+    pub status: KeyStatus,
+    /// Saving or removing.
+    pub busy: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -701,6 +779,8 @@ pub struct AccountState {
     pub signed_in: Option<Account>,
     /// A browser or email sign-in is in progress.
     pub pending: bool,
+    /// The plan is being fetched again (Refresh).
+    pub refreshing: bool,
     pub error: Option<String>,
 }
 
@@ -1006,6 +1086,7 @@ pub struct Model {
     pub new_session: NewSessionModel,
     pub point_ask: PointAskModel,
     pub account: AccountState,
+    pub own_key: OwnKeyState,
     pub october: Option<OctoberLink>,
     pub harness: Option<HarnessStatus>,
     /// Cua Driver's state, once the engine has reported it.
@@ -1030,6 +1111,11 @@ pub struct Model {
 }
 
 impl Model {
+    /// What October's plan gives in Lantern, while signed in and once it has said.
+    pub fn lantern_rights(&self) -> Option<&LanternRights> {
+        self.account.signed_in.as_ref()?.lantern.as_ref()
+    }
+
     pub fn agent(&self, id: &str) -> Option<&Agent> {
         self.agents.iter().find(|agent| agent.id == id)
     }

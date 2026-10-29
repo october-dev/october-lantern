@@ -1,4 +1,4 @@
-//! October credentials stay in memory or the Linux Secret Service, never in settings or logs.
+//! October credentials stay in memory or the system keyring, never in settings or logs.
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use serde_json::{Value, json};
@@ -142,14 +142,13 @@ fn exchange(grant: &str, body: Value) -> Result<Session> {
     let email = value["user"]["email"].as_str().unwrap_or("October account").to_owned();
     let seconds = value["expires_in"].as_u64().unwrap_or(3600).clamp(60, 86400);
     let expires = Instant::now() + Duration::from_secs(seconds);
-    let plan = agent
-        .get("https://www.october.dev/api/plan")
-        .header("Authorization", &format!("Bearer {access}"))
-        .call()
-        .ok()
-        .and_then(|mut response| response.body_mut().with_config().limit(1024 * 1024).read_json::<Value>().ok())
-        .unwrap_or(Value::Null);
+    let plan = plan(&access).unwrap_or(Value::Null);
     Ok(Session { access, refresh, email, expires, plan })
+}
+/// The account's plan (`GET /api/plan`), with Lantern's rights in `lantern`.
+pub fn plan(access: &str) -> Result<Value> {
+    let mut response = agent().get("https://www.october.dev/api/plan").header("Authorization", &format!("Bearer {access}")).call()?;
+    Ok(response.body_mut().with_config().limit(1024 * 1024).read_json::<Value>()?)
 }
 pub fn password(email: String, password: String) -> Result<Session> {
     exchange("password", json!({"email":email, "password":password}))
@@ -275,13 +274,15 @@ pub fn vault(events: std::sync::mpsc::Sender<crate::os::Event>) -> std::sync::mp
         for command in rx {
             match command {
                 VaultCommand::Store(token) => {
-                    if let Err(error) = crate::os::secret_store(&token) {
+                    if let Err(error) = crate::os::secret_store(crate::os::Secret::SignIn, &token) {
                         let _ = events.send(crate::os::Event::Status(format!(
                             "Sign-in is active for this session; keyring could not save it: {error:#}"
                         )));
                     }
                 }
-                VaultCommand::Clear => crate::os::secret_clear(),
+                VaultCommand::Clear => {
+                    let _ = crate::os::secret_clear(crate::os::Secret::SignIn);
+                }
             }
         }
     });
@@ -291,7 +292,7 @@ pub fn vault(events: std::sync::mpsc::Sender<crate::os::Event>) -> std::sync::mp
 /// login, or a network that can't look it up), it keeps trying every 30 seconds rather than
 /// giving the sign-in up, until a newer sign-in or sign-out replaces this one.
 pub fn restore(generation: u64, current: Arc<AtomicU64>) -> Result<Session> {
-    let token = crate::os::secret_lookup()?;
+    let token = crate::os::secret_lookup(crate::os::Secret::SignIn)?.context("No saved October sign-in")?;
     loop {
         match refresh(token.clone()) {
             Err(error) if !refused(&error) && current.load(Ordering::SeqCst) == generation => {

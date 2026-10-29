@@ -475,8 +475,100 @@ fn october(ui: &mut Ui, cx: &mut Ctx) {
         t::MUTED,
     );
     cards::account::render(ui, cx);
+    own_key(ui, cx);
     cards::desktop::render(ui, cx, false);
 }
+
+/// "Your own AI key" (Swift `OwnKeySection`): saved, it shows the provider, its last four
+/// characters and the model, never the key; otherwise (or editing) the form.
+fn own_key(ui: &mut Ui, cx: &mut Ctx) {
+    use crate::model::KeyStatus;
+    use crate::own_key::{AiProvider, OwnKey};
+    let state = &cx.model.own_key;
+    group(ui, Some("Your own AI key"), |ui| {
+        match &state.status {
+            KeyStatus::Loading => {
+                row(ui, |ui| c::label(ui, "Reading the system keyring…", 13.0, Weight::Regular, t::MUTED));
+            }
+            KeyStatus::Saved { provider, ending, model } if !cx.view.own_key_editing => {
+                row(ui, |ui| {
+                    let model = if model.is_empty() { String::new() } else { format!(" · {model}") };
+                    c::label(ui, format!("{} key {ending}{model}", provider.label()), 13.0, Weight::Regular, t::INK);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add_enabled(!state.busy, egui::Button::new("Remove key")).clicked() {
+                            cx.emit(UiAction::RemoveOwnKey);
+                        }
+                        if ui.add_enabled(!state.busy, egui::Button::new("Edit")).clicked() {
+                            cx.view.own_key_editing = true;
+                            cx.view.own_key_provider = *provider;
+                            cx.view.own_key_model = model.trim_start_matches(" · ").to_string();
+                        }
+                    });
+                });
+            }
+            _ => {
+                if state.status == KeyStatus::Unavailable {
+                    caption(ui, crate::app::UNAVAILABLE_KEYRING);
+                }
+                row(ui, |ui| {
+                    for provider in AiProvider::ALL {
+                        ui.selectable_value(&mut cx.view.own_key_provider, provider, provider.label());
+                    }
+                });
+                let provider = cx.view.own_key_provider;
+                row(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut cx.view.own_key_input)
+                            .id_salt("own-key-input")
+                            .password(true)
+                            .hint_text(format!("{} API key", provider.label()))
+                            .desired_width(ui.available_width()),
+                    );
+                });
+                row(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut cx.view.own_key_model)
+                            .id_salt("own-key-model")
+                            .hint_text("Model (optional; empty uses October's default)")
+                            .desired_width(ui.available_width()),
+                    );
+                });
+                row(ui, |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let key = OwnKey::new(provider, &cx.view.own_key_input, &cx.view.own_key_model);
+                        let title = if state.busy { "Saving…" } else { "Save Key" };
+                        if ui.add_enabled(key.is_some() && !state.busy, egui::Button::new(title)).clicked()
+                            && let Some(key) = key
+                        {
+                            cx.emit(UiAction::SaveOwnKey(key));
+                        }
+                        if cx.view.own_key_editing && ui.button("Cancel").clicked() {
+                            cx.view.own_key_editing = false;
+                            cx.view.own_key_input.clear();
+                        }
+                    });
+                });
+            }
+        }
+        if let Some(error) = &state.error {
+            divider(ui);
+            ui.add_space(10.0);
+            c::label(ui, error, 11.0, Weight::Regular, t::RED);
+            ui.add_space(10.0);
+        }
+        caption(ui, OWN_KEY_DETAIL);
+        let signed_in = cx.model.account.signed_in.is_some();
+        if signed_in && cx.model.lantern_rights().is_some_and(|rights| !rights.byok) {
+            caption(ui, "Your own key needs Lantern Lifetime or the Pro trial; until then October's AI answers.");
+            ui.add_space(2.0);
+            super::assistant::offer_buttons(ui, cx, crate::october_ai::LANTERN, "own_key");
+            ui.add_space(10.0);
+        }
+    });
+}
+
+/// Under your own key, always.
+const OWN_KEY_DETAIL: &str = "Your provider bills you for these questions. Lantern sends your key to October's server only to pass each question on; it's never stored.";
 
 fn about(ui: &mut Ui, cx: &mut Ctx) {
     group(ui, None, |ui| {
@@ -848,6 +940,28 @@ mod tests {
                 texts(&output).into_iter().find(|(text, _)| text == POINT_ASK_HELP).expect("hovering the label or picker shows help").1;
             assert!(Rect::from_min_size(egui::Pos2::ZERO, SIZE).contains_rect(help), "help remains within the Settings window: {help:?}");
         }
+    }
+
+    #[test]
+    fn your_own_key_shows_only_its_ending_and_saves_what_was_typed() {
+        use crate::model::KeyStatus;
+        use crate::own_key::{AiProvider, OwnKey};
+        let mut screen = Screen::new(2);
+        screen.model.own_key.status = KeyStatus::Missing;
+        let shown = texts(&screen.frame(Vec::new()).1);
+        let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
+        assert!(has(&shown, "Your own AI key") && has(&shown, OWN_KEY_DETAIL));
+        assert!(screen.click("Save Key").is_empty(), "nothing to save yet");
+        screen.view.own_key_input = "sk-test-abcd".into();
+        screen.view.own_key_provider = AiProvider::Anthropic;
+        assert_eq!(screen.click("Save Key"), vec![UiAction::SaveOwnKey(OwnKey::new(AiProvider::Anthropic, "sk-test-abcd", "").unwrap())]);
+        screen.model.own_key.status = KeyStatus::Saved { provider: AiProvider::OpenAI, ending: "…abcd".into(), model: "gpt-4.1".into() };
+        screen.view.own_key_input.clear();
+        let shown = texts(&screen.frame(Vec::new()).1);
+        assert!(has(&shown, "OpenAI key …abcd · gpt-4.1") && !shown.iter().any(|(text, _)| text.contains("sk-")));
+        assert_eq!(screen.click("Remove key"), vec![UiAction::RemoveOwnKey]);
+        screen.model.own_key.status = KeyStatus::Unavailable;
+        assert!(has(&texts(&screen.frame(Vec::new()).1), crate::app::UNAVAILABLE_KEYRING));
     }
 
     #[test]

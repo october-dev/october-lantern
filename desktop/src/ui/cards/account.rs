@@ -29,6 +29,9 @@ pub fn render_with(ui: &mut Ui, cx: &mut Ctx, show_header: bool) {
             if show_header || signed_in {
                 header(ui, cx, signed_in);
             }
+            if signed_in {
+                lantern(ui, cx);
+            }
             if !signed_in {
                 if cx.model.account.pending && !cx.view.account_use_email {
                     ui.horizontal(|ui| {
@@ -119,6 +122,68 @@ fn header(ui: &mut Ui, cx: &mut Ctx, signed_in: bool) {
             cx.emit(UiAction::SignOut);
         }
     });
+}
+
+/// What the plan gives in Lantern (Lifetime, the trial, October's questions a day), Refresh, and
+/// the offers on a free plan.
+fn lantern(ui: &mut Ui, cx: &mut Ctx) {
+    let Some(account) = &cx.model.account.signed_in else { return };
+    let now = cx.env.now_ms;
+    let lines = rights_lines(account.lantern.as_ref(), now);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            for line in &lines {
+                c::label(ui, line, 11.5, Weight::Regular, t::MUTED);
+            }
+        });
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            let refreshing = cx.model.account.refreshing;
+            let title = if refreshing { "Refreshing…" } else { "Refresh" };
+            if ui
+                .add_enabled_ui(!refreshing, |ui| c::plain_button(ui, title, 11.5, Weight::Semibold, t::MUTED))
+                .inner
+                .on_hover_text("Fetch your plan again, after buying in the browser")
+                .clicked()
+            {
+                cx.emit(UiAction::RefreshPlan);
+            }
+        });
+    });
+    let rights = account.lantern.as_ref();
+    let free = account.plan.as_deref().is_none_or(|plan| plan.eq_ignore_ascii_case("free"));
+    if free && !rights.is_some_and(|rights| rights.lifetime || rights.trial_running(now)) {
+        crate::ui::assistant::offer_buttons(ui, cx, crate::october_ai::LANTERN, "account");
+    }
+}
+
+/// "Lantern Lifetime" or "Pro trial · ends Nov 1, 2026", then "Up to 50 questions a day on
+/// October's AI".
+fn rights_lines(rights: Option<&crate::model::LanternRights>, now_ms: f64) -> Vec<String> {
+    let Some(rights) = rights else { return Vec::new() };
+    let mut lines = Vec::new();
+    if rights.lifetime {
+        lines.push("Lantern Lifetime".to_string());
+    } else if let Some(ends) = rights.trial_ends_ms.filter(|_| rights.trial_running(now_ms)) {
+        lines.push(format!("Pro trial · ends {}", local_date(ends, crate::os::utc_offset())));
+    }
+    if rights.daily_questions > 0 {
+        lines.push(format!("Up to {} questions a day on October's AI", rights.daily_questions));
+    }
+    lines
+}
+
+/// "Nov 1, 2026", in this computer's time zone.
+fn local_date(ms: f64, offset: time::UtcOffset) -> String {
+    let Ok(format) = time::format_description::parse_borrowed::<2>("[month repr:short] [day padding:none], [year]") else {
+        return String::new();
+    };
+    time::OffsetDateTime::from_unix_timestamp((ms / 1000.0).floor() as i64)
+        .map(|at| at.to_offset(offset))
+        .ok()
+        .and_then(|at| at.format(&format).ok())
+        .unwrap_or_default()
 }
 
 fn detail(cx: &Ctx) -> String {
@@ -228,7 +293,7 @@ mod tests {
         let model = Model {
             panel: Some(PanelMode::October),
             account: crate::model::AccountState {
-                signed_in: Some(Account { email: "me@example.com".into(), plan: Some("PRO".into()) }),
+                signed_in: Some(Account { email: "me@example.com".into(), plan: Some("PRO".into()), lantern: None }),
                 ..Default::default()
             },
             ..Default::default()
@@ -240,6 +305,29 @@ mod tests {
         assert!(!view.account_use_email);
         assert!(actions.is_empty());
         assert!(texts.iter().any(|text| text == "me@example.com · Pro plan"));
+    }
+
+    #[test]
+    fn the_plan_says_what_lantern_gets() {
+        use crate::model::LanternRights;
+        let plan = serde_json::json!({"plan": "free", "lantern": {"lifetime": false, "trialEndsAt": "2026-11-01T19:00:00Z", "byok": true, "dailyQuestions": 50}});
+        let rights = LanternRights::from_plan(&plan).unwrap();
+        assert!(rights.byok && !rights.lifetime && rights.daily_questions == 50);
+        assert_eq!(LanternRights::from_plan(&serde_json::json!({"plan": "free"})), None, "an older server");
+        let before = crate::model::parse_iso8601("2026-10-28T00:00:00Z").unwrap();
+        let utc = time::UtcOffset::UTC;
+        assert_eq!(local_date(rights.trial_ends_ms.unwrap(), utc), "Nov 1, 2026");
+        let ist = time::UtcOffset::from_hms(5, 30, 0).unwrap();
+        assert_eq!(local_date(rights.trial_ends_ms.unwrap(), ist), "Nov 2, 2026", "local time");
+        let lines = rights_lines(Some(&rights), before);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].starts_with("Pro trial · ends Nov "));
+        assert_eq!(lines[1], "Up to 50 questions a day on October's AI");
+        let after = crate::model::parse_iso8601("2026-11-02T00:00:00Z").unwrap();
+        assert_eq!(rights_lines(Some(&rights), after), ["Up to 50 questions a day on October's AI"], "an ended trial isn't shown");
+        let lifetime = LanternRights { lifetime: true, trial_ends_ms: rights.trial_ends_ms, ..Default::default() };
+        assert_eq!(rights_lines(Some(&lifetime), before), ["Lantern Lifetime"]);
+        assert!(rights_lines(None, before).is_empty());
     }
 
     #[test]

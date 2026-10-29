@@ -146,9 +146,22 @@ impl Lantern {
             UiAction::SubmitAssistant => self.submit_assistant(),
             UiAction::ClearAssistant => self.clear_assistant(),
             UiAction::RetryAssistantTask { turn } => self.retry_assistant_task(turn),
-            UiAction::OpenUpgrade { url, from } => {
-                crate::analytics::capture("upgrade_opened", serde_json::json!({"from": from}));
+            UiAction::OpenUpgrade { url, from, offer } => {
+                crate::analytics::capture("upgrade_opened", serde_json::json!({"from": from, "offer": offer}));
                 self.open_url(&url);
+            }
+            UiAction::AskOctoberInstead { turn } => self.ask_october_instead(turn),
+            UiAction::PointAskOctoberInstead { turn } => self.point_ask_october_instead(turn),
+            UiAction::ShowWithOctoberInstead => self.show_with_october_instead(),
+            UiAction::RefreshPlan => self.refresh_plan(),
+            UiAction::SaveOwnKey(key) => self.own_key_command(crate::own_key::Command::Save(key)),
+            UiAction::RemoveOwnKey => {
+                self.view.own_key_editing = false;
+                self.own_key_command(crate::own_key::Command::Remove);
+            }
+            UiAction::OpenOwnKeySettings => {
+                self.view.settings_tab = 2;
+                self.apply(UiAction::ShowSettings);
             }
             UiAction::SetShareUsage(on) => crate::analytics::set_enabled(on),
             UiAction::PrepareHarness => {
