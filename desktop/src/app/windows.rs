@@ -183,6 +183,7 @@ impl Lantern {
     /// One frame of the pill and, when open, the panel.
     pub(super) fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        self.show_overlay(&ctx);
         let w = &mut self.windows;
         w.frames += 1;
         let scale = ctx.native_pixels_per_point().unwrap_or(1.0);

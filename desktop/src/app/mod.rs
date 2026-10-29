@@ -188,7 +188,8 @@ impl Lantern {
     fn integration(&mut self, event: Event) {
         match event {
             Event::ShowAnswer { run, round, capture, result, failure } => self.show_answer(&run, round, &capture, result, failure),
-            Event::Screenshot { owner, generation: _, result } if owner.starts_with("__show:") => self.show_captured(&owner[7..], result),
+            Event::ShowCaptured { run, capture, result } => self.show_captured(&run, &capture, result),
+            Event::ShowScreen { run, capture, change } => self.show_screen(&run, &capture, change),
             Event::Screenshot { owner, generation, result } if owner == "__new" => {
                 self.windows.capture_done();
                 self.screenshot_captured(generation, result);
@@ -494,6 +495,7 @@ impl Lantern {
         self.launch_tick();
         self.assistant_tick();
         self.point_ask_tick();
+        self.show_tick();
         self.upkeep_tick();
         self.publish_tray_menu();
         if self.connected {

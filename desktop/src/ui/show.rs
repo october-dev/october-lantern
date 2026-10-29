@@ -8,7 +8,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         return;
     };
     ui.label(state["question"].as_str().unwrap_or_default());
-    ui.small("Each look sends a picture of the whole display to October. Lantern's windows are left out. It points on this captured picture; it never clicks or types.");
+    ui.small("Each look sends a picture of the whole selected display to October. Lantern's windows are left out. Lantern points; it never clicks or types.");
     let phase = state["phase"].as_str().unwrap_or("looking");
     ui.label(match phase {
         "asking" => "Finding the control…",
@@ -17,8 +17,13 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         "finished" => "The guide is finished.",
         "failed" => "Couldn't finish this look.",
         "ended" | "stopped" | "limit" | "expired" => "The guide has stopped.",
+        "showing" if state["live"] == true => "Follow the orange ring on your screen.",
+        "changed" => "The screen changed — looking again…",
         _ => "On the captured screen:",
     });
+    if let Some(note) = state["overlayNote"].as_str() {
+        ui.label(note);
+    }
     if let Some(error) = state["message"].as_str() {
         ui.label(error);
     }

@@ -15,6 +15,7 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 pub mod shell;
+pub mod show_overlay;
 pub use shell::foreground_app;
 #[cfg(windows)]
 mod shell_win;
@@ -53,6 +54,16 @@ pub fn utc_offset() -> time::UtcOffset {
 }
 
 pub enum Event {
+    ShowCaptured {
+        run: String,
+        capture: String,
+        result: Result<show_overlay::Capture, String>,
+    },
+    ShowScreen {
+        run: String,
+        capture: String,
+        change: show_overlay::Change,
+    },
     ShowAnswer {
         run: String,
         round: u64,

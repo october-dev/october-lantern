@@ -164,11 +164,7 @@ fn capture_display() -> Result<image::RgbaImage> {
 }
 
 fn capture_monitor() -> Result<(image::RgbaImage, eframe::egui::Rect)> {
-    use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
-        DeleteObject, GetDC, GetDIBits, GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ReleaseDC, SRCCOPY,
-        SelectObject,
-    };
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
     unsafe {
         let mut pointer = POINT { x: 0, y: 0 };
         GetCursorPos(&mut pointer);
@@ -176,8 +172,30 @@ fn capture_monitor() -> Result<(image::RgbaImage, eframe::egui::Rect)> {
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         anyhow::ensure!(GetMonitorInfoW(MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST), &mut info) != 0, "no display found");
         let r = info.rcMonitor;
+        let monitor = eframe::egui::Rect::from_min_max(
+            eframe::egui::pos2(r.left as f32, r.top as f32),
+            eframe::egui::pos2(r.right as f32, r.bottom as f32),
+        );
+        Ok((capture_rectangle(monitor)?, monitor))
+    }
+}
+
+/// GDI capture of the exact monitor selected for this guide, including negative origins.
+pub(super) fn capture_rectangle(bounds: eframe::egui::Rect) -> Result<image::RgbaImage> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC,
+        DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
+    };
+    unsafe {
+        let r = windows_sys::Win32::Foundation::RECT {
+            left: bounds.min.x as i32,
+            top: bounds.min.y as i32,
+            right: bounds.max.x as i32,
+            bottom: bounds.max.y as i32,
+        };
         let (width, height) = (r.right - r.left, r.bottom - r.top);
         anyhow::ensure!(width > 0 && height > 0, "the display has no size");
+        anyhow::ensure!(width as u64 * height as u64 <= 64_000_000, "The display is too large to capture safely");
         let screen = GetDC(std::ptr::null_mut());
         let memory = CreateCompatibleDC(screen);
         let bitmap = CreateCompatibleBitmap(screen, width, height);
@@ -207,11 +225,7 @@ fn capture_monitor() -> Result<(image::RgbaImage, eframe::egui::Rect)> {
             pixel[3] = 255;
         }
         let image = image::RgbaImage::from_raw(width as u32, height as u32, pixels).context("screenshot size mismatch")?;
-        let monitor = eframe::egui::Rect::from_min_max(
-            eframe::egui::pos2(r.left as f32, r.top as f32),
-            eframe::egui::pos2(r.right as f32, r.bottom as f32),
-        );
-        Ok((image, monitor))
+        Ok(image)
     }
 }
 

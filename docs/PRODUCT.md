@@ -119,7 +119,7 @@ Lantern does **not** replace your terminals. Your agents keep running exactly wh
 
 ## Local tasks, guidance and routines
 
-See [Local task features](LOCAL-FEATURES.md) for cards, deliberate keyboard answers, app-access controls, local schedules, and Show me, including their privacy and control boundaries. These describe this source branch; installer release notes identify shipped versions.
+See [Local task features](LOCAL-FEATURES.md) for cards, deliberate keyboard answers, app-access controls, local schedules, and Show me, including their privacy and control boundaries. These describe this source branch; installer release notes identify shipped versions. Show me draws a click-through orange ring, arrow and step label over the selected display on Mac, Windows and supported X11 desktops. Clicking the ring advances the guide after a moment; window changes hide it and trigger a fresh look. Reduce Motion keeps the cue still. Wayland and desktops without the required overlay/input capabilities show the marked screenshot instead, with an explanation in the card.
 
 ## A walkthrough
 

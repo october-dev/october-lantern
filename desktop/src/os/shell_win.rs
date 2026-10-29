@@ -50,7 +50,7 @@ fn displays(whole: bool) -> Vec<Rect> {
 }
 
 /// This process's top-level window with `title`.
-fn find(title: &str) -> Option<HWND> {
+pub(super) fn find(title: &str) -> Option<HWND> {
     struct Search {
         title: Vec<u16>,
         pid: u32,

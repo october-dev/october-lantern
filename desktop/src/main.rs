@@ -12,6 +12,7 @@ mod os;
 mod own_key;
 mod settings;
 mod shell;
+mod show_overlay;
 mod sidecar;
 mod speech;
 mod state;

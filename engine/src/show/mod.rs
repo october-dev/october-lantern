@@ -57,6 +57,9 @@ pub struct Captured {
     pub exclude_pids: Vec<i64>,
     #[serde(default)]
     pub marked_only: bool,
+    /// The native app watches this display and sends capture-scoped `show.changed` notices.
+    #[serde(default)]
+    pub app_watches_screen: bool,
 }
 
 pub enum Cmd {
@@ -76,6 +79,11 @@ pub enum Cmd {
     },
     Again {
         run_id: String,
+    },
+    Changed {
+        run_id: String,
+        capture_id: String,
+        step: u32,
     },
     Stop {
         run_id: String,
@@ -157,8 +165,9 @@ struct Run {
     shown: Vec<String>,
     pending_instruction: Option<String>,
     excluded: Vec<i64>,
-    /// The app can only mark its picture (no on-screen pointer yet: Windows, Linux).
+    /// This desktop cannot safely provide a global pointer/click observer.
     marked_only: bool,
+    app_watches_screen: bool,
 }
 
 struct Coordinator {
@@ -218,6 +227,7 @@ impl Coordinator {
                     pending_instruction: None,
                     excluded: Vec::new(),
                     marked_only: false,
+                    app_watches_screen: false,
                 });
                 self.ask_for_capture();
             }
@@ -233,6 +243,19 @@ impl Coordinator {
             Cmd::Again { run_id } => {
                 if self.current(&run_id) && self.run.as_ref().is_some_and(|r| r.phase != Phase::Asking) {
                     self.hide();
+                    self.ask_for_capture();
+                }
+            }
+            Cmd::Changed { run_id, capture_id, step } => {
+                if self.run.as_ref().is_some_and(|r| {
+                    r.id == run_id
+                        && r.capture_id == capture_id
+                        && r.step == step
+                        && r.app_watches_screen
+                        && matches!(r.phase, Phase::Asking | Phase::Showing)
+                }) {
+                    self.hide();
+                    self.state("changed", json!({}));
                     self.ask_for_capture();
                 }
             }
@@ -258,7 +281,7 @@ impl Coordinator {
 
     fn state(&self, phase: &str, extra: Value) {
         let Some(run) = &self.run else { return };
-        let mut v = json!({"type": "showState", "runId": run.id, "phase": phase, "step": run.step, "round": run.round});
+        let mut v = json!({"type": "showState", "runId": run.id, "phase": phase, "step": run.step, "round": run.round, "captureId": run.capture_id});
         if let (Value::Object(m), Value::Object(e)) = (&mut v, extra) {
             m.extend(e);
         }
@@ -302,7 +325,7 @@ impl Coordinator {
         if !capture.valid() {
             return self.end(Some("capture_failed"));
         }
-        let controls = if c.marked_only {
+        let controls = if c.marked_only || c.app_watches_screen {
             self.cua = None;
             Vec::new()
         } else {
@@ -317,6 +340,7 @@ impl Coordinator {
         run.controls = controls;
         run.excluded = c.exclude_pids;
         run.marked_only = c.marked_only;
+        run.app_watches_screen = c.app_watches_screen && !c.marked_only;
         run.phase = Phase::Asking;
         run.touched = Instant::now();
         let elements: Vec<Value> = run
@@ -391,8 +415,9 @@ impl Coordinator {
                 // A known control is pointed at only if the window's controls still match the
                 // capture. A place October found on the picture (the menu bar, something the driver
                 // can't name) was just captured, so it's pointed at too.
-                let live = !run.marked_only && (window.is_none() || self.read_controls(&capture, &excluded) == original);
-                if live {
+                let app_watches = run.app_watches_screen;
+                let live = !run.marked_only && (app_watches || window.is_none() || self.read_controls(&capture, &excluded) == original);
+                if live && !app_watches {
                     self.watch(capture.display, &excluded);
                 }
                 if let Some(run) = &mut self.run {
@@ -662,6 +687,7 @@ mod tests {
             image_height: 500,
             exclude_pids: vec![],
             marked_only: false,
+            app_watches_screen: false,
         })
     }
 
@@ -714,6 +740,53 @@ mod tests {
             result: json!({"guidance": {"kind": "target", "box": [250, 150, 20, 10]}}),
         });
         assert_eq!(take().into_iter().find(|v| v["phase"] == "showing").unwrap()["live"], false);
+    }
+
+    #[test]
+    fn native_screen_changes_invalidate_answers_and_ignore_foreign_or_older_captures() {
+        let _guard = SERIAL.lock().unwrap();
+        take();
+        let mut c = coordinator();
+        c.handle(Cmd::Start { run_id: "native".into() });
+        let Cmd::Captured(mut capture) = captured("native", 1) else { unreachable!() };
+        capture.app_watches_screen = true;
+        let old = capture.capture_id.clone();
+        c.handle(Cmd::Captured(capture));
+        take();
+        for (run, id, step) in [("foreign", old.as_str(), 1), ("native", "wrong", 1), ("native", old.as_str(), 2)] {
+            c.handle(Cmd::Changed { run_id: run.into(), capture_id: id.into(), step });
+        }
+        assert!(take().is_empty());
+        c.handle(Cmd::Changed { run_id: "native".into(), capture_id: old.clone(), step: 1 });
+        let messages = take();
+        assert!(messages.iter().any(|v| v["phase"] == "hide"));
+        assert!(messages.iter().any(|v| v["phase"] == "changed"));
+        let new = c.run.as_ref().unwrap().capture_id.clone();
+        assert_ne!(new, old);
+        c.handle(Cmd::Result {
+            run_id: "native".into(),
+            round: 1,
+            capture_id: old.clone(),
+            result: json!({"guidance":{"kind":"target","box":[10,10,20,20]}}),
+        });
+        c.handle(Cmd::Changed { run_id: "native".into(), capture_id: old, step: 1 });
+        assert!(take().is_empty());
+        let Cmd::Captured(mut capture) = captured("native", 1) else { unreachable!() };
+        capture.app_watches_screen = true;
+        c.handle(Cmd::Captured(capture));
+        take();
+        c.handle(Cmd::Result {
+            run_id: "native".into(),
+            round: 2,
+            capture_id: new.clone(),
+            result: json!({"guidance":{"kind":"target","box":[10,10,20,20]}}),
+        });
+        let state = take().into_iter().find(|v| v["phase"] == "showing").unwrap();
+        assert_eq!(state["live"], true);
+        assert_eq!(state["captureId"], new);
+        assert!(c.run.as_ref().unwrap().watching.is_none(), "native app owns the watch; no Cua reader");
+        c.handle(Cmd::Changed { run_id: "native".into(), capture_id: new, step: 1 });
+        assert!(take().iter().any(|v| v["type"] == "showCapture"));
     }
 
     #[test]

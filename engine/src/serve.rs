@@ -223,6 +223,12 @@ enum Request {
     ShowAgain {
         run_id: String,
     },
+    #[serde(rename = "show.changed", rename_all = "camelCase")]
+    ShowChanged {
+        run_id: String,
+        capture_id: String,
+        step: u32,
+    },
     #[serde(rename = "show.stop", rename_all = "camelCase")]
     ShowStop {
         run_id: String,
@@ -776,6 +782,9 @@ pub fn run() -> Result<()> {
                 }
                 Ok(Request::ShowAgain { run_id }) => {
                     let _ = show.send(crate::show::Cmd::Again { run_id });
+                }
+                Ok(Request::ShowChanged { run_id, capture_id, step }) => {
+                    let _ = show.send(crate::show::Cmd::Changed { run_id, capture_id, step });
                 }
                 Ok(Request::Shutdown) => {
                     crate::computer::want(false);
