@@ -488,11 +488,18 @@ pub struct AssistantTurn {
     /// Why no agent could be started for this answer's task.
     pub task_problem: Option<String>,
     /// What the failed answer offers: upgrading, fixing your own key, or asking October's AI.
+    /// One this Lantern can't read (an older Lantern's upgrade link) is left off, not the
+    /// conversation.
+    #[serde(deserialize_with = "fix_or_none")]
     pub fix: Option<Fix>,
     /// Your own key's provider answered ("OpenAI").
     pub via: Option<String>,
     /// Images you added to this message (paths in the screenshots folder).
     pub images: Vec<String>,
+}
+
+fn fix_or_none<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Fix>, D::Error> {
+    Ok(serde_json::from_value(serde_json::Value::deserialize(deserializer)?).ok())
 }
 
 /// What became of an answer to an agent's question: on its way, typed in, or not sure it went in.
@@ -672,8 +679,8 @@ pub struct AskTurn {
 #[serde(rename_all = "camelCase")]
 pub enum Fix {
     /// Out of free questions or credit, or your own key needs a plan: the trial and Lifetime
-    /// offers, from this October page.
-    Upgrade(String),
+    /// offers.
+    Upgrade,
     /// Your provider didn't take your key: Settings, to change it.
     EditKey,
     /// Your provider couldn't use the model: Settings.
@@ -1229,6 +1236,15 @@ mod tests {
         assert!(agent.is_answerable());
         assert!(agent.in_session("claude-proj-1") && !agent.in_session("claude-proj"));
         assert!(agent.is_live());
+    }
+
+    #[test]
+    fn an_older_upgrade_link_leaves_the_turn_readable() {
+        let turn: AssistantTurn =
+            serde_json::from_value(serde_json::json!({"question": "q", "fix": {"upgrade": "https://www.october.dev/lantern"}})).unwrap();
+        assert_eq!((turn.question.as_str(), turn.fix), ("q", None));
+        let saved = serde_json::to_value(AssistantTurn { fix: Some(Fix::Upgrade), ..Default::default() }).unwrap();
+        assert_eq!(serde_json::from_value::<AssistantTurn>(saved).unwrap().fix, Some(Fix::Upgrade));
     }
 
     #[test]

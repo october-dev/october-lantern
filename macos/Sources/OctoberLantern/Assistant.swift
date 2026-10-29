@@ -1091,10 +1091,9 @@ struct Thumbnail: View {
     }
 }
 
-/// Start free trial and Buy Lifetime, on October's Lantern page (`base`, the server's upgrade link
-/// when it's October's own): under an answer that hit a plan limit, and on the account card.
+/// Start free trial and Buy Lifetime, bought on Stripe for the signed-in account's email: under an
+/// answer that hit a plan limit, on the account card and with your own key.
 struct OfferButtons: View {
-    var base: URL = OctoberAI.lanternPage
     let from: String
 
     var body: some View {
@@ -1107,7 +1106,7 @@ struct OfferButtons: View {
     private func button(_ title: String, _ offer: OctoberAI.Offer) -> some View {
         Button {
             Analytics.shared.capture("upgrade_opened", ["from": from, "offer": offer.rawValue])
-            NSWorkspace.shared.open(OctoberAI.offerURL(offer, base: base))
+            NSWorkspace.shared.open(OctoberAI.offerURL(offer, email: OctoberAccount.shared.session?.email))
         } label: {
             HStack(spacing: 3) {
                 Text(title)
@@ -1115,7 +1114,7 @@ struct OfferButtons: View {
             }
         }
         .buttonStyle(SecondaryButtonStyle())
-        .help("Opens October's Lantern page in your browser")
+        .help("Opens Stripe checkout in your browser")
     }
 }
 
@@ -1129,7 +1128,7 @@ struct FixButtons: View {
 
     var body: some View {
         switch fix {
-        case .upgrade(let url): OfferButtons(base: url, from: from)
+        case .upgrade: OfferButtons(from: from)
         case .editKey: Button("Edit key") { Self.openKeySettings() }.buttonStyle(SecondaryButtonStyle())
         case .openSettings: Button("Open Settings") { Self.openKeySettings() }.buttonStyle(SecondaryButtonStyle())
         case .useOctober:

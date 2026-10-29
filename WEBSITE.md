@@ -26,7 +26,7 @@ What the website needs for the beta. Product facts come from [product guide](doc
 - **Pro trial:** 3 days free with a card up front, then $9.99 for the first month, then $20 a month. During the trial you get what Lantern Lifetime gets. Show the exact charge date at checkout; cancelling is one click in the billing portal.
 - **Lantern Lifetime:** $149, then $199, then $249 (100 seats per tier; show only the live price and seats from `/lifetime-status`, never a made-up number). Includes your own AI key with no Lantern daily limit, up to 20 questions a day on October's AI, the iPhone app (beta), Show me, and every Lantern app update. Not October Cloud or monthly October credits. Full refund on request within 14 days.
 - **Your own AI key:** OpenAI, Anthropic or OpenRouter, set in Settings › October. Say plainly: "Your provider bills you for these questions."
-- The app's **Start free trial** and **Buy Lifetime** open `www.october.dev/lantern?offer=trial|lifetime&ref=app`; the site's own links use their own `ref`.
+- The app's **Start free trial** and **Buy Lifetime** open `lantern.october.dev/buy?offer=trial|lifetime&ref=app` (plus `&email=` with the signed-in October email), which goes straight to Stripe checkout; the site's own links use their own `ref`.
 
 ## Should add
 

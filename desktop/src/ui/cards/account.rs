@@ -154,7 +154,7 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     let rights = account.lantern.as_ref();
     let free = account.plan.as_deref().is_none_or(|plan| plan.eq_ignore_ascii_case("free"));
     if free && !rights.is_some_and(|rights| rights.lifetime || rights.trial_running(now)) {
-        crate::ui::assistant::offer_buttons(ui, cx, crate::october_ai::LANTERN, "account");
+        crate::ui::assistant::offer_buttons(ui, cx, "account");
     }
 }
 

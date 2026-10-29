@@ -35,9 +35,9 @@ enum OctoberAI {
 
     enum Failure: LocalizedError {
         case signedOut, limited(String), unavailable(String), notDeployed
-        /// Out of free questions or credit, or the plan doesn't include it (or your own key):
-        /// `URL` is October's Lantern page, where the trial and Lifetime are.
-        case plan(String, URL)
+        /// Out of free questions or credit, or the plan doesn't include it (or your own key): the
+        /// trial and Lifetime fix it.
+        case plan(String)
         /// 400: the server couldn't read the request.
         case invalid(String)
         /// Your provider didn't accept your key.
@@ -51,14 +51,14 @@ enum OctoberAI {
             switch self {
             case .signedOut: "Sign in to October to ask."
             case .notDeployed: "October's AI isn't available right now."
-            case .plan(let m, _), .limited(let m), .unavailable(let m), .invalid(let m), .ownKey(let m), .ownModel(let m), .provider(let m): m
+            case .plan(let m), .limited(let m), .unavailable(let m), .invalid(let m), .ownKey(let m), .ownModel(let m), .provider(let m): m
             }
         }
 
         /// What the answer offers to do about it.
         var fix: Fix? {
             switch self {
-            case .plan(_, let url): .upgrade(url)
+            case .plan: .upgrade
             case .ownKey: .editKey
             case .ownModel: .openSettings
             case .provider: .useOctober
@@ -69,30 +69,27 @@ enum OctoberAI {
 
     /// A button under a failed answer.
     enum Fix: Codable, Equatable {
-        /// Start free trial / Buy Lifetime, on October's Lantern page.
-        case upgrade(URL)
+        /// Start free trial / Buy Lifetime.
+        case upgrade
         /// Edit key / Open Settings: Settings › October, at your own key.
         case editKey, openSettings
         /// Ask October's AI instead: the same question again, without your key.
         case useOctober
     }
 
-    static let lanternPage = URL(string: "https://www.october.dev/lantern")!
-
-    /// The server's upgrade link when it's October's own, else October's Lantern page.
-    static func upgradeURL(_ value: Any?) -> URL {
-        guard let s = value as? String, let url = URL(string: s), url.scheme == "https",
-              url.host == "www.october.dev" || url.host == "october.dev" else { return lanternPage }
-        return url
-    }
-
     enum Offer: String { case trial, lifetime }
 
-    /// Where `offer` is bought: `base` (October's Lantern page) with exactly `offer=…&ref=app`.
-    static func offerURL(_ offer: Offer, base: URL = lanternPage) -> URL {
-        var parts = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+    /// Where the offers are bought, as a guest: it redirects to Stripe Checkout.
+    static let buyPage = URL(string: "https://lantern.october.dev/buy")!
+
+    /// Buying `offer` from Lantern. `email`, the signed-in October account's, fills in Stripe's
+    /// (fixed) email, so the purchase lands on that account.
+    static func offerURL(_ offer: Offer, email: String?) -> URL {
+        var parts = URLComponents(url: buyPage, resolvingAgainstBaseURL: false)!
         parts.queryItems = [URLQueryItem(name: "offer", value: offer.rawValue), URLQueryItem(name: "ref", value: "app")]
-        parts.fragment = nil
+            + (email.map { [URLQueryItem(name: "email", value: $0)] } ?? [])
+        // URLComponents leaves "+" as it is, which would be read as a space.
+        parts.percentEncodedQuery = parts.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         return parts.url!
     }
 
@@ -231,17 +228,16 @@ enum OctoberAI {
         let error = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any]
         let code = error?["code"] as? String ?? ""
         let message = error?["message"] as? String
-        let upgrade = upgradeURL(error?["upgradeUrl"])
         switch (status, code) {
-        case (_, "byok_requires_plan"): return .plan(message ?? "Your own key needs Lantern Lifetime or the Pro trial.", upgrade)
+        case (_, "byok_requires_plan"): return .plan(message ?? "Your own key needs Lantern Lifetime or the Pro trial.")
         case (_, "byok_key_invalid"): return .ownKey(message ?? "Your AI provider didn't accept your key. Check it in Settings.")
         case (_, "byok_model_unavailable"): return .ownModel(message ?? "Your AI provider couldn't use that model. Check the model in Settings.")
         case (_, "byok_provider_limited"): return .provider(message ?? "Your AI provider refused the question: its rate limit or billing.")
         case (_, "byok_provider_failed"): return .provider(message ?? "Your AI provider didn't answer. Try again, or ask October's AI instead.")
         case (401, _): return .signedOut
-        case (_, "plan_required"): return .plan(message ?? "This needs an October Pro or Max plan.", upgrade)
-        case (402, _), (_, "credit_exhausted"): return .plan(message ?? "You've used this period's October AI credit.", upgrade)
-        case (_, "free_limit"): return .plan(message ?? "You've used today's free questions. They reset at midnight UTC.", upgrade)
+        case (_, "plan_required"): return .plan(message ?? "This needs an October Pro or Max plan.")
+        case (402, _), (_, "credit_exhausted"): return .plan(message ?? "You've used this period's October AI credit.")
+        case (_, "free_limit"): return .plan(message ?? "You've used today's free questions. They reset at midnight UTC.")
         case (429, _): return .limited(message ?? "Too many questions for now. Try again in a minute.")
         case (400, _): return .invalid(message ?? "October's AI couldn't read the request.")
         default: return .unavailable(message ?? "October's AI isn't available right now (\(status)). Try again soon.")
