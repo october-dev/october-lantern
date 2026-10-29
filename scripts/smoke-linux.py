@@ -31,7 +31,9 @@ with tempfile.TemporaryDirectory(prefix="lantern smoke-") as folder:
         f" pathlib.Path({str(received)!r}).write_text(line)\n"
     )
     fake.chmod(0o700)
-    shell = folder / "shell"
+    # Named bash: the engine reads the login environment only from shells it knows (zsh, bash, fish).
+    (folder / "login").mkdir()
+    shell = folder / "login" / "bash"
     shell.write_text(
         "#!/bin/sh\n"
         f"export PATH={shlex.quote(str(folder))}:\"$PATH\"\n"
