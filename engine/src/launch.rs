@@ -1342,7 +1342,7 @@ mod private_launch_tests {
         std::fs::remove_file(&called).unwrap();
         let receipt = dir.join("receipt");
         let binary = dir.join("fixture-runtime");
-        std::fs::write(&binary,"#!/bin/sh\nprintf '%s|%s|%s|%s' \"$TEST_TOKEN\" \"$GOOSE_MODE\" \"${LANTERN_STALE_SECRET-absent}\" \"$PATH\" > \"$TEST_RECEIPT\"\nexec /bin/sleep 30\n").unwrap();
+        std::fs::write(&binary,"#!/bin/sh\nprintf '%s|%s|%s|%s' \"$TEST_TOKEN\" \"$GOOSE_MODE\" \"${LANTERN_STALE_SECRET-absent}\" \"$PATH\" > \"$TEST_RECEIPT.tmp\"\nmv \"$TEST_RECEIPT.tmp\" \"$TEST_RECEIPT\"\nexec /bin/sleep 30\n").unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let env = crate::environment::Environment::new(
             [("PATH".into(), "/usr/bin:/bin".into()), ("GOOSE_MODE".into(), "ask".into())].into_iter().collect(),
