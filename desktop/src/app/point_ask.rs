@@ -4,7 +4,7 @@
 //! Every asynchronous step carries the selection or conversation it belongs to; a newer one makes
 //! older results stale, so a late capture, answer or save never lands on the wrong card.
 use super::{Lantern, Pending};
-use crate::model::{AppContext, AskTurn, Capture, PanelMode, PointAskModel, PointAskPhase};
+use crate::model::{AppContext, AskTurn, Capture, Fix, PanelMode, PointAskModel, PointAskPhase};
 use crate::october_ai::{self, Failure, Piece};
 use crate::os::Event;
 use crate::ui::DictationOwner;
@@ -39,6 +39,8 @@ pub(super) struct Pointing {
     work: Option<(String, Option<String>, Option<String>)>,
     /// The next selection starts with dictation on (the shortcut, not the pill's button).
     listen: bool,
+    /// Each unanswered question as sent, by turn, for "Ask October's AI instead" (memory only).
+    requests: std::collections::HashMap<usize, october_ai::Request>,
 }
 
 /// Holding the shortcut longer than this, then letting go, stops listening; a tap keeps it on.
@@ -91,6 +93,7 @@ impl Lantern {
     fn begin_point_ask(&mut self) {
         self.invalidate_selection();
         self.pointing.conversation.fetch_add(1, Ordering::SeqCst);
+        self.pointing.requests.clear();
         self.pointing.card_shown = false;
         self.inputs.point_ask.clear();
         // The portable capture APIs return pixels, not a verified owning window. In particular,
@@ -232,6 +235,7 @@ impl Lantern {
         self.pointing.conversation.fetch_add(1, Ordering::SeqCst);
         self.pointing.start_at = None;
         self.pointing.rect = None;
+        self.pointing.requests.clear();
         self.model.point_ask.phase = PointAskPhase::Closed;
         self.withdraw_dictation_offer(true);
     }
@@ -277,23 +281,46 @@ impl Lantern {
             image: self.pointing.shot.as_deref().and_then(super::shots::jpeg),
             context: context_lines(self.model.point_ask.context.as_ref()).join("\n"),
             mode: Some("point_task".into()),
-
-            guidance: None,
             ..Default::default()
         };
-        self.pointing.work = None;
         crate::analytics::capture("point_ask_asked", serde_json::json!({"follow_up": turn > 0}));
+        self.stream_point(turn, request, token);
+    }
+
+    fn stream_point(&mut self, turn: usize, request: october_ai::Request, token: String) {
+        self.model.point_ask.asking = true;
+        self.pointing.work = None;
+        self.pointing.requests.insert(turn, request.clone());
         let generation = self.pointing.conversation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.pointing.conversation.clone();
         let tx = self.tx.clone();
+        let own_key = self.key_for_ask();
         std::thread::spawn(move || {
             let pieces = tx.clone();
-            let result = october_ai::stream(&request, &token, &mut |piece| {
+            let key = own_key.key(&request);
+            let result = october_ai::stream(&request, &token, key.as_ref(), &mut |piece| {
                 current.load(Ordering::SeqCst) == generation && pieces.send(Event::PointAsk { generation, turn, piece }).is_ok()
             });
             let error = result.err().filter(|failure| *failure != Failure::Cancelled);
             let _ = tx.send(Event::PointAskDone { generation, turn, error });
         });
+    }
+
+    /// "Ask October's AI instead": the same question and screenshot, without your key.
+    pub(super) fn point_ask_october_instead(&mut self, turn: usize) {
+        let Some(token) = self.session.as_ref().map(|session| session.access.clone()) else { return };
+        if self.model.point_ask.asking {
+            return;
+        }
+        let Some(t) = self.model.point_ask.turns.get_mut(turn).filter(|t| t.fix == Some(Fix::UseOctober)) else { return };
+        let Some(mut request) = self.pointing.requests.remove(&turn) else { return };
+        t.answer.clear();
+        t.failed = false;
+        t.fix = None;
+        t.via = None;
+        request.use_own_key = false;
+        crate::analytics::capture("own_key_fallback", serde_json::json!({}));
+        self.stream_point(turn, request, token);
     }
 
     pub(super) fn point_ask_piece(&mut self, generation: u64, turn: usize, piece: Piece) {
@@ -305,6 +332,7 @@ impl Lantern {
             Piece::Guide { .. } => {}
             Piece::Text(text) => t.answer.push_str(&text),
             Piece::Note(note) => t.note = Some(note),
+            Piece::Via(provider) => t.via = Some(provider),
             Piece::Task { prompt, agent, project, .. } => self.pointing.work = Some((prompt, agent, project)),
         }
     }
@@ -319,9 +347,10 @@ impl Lantern {
                     if !t.answer.is_empty() {
                         t.answer.push_str("\n\n");
                     }
+                    let fix = error.fix().filter(|fix| *fix != Fix::UseOctober || t.answer.is_empty());
                     t.answer.push_str(&error.to_string());
                     t.failed = true;
-                    t.upgrade = error.upgrade().map(str::to_string);
+                    t.fix = fix;
                     self.pointing.work = None;
                 }
                 None if t.answer.is_empty() => {
@@ -335,6 +364,9 @@ impl Lantern {
                     }
                 }
             }
+        }
+        if self.model.point_ask.turns.get(turn).is_none_or(|t| t.fix != Some(Fix::UseOctober)) {
+            self.pointing.requests.remove(&turn);
         }
         self.model.point_ask.asking = false;
     }

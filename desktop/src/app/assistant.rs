@@ -8,7 +8,7 @@
 //! only once the launch succeeded; a failed one shows its error instead.
 use super::{Lantern, Pending};
 use crate::model::{
-    AgentKind, AgentState, AppContext, AssistantTurn, Chat, ChatMessage, Conversation, HarnessState, PanelMode, PendingTask, Platform,
+    AgentKind, AgentState, AppContext, AssistantTurn, Chat, ChatMessage, Conversation, Fix, HarnessState, PanelMode, PendingTask, Platform,
     TaskLink,
 };
 use crate::october_ai::{self, Failure, Piece};
@@ -44,6 +44,8 @@ pub(super) struct Asking {
     /// A task waiting for the engine to say which agents are installed (just after it starts),
     /// and since when: given up after 20 seconds.
     awaiting_agents: Option<(Instant, AwaitingTask)>,
+    /// Each unanswered question as sent, by turn, for "Ask October's AI instead" (memory only).
+    requests: std::collections::HashMap<u64, october_ai::Request>,
 }
 
 /// What `propose_with` was asked to start, kept until the installed agents are known.
@@ -209,20 +211,59 @@ impl Lantern {
         });
         self.model.assistant.asking = true;
         let context = with_images(agent_summary(&self.model.agents, &question, self.model.caps.platform), images.len());
-        let request =
-            october_ai::Request { turns: earlier, question, image, images: several, context, mode: Some("chat".into()), guidance: None };
+        let request = october_ai::Request {
+            turns: earlier,
+            question,
+            image,
+            images: several,
+            context,
+            mode: Some("chat".into()),
+            ..Default::default()
+        };
         crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));
+        self.stream_assistant(turn, request, token);
+    }
+
+    fn stream_assistant(&mut self, turn: u64, request: october_ai::Request, token: String) {
+        self.model.assistant.asking = true;
+        self.asking.requests.insert(turn, request.clone());
         let generation = self.asking.generation.fetch_add(1, Ordering::SeqCst) + 1;
         let current = self.asking.generation.clone();
         let tx = self.tx.clone();
+        let own_key = self.key_for_ask();
         std::thread::spawn(move || {
             let pieces = tx.clone();
-            let result = october_ai::stream(&request, &token, &mut |piece| {
+            let key = own_key.key(&request);
+            let result = october_ai::stream(&request, &token, key.as_ref(), &mut |piece| {
                 current.load(Ordering::SeqCst) == generation && pieces.send(Event::Assistant { generation, turn, piece }).is_ok()
             });
             let error = result.err().filter(|failure| *failure != Failure::Cancelled);
             let _ = tx.send(Event::AssistantDone { generation, turn, error });
         });
+    }
+
+    /// "Ask October's AI instead" (only offered after your provider refused before answering):
+    /// the same question, earlier turns and pictures, without your key. Never automatic.
+    pub(super) fn ask_october_instead(&mut self, turn: u64) {
+        let Some(token) = self.session.as_ref().map(|session| session.access.clone()) else { return };
+        let Some(request) = self.october_retry(turn) else { return };
+        crate::analytics::capture("own_key_fallback", json!({}));
+        self.stream_assistant(turn, request, token);
+    }
+
+    /// The failed turn, cleared for the retry, and its request without your key.
+    fn october_retry(&mut self, turn: u64) -> Option<october_ai::Request> {
+        if self.model.assistant.asking {
+            return None;
+        }
+        let t = self.model.assistant.turns.iter_mut().find(|t| t.id == turn && t.fix == Some(Fix::UseOctober))?;
+        let mut request = self.asking.requests.remove(&turn)?;
+        t.answer.clear();
+        t.failed = false;
+        t.fix = None;
+        t.via = None;
+        request.use_own_key = false;
+        Some(request)
     }
 
     pub(super) fn assistant_piece(&mut self, generation: u64, turn: u64, piece: Piece) {
@@ -234,6 +275,7 @@ impl Lantern {
             Piece::Guide { .. } => {}
             Piece::Text(text) => self.model.assistant.turns[index].answer.push_str(&text),
             Piece::Note(note) => self.model.assistant.turns[index].note = Some(note),
+            Piece::Via(provider) => self.model.assistant.turns[index].via = Some(provider),
             Piece::Task { prompt, agent, project, to } => {
                 let running = to.and_then(|to| self.model.agents.iter().find(|a| a.is_live() && a.handle == to).map(|a| a.id.clone()));
                 match running {
@@ -254,9 +296,11 @@ impl Lantern {
                     if !t.answer.is_empty() {
                         t.answer.push_str("\n\n");
                     }
+                    // October's AI is offered only before any of the answer arrived.
+                    let fix = error.fix().filter(|fix| *fix != Fix::UseOctober || t.answer.is_empty());
                     t.answer.push_str(&error.to_string());
                     t.failed = true;
-                    t.upgrade = error.upgrade().map(str::to_string);
+                    t.fix = fix;
                 }
                 None if t.answer.is_empty() => {
                     t.answer = "No answer came back. Try again.".into();
@@ -264,6 +308,9 @@ impl Lantern {
                 }
                 None => {}
             }
+        }
+        if self.model.assistant.turns.iter().find(|t| t.id == turn).is_none_or(|t| t.fix != Some(Fix::UseOctober)) {
+            self.asking.requests.remove(&turn);
         }
         self.model.assistant.asking = false;
     }
@@ -662,6 +709,7 @@ impl Lantern {
     }
 
     fn reset_conversation(&mut self) {
+        self.asking.requests.clear();
         self.model.assistant.turns.clear();
         self.model.assistant.attachments.clear();
         self.model.assistant.attach_problem = None;
@@ -679,8 +727,13 @@ impl Lantern {
         self.clear_assistant();
         // Turn ids stay unique across the reopened turns and new ones.
         self.asking.next_id = self.asking.next_id.max(conversation.turns.iter().map(|t| t.id).max().unwrap_or(0));
-        self.asking.seen = conversation.turns.clone();
-        self.model.assistant.turns = conversation.turns;
+        let mut turns = conversation.turns;
+        // Those questions aren't in memory anymore: nothing to ask October's AI again.
+        for turn in &mut turns {
+            turn.fix = turn.fix.take().filter(|fix| *fix != Fix::UseOctober);
+        }
+        self.asking.seen = turns.clone();
+        self.model.assistant.turns = turns;
         self.asking.conversation = conversation.id;
         self.track_tasks();
     }
@@ -974,6 +1027,31 @@ mod tests {
         let (generation, turn) = with_turn(&mut lantern);
         lantern.assistant_done(generation, turn, Some(Failure::SignedOut));
         assert!(lantern.model.assistant.turns.last().unwrap().failed);
+    }
+
+    #[test]
+    fn a_refused_own_key_offers_october_once_and_asks_the_same_question_without_it() {
+        let mut lantern = lantern(&["claude"]);
+        let (generation, turn) = with_turn(&mut lantern);
+        let request = october_ai::Request { question: "q".into(), context: "ctx".into(), ..Default::default() };
+        lantern.asking.requests.insert(turn, request);
+        lantern.assistant_piece(generation, turn, Piece::Via("OpenAI".into()));
+        let refused = Failure::Provider("Your AI provider refused the question: its rate limit or billing.".into());
+        lantern.assistant_done(generation, turn, Some(refused.clone()));
+        let t = &lantern.model.assistant.turns[0];
+        assert_eq!((t.fix.clone(), t.via.as_deref(), t.failed), (Some(Fix::UseOctober), Some("OpenAI"), true));
+        // Asked without a network: the retry's request, as `ask_october_instead` streams it.
+        let again = lantern.october_retry(turn).expect("offered once");
+        let t = &lantern.model.assistant.turns[0];
+        assert!(t.answer.is_empty() && !t.failed && t.fix.is_none() && t.via.is_none());
+        assert!(!again.use_own_key && again.question == "q" && again.context == "ctx", "the same question, without your key");
+        assert!(lantern.october_retry(turn).is_none(), "only once");
+        // After part of an answer, it isn't offered.
+        lantern.asking.requests.insert(turn, again);
+        lantern.assistant_piece(generation, turn, Piece::Text("Part".into()));
+        lantern.assistant_done(generation, turn, Some(refused));
+        assert_eq!(lantern.model.assistant.turns[0].fix, None);
+        assert!(lantern.asking.requests.is_empty());
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod app_log;
 mod model;
 mod october_ai;
 mod os;
+mod own_key;
 mod settings;
 mod shell;
 mod sidecar;

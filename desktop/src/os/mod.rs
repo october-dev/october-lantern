@@ -21,12 +21,45 @@ mod shell_win;
 #[cfg(target_os = "linux")]
 mod shell_x11;
 
+/// What's kept in the system keyring (Secret Service on Linux, Credential Manager on Windows),
+/// each as its own entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Secret {
+    /// The October sign-in's refresh token.
+    SignIn,
+    /// Your own AI provider key (`own_key::OwnKey` as JSON).
+    AiKey,
+}
+
+/// "+0530" or "-0800" (`date +%z`) in seconds.
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_utc_offset(text: &str) -> Option<i32> {
+    let (sign, digits) = match text.as_bytes().first()? {
+        b'+' => (1, &text[1..]),
+        b'-' => (-1, &text[1..]),
+        _ => return None,
+    };
+    if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (hours, minutes): (i32, i32) = (digits[..2].parse().ok()?, digits[2..].parse().ok()?);
+    Some(sign * (hours * 3600 + minutes * 60))
+}
+
+/// This computer's offset from UTC, read once (for dates people read, like a trial's end).
+pub fn utc_offset() -> time::UtcOffset {
+    static OFFSET: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+    time::UtcOffset::from_whole_seconds(*OFFSET.get_or_init(utc_offset_seconds)).unwrap_or(time::UtcOffset::UTC)
+}
+
 pub enum Event {
     ShowAnswer {
         run: String,
         round: u64,
         capture: String,
         result: serde_json::Value,
+        /// Why October couldn't answer, kept from the result's error for what Show me offers.
+        failure: Option<crate::october_ai::Failure>,
     },
     Status(String),
     Screenshot {
@@ -52,6 +85,14 @@ pub enum Event {
         generation: u64,
         result: Result<crate::account::Session, String>,
     },
+    /// The plan, fetched again for the sign-in `generation` (Refresh on the account card).
+    Plan {
+        generation: u64,
+        result: Result<serde_json::Value, String>,
+    },
+    /// Your own AI key in the keyring: read at startup, saved or removed. `Ok(None)`: none saved;
+    /// `Err`: the keyring couldn't be used (why).
+    OwnKey(Result<Option<crate::own_key::OwnKey>, String>),
     Update(Result<crate::updates::Release, String>),
     /// A release finished installing (`quietly`: by the daily check, so Lantern restarts into it
     /// once you're not using it).
@@ -312,6 +353,10 @@ pub fn uninstall_parts() -> Vec<String> {
         ));
     }
     failures.extend(remove_integrations());
+    if let Err(error) = secret_clear(Secret::AiKey) {
+        failures
+            .push(format!("Removing your AI key from the system keyring: {error:#}. Delete the \"October Lantern AI key\" entry by hand."));
+    }
     let config = crate::settings::config_dir();
     if config.exists()
         && let Err(error) = std::fs::remove_dir_all(&config)
@@ -351,6 +396,15 @@ mod tests {
         make(&packaged, true);
         assert!(!installed_bundle(&packaged), "a package built inside the repo");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn utc_offsets_read_like_date() {
+        assert_eq!(parse_utc_offset("+0530"), Some(19_800));
+        assert_eq!(parse_utc_offset("-0800"), Some(-28_800));
+        assert_eq!(parse_utc_offset("+0000"), Some(0));
+        assert_eq!(parse_utc_offset("UTC"), None);
+        assert_eq!(parse_utc_offset("+5"), None);
     }
 
     #[test]

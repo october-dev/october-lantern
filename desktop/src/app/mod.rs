@@ -108,6 +108,9 @@ pub struct Lantern {
     signing_in: Option<u64>,
     /// The system keyring's sign-in store.
     vault: Option<Sender<crate::account::VaultCommand>>,
+    /// Your own AI key, outside the model (never serialized), and what reads and writes it.
+    own_key: std::sync::Arc<crate::own_key::Shared>,
+    key_keeper: Option<Sender<crate::own_key::Command>>,
     /// What the launch asked for (`--new-session`, `--settings`…), once the engine has said which
     /// agents are installed.
     on_ready: Option<String>,
@@ -158,6 +161,9 @@ impl Lantern {
             auth: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             signing_in: None,
             vault: None,
+            // Tests and fixtures never read the keyring.
+            own_key: std::sync::Arc::new(if cfg!(test) { crate::own_key::Shared::read_as(None) } else { Default::default() }),
+            key_keeper: None,
             on_ready: None,
             tx,
             events,
@@ -181,7 +187,7 @@ impl Lantern {
     /// Results of background work.
     fn integration(&mut self, event: Event) {
         match event {
-            Event::ShowAnswer { run, round, capture, result } => self.show_answer(&run, round, &capture, result),
+            Event::ShowAnswer { run, round, capture, result, failure } => self.show_answer(&run, round, &capture, result, failure),
             Event::Screenshot { owner, generation: _, result } if owner.starts_with("__show:") => self.show_captured(&owner[7..], result),
             Event::Screenshot { owner, generation, result } if owner == "__new" => {
                 self.windows.capture_done();
@@ -241,8 +247,7 @@ impl Lantern {
                 let welcome = self.signing_in.take_if(|started| *started == generation).is_some();
                 match result {
                     Ok(session) => {
-                        let plan = session.plan["plan"].as_str().or(session.plan["tier"].as_str()).map(str::to_string);
-                        self.model.account.signed_in = Some(crate::model::Account { email: session.email.clone(), plan });
+                        self.model.account.signed_in = Some(account(&session.email, &session.plan));
                         self.model.account.error = None;
                         crate::analytics::identify(&session.access, &session.email);
                         self.session = Some(session);
@@ -259,8 +264,71 @@ impl Lantern {
                 }
                 self.invalidate_october_models();
             }
+            Event::Plan { generation, result } if generation == self.auth.load(std::sync::atomic::Ordering::SeqCst) => {
+                self.model.account.refreshing = false;
+                match (result, self.session.as_mut()) {
+                    (Ok(plan), Some(session)) => {
+                        self.model.account.signed_in = Some(account(&session.email, &plan));
+                        session.plan = plan;
+                    }
+                    (Err(error), Some(_)) => self.show(format!("Couldn't refresh your plan: {error}")),
+                    _ => {}
+                }
+            }
+            Event::OwnKey(result) => self.own_key_result(result),
             _ => {}
         }
+    }
+
+    /// Reads your own AI key from the keyring, off the frame loop (it may ask to be unlocked).
+    fn load_own_key(&mut self) {
+        self.own_key_command(crate::own_key::Command::Load);
+    }
+
+    pub(super) fn own_key_command(&mut self, command: crate::own_key::Command) {
+        let (tx, shared) = (self.tx.clone(), self.own_key.clone());
+        let keeper = self.key_keeper.get_or_insert_with(|| crate::own_key::keeper(tx, shared));
+        if !matches!(command, crate::own_key::Command::Load) {
+            self.model.own_key.busy = true;
+            self.model.own_key.error = None;
+        }
+        let _ = keeper.send(command);
+    }
+
+    /// The keyring's answer: what Settings shows (never the key) follows it.
+    fn own_key_result(&mut self, result: Result<Option<crate::own_key::OwnKey>, String>) {
+        use crate::model::KeyStatus;
+        let state = &mut self.model.own_key;
+        let changing = std::mem::take(&mut state.busy);
+        if changing && result.is_ok() {
+            // Saved (or removed): what was typed is done with.
+            self.view.own_key_input.clear();
+            self.view.own_key_editing = false;
+        }
+        match result {
+            Ok(Some(key)) => state.status = KeyStatus::Saved { provider: key.provider, ending: key.ending(), model: key.model.clone() },
+            Ok(None) => state.status = KeyStatus::Missing,
+            // Saving or removing failed: what's saved is as it was; say why.
+            Err(error) if changing => state.error = Some(format!("{UNAVAILABLE_KEYRING} ({error})")),
+            Err(_) => state.status = KeyStatus::Unavailable,
+        }
+    }
+
+    /// What a question may use of your own key (see `own_key::ForAsk`).
+    pub(super) fn key_for_ask(&self) -> crate::own_key::ForAsk {
+        crate::own_key::ForAsk { shared: self.own_key.clone(), allowed: crate::own_key::allowed(self.model.lantern_rights()) }
+    }
+
+    /// Fetches the plan again (a purchase in the browser shows without restarting); a sign-out
+    /// meanwhile makes the answer stale.
+    pub(super) fn refresh_plan(&mut self) {
+        let Some(access) = self.session.as_ref().map(|session| session.access.clone()) else { return };
+        if self.model.account.refreshing {
+            return;
+        }
+        self.model.account.refreshing = true;
+        let generation = self.auth.load(std::sync::atomic::Ordering::SeqCst);
+        crate::os::task(self.tx.clone(), move || crate::account::plan(&access), move |result| Event::Plan { generation, result });
     }
 
     /// Back from signing in (Swift `signInWatch`): Lantern comes forward where you were (Ask
@@ -443,6 +511,18 @@ impl Lantern {
     }
 }
 
+/// Shown when the keyring can't be used for your own AI key.
+pub(crate) const UNAVAILABLE_KEYRING: &str = "Lantern can't reach the system keyring (Secret Service / Credential Manager), so it can't save or use your key. Unlock it and try again.";
+
+/// The signed-in account as the views show it.
+fn account(email: &str, plan: &Value) -> crate::model::Account {
+    crate::model::Account {
+        email: email.to_string(),
+        plan: plan["plan"].as_str().or(plan["tier"].as_str()).map(str::to_string),
+        lantern: crate::model::LanternRights::from_plan(plan),
+    }
+}
+
 /// What this platform can do (CONTRACT §8). Only what has been proven is true.
 fn capabilities() -> crate::model::Caps {
     use crate::model::{Caps, Platform};
@@ -510,6 +590,9 @@ pub fn run(terminal: &str, start: Option<&str>) -> Result<()> {
             let mut lantern = Lantern::new(engine, Some(cc.egui_ctx.clone()));
             lantern.on_ready = start;
             lantern.restore_account();
+            lantern.load_own_key();
+            // Read once now, off the frame loop: dates people read are in local time.
+            std::thread::spawn(crate::os::utc_offset);
             lantern.first_launch();
             lantern.start_desktop();
             lantern.refresh_hooks();

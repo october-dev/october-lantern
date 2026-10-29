@@ -25,6 +25,12 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
     if let Some(instruction) = state["instruction"].as_str() {
         ui.label(instruction);
     }
+    if let Some(provider) = state["via"].as_str() {
+        super::assistant::via(ui, provider);
+    }
+    if let Ok(fix) = serde_json::from_value::<crate::model::Fix>(state["fix"].clone()) {
+        super::assistant::fix_buttons(ui, cx, &fix, "show_me", UiAction::ShowWithOctoberInstead);
+    }
     if matches!(phase, "showing" | "notVisible")
         && let Some(picture) = &cx.view.show_picture
     {

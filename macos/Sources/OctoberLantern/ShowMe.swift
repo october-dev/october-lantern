@@ -34,13 +34,34 @@ final class ShowMe: ObservableObject {
     @Published private(set) var picture: NSImage?
     @Published private(set) var marker: CGRect?
     @Published private(set) var live = false
-    @Published private(set) var upgrade: URL?
+    /// What a failed round offers (the trial and Lifetime, your key's settings, October's AI).
+    @Published private(set) var fix: OctoberAI.Fix?
+    /// Your own key is answering: its provider.
+    @Published private(set) var via: String?
     /// The first time, the card says what Show me sends.
     @Published var explained = UserDefaults.standard.bool(forKey: "showMeExplained") {
         didSet { UserDefaults.standard.set(explained, forKey: "showMeExplained") }
     }
 
     private var runId = ""
+    /// "Ask October's AI instead" was chosen: the rest of this guide asks October.
+    private var useOctober = false
+    /// The round whose own-key provider failed before answering, kept from the engine until the
+    /// person chooses to ask October's AI instead (or closes the guide).
+    private var pendingRound: ShowMessage?
+
+    var canAskOctober: Bool { pendingRound != nil }
+
+    /// Ask October's AI instead: the same round again, and the rest of the guide, without your key.
+    func askOctober() {
+        guard let q = pendingRound, open else { return }
+        pendingRound = nil
+        useOctober = true
+        fix = nil
+        via = nil
+        Analytics.shared.capture("own_key_fallback", [:])
+        ask(q)
+    }
     private var screen: NSScreen?
     private var jpeg: Data?
     private var imageSize = CGSize.zero
@@ -70,7 +91,10 @@ final class ShowMe: ObservableObject {
         picture = nil
         marker = nil
         live = false
-        upgrade = nil
+        fix = nil
+        via = nil
+        useOctober = false
+        pendingRound = nil
         open = true
         showCard()
         guard send?("show.start", ["runId": runId]) == true else {
@@ -197,7 +221,8 @@ final class ShowMe: ObservableObject {
             "elements": (q.elements ?? []).map(\.json), "shown": q.shown ?? [],
         ]
         if let goal = q.goalId { guidance["goalId"] = goal }
-        let request = OctoberAI.Request(turns: [], question: question, image: jpeg, context: "", mode: "show", guidance: guidance)
+        var request = OctoberAI.Request(turns: [], question: question, image: jpeg, context: "", mode: "show", guidance: guidance)
+        request.ownKey = !useOctober
         let run = runId
         instruction = ""
         phase = .asking
@@ -209,6 +234,7 @@ final class ShowMe: ObservableObject {
                     guard !Task.isCancelled, open, runId == run else { return }
                     switch piece {
                     case .text(let t): instruction += t
+                    case .via(let p): via = p
                     case .guide(let g, let goal):
                         result["guidance"] = g ?? NSNull()
                         if let goal { result["goalId"] = goal }
@@ -222,7 +248,18 @@ final class ShowMe: ObservableObject {
             } catch {
                 guard !Task.isCancelled, open, runId == run else { return }
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                upgrade = (error as? OctoberAI.Failure)?.upgradeURL
+                var fix = (error as? OctoberAI.Failure)?.fix
+                if fix == .useOctober {
+                    // Before any answer: the engine waits while the person decides.
+                    if instruction.isEmpty {
+                        self.fix = fix
+                        pendingRound = q
+                        phase = .failed(message)
+                        return
+                    }
+                    fix = nil
+                }
+                self.fix = fix
                 result = ["error": message]
                 phase = .failed(message)
             }
@@ -509,15 +546,20 @@ struct ShowMeCard: View {
             instruction
             Text("That's the last step.").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.green)
         case .failed(let message):
-            Text(message).font(.system(size: 12)).foregroundStyle(show.upgrade != nil ? Theme.amber : Theme.red)
+            Text(message).font(.system(size: 12)).foregroundStyle(show.fix != nil ? Theme.amber : Theme.red)
                 .fixedSize(horizontal: false, vertical: true)
-            if let url = show.upgrade { UpgradeButton(url: url, from: "show_me") }
+            if let fix = show.fix {
+                FixButtons(fix: fix, from: "show_me", useOctober: show.canAskOctober ? { show.askOctober() } : nil)
+            }
         }
     }
 
     private var instruction: some View {
-        Text(markdown(show.instruction.isEmpty ? "…" : show.instruction)).font(.system(size: 13)).foregroundStyle(Theme.ink)
-            .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 2) {
+            Text(markdown(show.instruction.isEmpty ? "…" : show.instruction)).font(.system(size: 13)).foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            if let via = show.via { ViaLabel(provider: via) }
+        }
     }
 
     private func working(_ text: String) -> some View {

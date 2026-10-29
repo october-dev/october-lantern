@@ -6,7 +6,7 @@ use super::{
     icons::Icon,
     theme::{self as t, Weight},
 };
-use crate::model::{AgentKind, AgentState, AssistantTurn, ChatMessage, Conversation, HarnessState, Role, TaskLink};
+use crate::model::{AgentKind, AgentState, AssistantTurn, ChatMessage, Conversation, Fix, HarnessState, Role, TaskLink};
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
@@ -226,7 +226,13 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
                     });
                 }
             });
-        c::label(ui, "Lantern", 10.5, Weight::Medium, t::MUTED);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            c::label(ui, "Lantern", 10.5, Weight::Medium, t::MUTED);
+            if let Some(provider) = &turn.via {
+                via(ui, provider);
+            }
+        });
         if turn.answer.is_empty() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -237,7 +243,7 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
             let (response, link) = c::markdown_linked(
                 ui,
                 &turn.answer,
-                MarkdownStyle { size: 12.5, color: answer_color(turn.failed, turn.upgrade.is_some()), ..Default::default() },
+                MarkdownStyle { size: 12.5, color: answer_color(turn.failed, turn.fix.is_some()), ..Default::default() },
                 2.0,
             );
             response.context_menu(|ui| {
@@ -250,8 +256,8 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
                 cx.emit(UiAction::OpenUrl(link));
             }
         }
-        if let Some(url) = &turn.upgrade {
-            upgrade_button(ui, cx, url, "assistant");
+        if let Some(fix) = &turn.fix {
+            fix_buttons(ui, cx, fix, "assistant", UiAction::AskOctoberInstead { turn: turn.id });
         }
         if let Some(started) = turn.started.as_ref().filter(|_| turn.task.is_none()) {
             ui.horizontal(|ui| {
@@ -270,9 +276,10 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
     });
 }
 
-/// An answer's color: amber for a plan limit (not an error), red for a failure.
-pub(super) fn answer_color(failed: bool, upgrade: bool) -> egui::Color32 {
-    if upgrade {
+/// An answer's color: amber when there's something to do about it (a plan limit, your own key),
+/// red for a failure.
+pub(super) fn answer_color(failed: bool, fixable: bool) -> egui::Color32 {
+    if fixable {
         t::AMBER
     } else if failed {
         t::RED
@@ -281,10 +288,43 @@ pub(super) fn answer_color(failed: bool, upgrade: bool) -> egui::Color32 {
     }
 }
 
-/// Opens October's plans, under an answer that hit a plan limit (Swift `UpgradeButton`).
-pub(super) fn upgrade_button(ui: &mut Ui, cx: &mut Ctx, url: &str, from: &'static str) {
-    if c::secondary_button(ui, "Upgrade to October Pro ↗").on_hover_text("Opens October's plans in your browser").clicked() {
-        cx.emit(UiAction::OpenUpgrade { url: url.to_string(), from });
+/// "via OpenAI", small and muted: your own key answered.
+pub(super) fn via(ui: &mut Ui, provider: &str) {
+    c::label(ui, format!("via {provider}"), 10.5, Weight::Regular, t::MUTED)
+        .on_hover_text(format!("Your own {provider} key answered; {provider} bills you for it."));
+}
+
+/// Lantern's two offers (Swift `OfferButtons`): the Pro trial and Lifetime, on October's page `url`.
+pub(super) fn offer_buttons(ui: &mut Ui, cx: &mut Ctx, url: &str, from: &'static str) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (title, offer) in [("Start free trial ↗", "trial"), ("Buy Lifetime ↗", "lifetime")] {
+            if c::secondary_button(ui, title).on_hover_text("Opens October in your browser").clicked() {
+                cx.emit(UiAction::OpenUpgrade { url: crate::october_ai::offer_url(url, offer), from, offer });
+            }
+        }
+    });
+}
+
+/// What a failed answer offers, under it: the offers, your key's settings, or October's AI
+/// (`retry`, this turn asked again).
+pub(super) fn fix_buttons(ui: &mut Ui, cx: &mut Ctx, fix: &Fix, from: &'static str, retry: UiAction) {
+    match fix {
+        Fix::Upgrade(url) => offer_buttons(ui, cx, url, from),
+        Fix::EditKey | Fix::OpenSettings => {
+            let title = if *fix == Fix::EditKey { "Edit key" } else { "Open Settings" };
+            if c::secondary_button(ui, title).on_hover_text("Your own AI key, in Settings › October").clicked() {
+                cx.emit(UiAction::OpenOwnKeySettings);
+            }
+        }
+        Fix::UseOctober => {
+            if c::secondary_button(ui, "Ask October's AI instead")
+                .on_hover_text("Asks again with October's AI, which uses your October allowance")
+                .clicked()
+            {
+                cx.emit(retry);
+            }
+        }
     }
 }
 
@@ -517,13 +557,8 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
                 c::label(ui, "Sign in to ask Lantern", 13.0, Weight::Semibold, t::INK);
-                c::label(
-                    ui,
-                    "Ask anything about your agents, or tell Lantern what to do. Free accounts get 5 questions a day.",
-                    11.5,
-                    Weight::Regular,
-                    t::MUTED,
-                );
+                // How many questions depends on the plan, unknown until you sign in.
+                c::label(ui, "Ask anything about your agents, or tell Lantern what to do.", 11.5, Weight::Regular, t::MUTED);
                 super::cards::account::render_with(ui, cx, false);
             });
             return;
@@ -928,6 +963,43 @@ mod tests {
     }
 
     #[test]
+    fn failed_answers_offer_what_fixes_them() {
+        let (ctx, assets, mut fixture) = setup("task");
+        let turn = &mut fixture.model.assistant.turns[0];
+        turn.failed = true;
+        turn.via = Some("OpenAI".into());
+        turn.fix = Some(Fix::Upgrade(crate::october_ai::LANTERN.into()));
+        let id = turn.id;
+        let mut view = UiState::default();
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
+        assert!(has(&texts, "via OpenAI") && !has(&texts, "Upgrade to October Pro ↗"));
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Start free trial ↗"),
+            vec![UiAction::OpenUpgrade {
+                url: "https://www.october.dev/lantern?offer=trial&ref=app".into(),
+                from: "assistant",
+                offer: "trial"
+            }]
+        );
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Buy Lifetime ↗"),
+            vec![UiAction::OpenUpgrade {
+                url: "https://www.october.dev/lantern?offer=lifetime&ref=app".into(),
+                from: "assistant",
+                offer: "lifetime"
+            }]
+        );
+        fixture.model.assistant.turns[0].fix = Some(Fix::UseOctober);
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Ask October's AI instead"),
+            vec![UiAction::AskOctoberInstead { turn: id }]
+        );
+        fixture.model.assistant.turns[0].fix = Some(Fix::EditKey);
+        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Edit key"), vec![UiAction::OpenOwnKeySettings]);
+    }
+
+    #[test]
     fn relative_times_read_like_the_mac() {
         let now = 1_790_000_000_000.0;
         assert_eq!(ago(now - 5_000.0, now), "5s ago");
@@ -948,7 +1020,8 @@ mod tests {
         let has = |value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(actions.is_empty());
         assert!(has("Sign in to ask Lantern"));
-        assert!(has("Ask anything about your agents, or tell Lantern what to do. Free accounts get 5 questions a day."));
+        assert!(has("Ask anything about your agents, or tell Lantern what to do."));
+        assert!(!texts.iter().any(|(text, _)| text.contains("questions a day")), "no number before the plan is known");
         assert!(!has("Connect to October"), "the card's own header stays in the October panel");
         assert!(!has("Sign in to October to ask Lantern anything"));
         for (title, provider) in [("Google", Provider::Google), ("GitHub", Provider::GitHub), ("Apple", Provider::Apple)] {
