@@ -561,6 +561,7 @@ struct OctoberView: View {
             ScrollView { content }
                 .onAppear { if phone.setup { scroll.scrollTo("phone", anchor: .top) } }
                 .onChange(of: phone.setup) { _, setup in if setup { scroll.scrollTo("phone", anchor: .top) } }
+                .onChange(of: phone.state?.pairing?.intentId) { _, intent in if intent != nil { scroll.scrollTo("phone", anchor: .top) } }
                 .onChange(of: phone.state?.pairing?.code) { _, code in if code != nil { scroll.scrollTo("phone", anchor: .top) } }
         }
         .frame(maxHeight: max(200, metrics.maxHeight - 60))

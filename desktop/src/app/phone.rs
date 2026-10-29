@@ -15,6 +15,10 @@ impl Lantern {
             return;
         };
         let before = self.model.phone.as_ref();
+        let new_pairing = next
+            .pairing
+            .as_ref()
+            .is_some_and(|p| before.is_none_or(|s| s.pairing.as_ref().is_none_or(|last| last.intent_id != p.intent_id)));
         let fresh = next.pairing.as_ref().is_some_and(|p| {
             p.code.is_some()
                 && !p.finishing
@@ -31,6 +35,9 @@ impl Lantern {
             self.view.phone_setup = false;
         }
         self.model.phone = Some(next);
+        if new_pairing {
+            self.view.phone_reveal = true;
+        }
         if fresh {
             self.view.phone_setup = true;
             self.view.phone_reveal = true;
@@ -155,6 +162,13 @@ mod tests {
         assert_eq!(sent(&app), vec![json!({"type":"phone.pair"})]);
         app.phone_action(Action::Open);
         assert!(sent(&app).is_empty(), "a request is already in flight");
+        app.view.phone_reveal = false;
+        app.phone_event(json!({"type":"phone", "status":"connected", "pairing":{
+            "intentId":"intent", "qr":"https://october.dev/pair#synthetic-test-only", "expiresAt":9999999999999_f64
+        }}));
+        assert!(app.view.phone_reveal, "scroll again when the asynchronous QR arrives");
+        app.phone_action(Action::Open);
+        assert!(sent(&app).is_empty(), "reopening preserves the QR too");
         app.phone_event(confirmation("123456"));
         app.phone_action(Action::Open);
         assert!(sent(&app).is_empty(), "opening the panel must not replace the phone's code");

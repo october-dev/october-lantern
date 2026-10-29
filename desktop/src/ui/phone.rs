@@ -178,10 +178,10 @@ fn scan(ui: &mut Ui, cx: &mut Ctx, p: &Pairing, email: &str, busy: bool) {
         Weight::Regular,
         t::MUTED,
     );
-    if let Some(url) = cx.model.phone.as_ref().and_then(|s| s.install_url.as_deref()) {
-        if c::secondary_button(ui, "Get the October app").clicked() {
-            cx.emit(UiAction::OpenUrl(url.into()));
-        }
+    if let Some(url) = cx.model.phone.as_ref().and_then(|s| s.install_url.as_deref())
+        && c::secondary_button(ui, "Get the October app").clicked()
+    {
+        cx.emit(UiAction::OpenUrl(url.into()));
     }
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
 }
