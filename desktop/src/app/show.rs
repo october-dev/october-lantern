@@ -59,6 +59,7 @@ struct Ring {
     started: Instant,
     title: String,
     placed: bool,
+    placement_check: Instant,
 }
 
 impl Lantern {
@@ -177,6 +178,7 @@ impl Lantern {
                             started: Instant::now(),
                             title,
                             placed: false,
+                            placement_check: Instant::now(),
                         });
                     }
                     state["live"] = json!(self.guide.ring.is_some());
@@ -316,8 +318,9 @@ impl Lantern {
         let reduce_motion = self.guide.observer.as_ref().map_or(self.guide.reduce_motion, Observer::reduce_motion);
         let observer = self.guide.observer.as_ref();
         ctx.show_viewport_immediate(ViewportId::from_hash_of(&ring.title), builder, |ui, _| {
-            if !ring.placed {
+            if !ring.placed || ring.placement_check.elapsed() >= Duration::from_millis(250) {
                 ring.placed = native::place(&ring.title, display);
+                ring.placement_check = Instant::now();
                 if !ring.placed {
                     failed = ring.started.elapsed() > Duration::from_millis(750);
                     ui.ctx().request_repaint_after(Duration::from_millis(16));
@@ -329,13 +332,16 @@ impl Lantern {
             // winit's X11 scale policy can differ between monitors. Read the native scale of
             // this viewport, never the pill's monitor and never the user's egui zoom.
             #[cfg(target_os = "linux")]
-            {
-                ring.display.scale = ui.ctx().native_pixels_per_point().unwrap_or(display.scale);
-            }
-            crate::show_overlay::paint(ui, ring.display, ring.target, ring.step, pulse);
+            let paint_display = Display { scale: ui.ctx().native_pixels_per_point().unwrap_or(display.scale), ..display };
+            #[cfg(windows)]
+            let paint_display = display;
+            // Keep builder geometry stable; changing its logical hints after winit reports a
+            // new monitor scale would move the window a second time. Native placement also
+            // corrects asynchronous DPI-resize suggestions back to the captured pixel bounds.
+            crate::show_overlay::paint(ui, paint_display, ring.target, ring.step, pulse);
             if let Some(observer) = observer {
                 observer.point(Some(native::Cue {
-                    display: ring.display,
+                    display: paint_display,
                     target: ring.target,
                     expires_at: ring.expires,
                     title: ring.title.clone(),

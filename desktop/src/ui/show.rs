@@ -8,7 +8,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
         return;
     };
     ui.label(state["question"].as_str().unwrap_or_default());
-    ui.small("Each look sends a picture of the whole selected display to October. Lantern's windows are left out. Lantern points; it never clicks or types.");
+    ui.small("Each look sends a full-screen picture to October. Lantern's windows are left out. Lantern points; it never clicks or types.");
     let phase = state["phase"].as_str().unwrap_or("looking");
     ui.label(match phase {
         "asking" => "Finding the control…",

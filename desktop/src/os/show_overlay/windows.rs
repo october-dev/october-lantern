@@ -118,12 +118,26 @@ impl Desktop {
     pub fn place(title: &str, display: Display) -> bool {
         use super::super::{shell::Role, shell_win};
         let Some(window) = shell_win::find(title) else { return false };
-        if !shell_win::adopt(title, Role::Pill) {
-            return false;
-        }
         unsafe {
             let style = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
-            SetWindowLongPtrW(window, GWL_EXSTYLE, (style | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED) as isize);
+            let wanted = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+            if style & wanted != wanted || GetWindowLongPtrW(window, GWL_STYLE) as u32 & (WS_CAPTION | WS_SYSMENU | WS_THICKFRAME) != 0 {
+                if !shell_win::adopt(title, Role::Pill) {
+                    return false;
+                }
+                let style = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+                SetWindowLongPtrW(window, GWL_EXSTYLE, (style | wanted) as isize);
+            }
+            let mut at: RECT = std::mem::zeroed();
+            if GetWindowRect(window, &mut at) != 0
+                && IsWindowVisible(window) != 0
+                && at.left == display.bounds.min.x.round() as i32
+                && at.top == display.bounds.min.y.round() as i32
+                && at.right == display.bounds.max.x.round() as i32
+                && at.bottom == display.bounds.max.y.round() as i32
+            {
+                return true;
+            }
             // Physical desktop coordinates, including negative origins and mixed-DPI monitors.
             SetWindowPos(
                 window,
@@ -266,6 +280,16 @@ mod tests {
             (bounds.left, bounds.top, bounds.right, bounds.bottom),
             (display.bounds.min.x as i32, display.bounds.min.y as i32, display.bounds.max.x as i32, display.bounds.max.y as i32)
         );
+        // Correct a later DPI resize back to the captured physical rectangle without focus.
+        unsafe { SetWindowPos(overlay, ptr::null_mut(), bounds.left + 10, bounds.top + 10, 320, 240, SWP_NOACTIVATE | SWP_NOZORDER) };
+        assert!(Desktop::place(&title, display));
+        unsafe { GetWindowRect(overlay, &mut bounds) };
+        assert_eq!((bounds.left, bounds.top), (display.bounds.min.x as i32, display.bounds.min.y as i32));
+        assert_eq!(
+            (bounds.right - bounds.left, bounds.bottom - bounds.top),
+            (display.bounds.width() as i32, display.bounds.height() as i32)
+        );
+        assert_eq!(unsafe { GetForegroundWindow() }, before);
         unsafe { SetCursorPos(at.x as i32 + 50, at.y as i32 + 50) };
         let input =
             |flag| INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flag, ..unsafe { std::mem::zeroed() } } } };

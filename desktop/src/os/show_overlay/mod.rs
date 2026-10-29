@@ -224,7 +224,7 @@ fn fallback() -> Result<Capture> {
         scale: 1.0,
     };
     let mut result = encode(image, display)?;
-    result.note = Some("On-screen pointing isn't available on this desktop. The place is marked on the captured picture; use Look again after changing the screen.".into());
+    result.note = Some("On-screen pointing isn't available on this desktop. The screen portal's picture may include all displays. The place is marked here; use Look again after changing the screen.".into());
     Ok(result)
 }
 
