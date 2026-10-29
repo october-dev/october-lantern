@@ -10,9 +10,9 @@
 //! 3. `show.result` (October's answer) → the coordinator checks it against that capture and has
 //!    the app ring the place on screen (`showState` "showing"); an app that can only mark its
 //!    picture (`markedOnly`) marks that instead.
-//! 4. While the ring shows, the coordinator watches the control's window (or, for a place found
-//!    only on the picture, every window on the display). If one moves, closes or another opens, it
-//!    hides the ring and looks again (another capture, the next step).
+//! 4. While the ring shows, the coordinator watches the windows on its display. If one moves,
+//!    closes, opens or comes to the front, it hides the ring and looks again (another capture, the
+//!    next step). The app also moves on when you click inside the ring.
 //!    `show.next` (the person says they did it) looks again too; `show.stop` ends the guide.
 //!
 //! Every message carries the guide's id, its step and its round; anything for an older guide, step
@@ -36,7 +36,7 @@ const MAX_ROUNDS: u32 = 16;
 /// A guide ends after this long, and after this long with nothing happening.
 const LIFETIME: Duration = Duration::from_secs(600);
 const IDLE: Duration = Duration::from_secs(120);
-/// How often the pointed-at window is checked while the pointer shows.
+/// How often the display's windows are checked while the ring shows.
 const WATCH_EVERY: Duration = Duration::from_millis(250);
 /// Windows read for controls: the frontmost few on the display.
 const WINDOWS_READ: usize = 4;
@@ -151,8 +151,8 @@ struct Run {
     capture: Option<Capture>,
     capture_id: String,
     controls: Vec<Control>,
-    /// What would make the pointer wrong, while it shows.
-    watching: Option<Watch>,
+    /// While the ring shows: its display, and that display's windows front to back (`screen_now`).
+    watching: Option<(Rect, Vec<(i64, Rect)>)>,
     /// Instructions of the steps already shown, for October's next round.
     shown: Vec<String>,
     pending_instruction: Option<String>,
@@ -393,7 +393,7 @@ impl Coordinator {
                 // can't name) was just captured, so it's pointed at too.
                 let live = !run.marked_only && (window.is_none() || self.read_controls(&capture, &excluded) == original);
                 if live {
-                    self.watch(window, capture.display, &excluded);
+                    self.watch(capture.display, &excluded);
                 }
                 if let Some(run) = &mut self.run {
                     run.touched = Instant::now();
@@ -420,40 +420,27 @@ impl Coordinator {
         }
     }
 
-    /// Starts watching what the pointer depends on: the control's window, or, for a place on the
-    /// picture, every window on the display. Without a driver nothing is watched; the pointer
-    /// stays until Next, Look again or Stop.
-    fn watch(&mut self, window: Option<i64>, display: Rect, excluded: &[i64]) {
+    /// Starts watching what the ring depends on: the windows on its display, where they are and
+    /// which is in front. Without a driver nothing is watched; the ring stays until Next, Look again
+    /// or Stop.
+    fn watch(&mut self, display: Rect, excluded: &[i64]) {
         if self.active_epoch != self.epoch.load(std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let watch = match window {
-            Some(id) => self.window_now(id).map(|(_, bounds, count)| Watch::Window(id, bounds, count)),
-            None => self.screen_now(display, excluded).map(|windows| Watch::Screen(display, windows)),
-        };
+        let windows = self.screen_now(display, excluded);
         if let Some(run) = &mut self.run {
-            run.watching = watch;
+            run.watching = windows.map(|windows| (display, windows));
         }
     }
 
-    /// The windows on `display` (but Lantern's own), with their bounds, in a fixed order.
+    /// The windows on `display` (but Lantern's own) with their bounds, front to back: a window
+    /// opening, closing, moving or coming to the front changes it.
     fn screen_now(&mut self, display: Rect, excluded: &[i64]) -> Option<Vec<(i64, Rect)>> {
         let list = self.driver()?.call("list_windows", json!({}), Duration::from_secs(2)).ok()?;
-        let mut windows: Vec<(i64, Rect)> = windows_of(&list)
-            .into_iter()
-            .filter(|w| !excluded.contains(&w.pid) && overlaps(&w.bounds, &display))
-            .map(|w| (w.window_id, w.bounds))
-            .collect();
-        windows.sort_by_key(|w| w.0);
-        Some(windows)
-    }
-
-    /// The window's owner, bounds, and how many windows its app shows, if it's still on screen.
-    fn window_now(&mut self, window_id: i64) -> Option<(i64, Rect, usize)> {
-        let list = self.driver()?.call("list_windows", json!({}), Duration::from_secs(2)).ok()?;
-        let windows = windows_of(&list);
-        let w = windows.iter().find(|w| w.window_id == window_id)?;
-        Some((w.pid, w.bounds, windows.iter().filter(|o| o.pid == w.pid).count()))
+        let mut windows: Vec<Window> =
+            windows_of(&list).into_iter().filter(|w| !excluded.contains(&w.pid) && overlaps(&w.bounds, &display)).collect();
+        windows.sort_by_key(|w| std::cmp::Reverse(w.z));
+        Some(windows.into_iter().map(|w| (w.window_id, w.bounds)).collect())
     }
 
     fn hide(&mut self) {
@@ -484,16 +471,11 @@ impl Coordinator {
             return;
         }
         let excluded = run.excluded.clone();
-        let unchanged = match watching {
-            Watch::Window(window_id, bounds, count) => {
-                matches!(self.window_now(window_id), Some((_, now, n)) if now == bounds && n == count)
-            }
-            Watch::Screen(display, windows) => self.screen_now(display, &excluded).is_some_and(|now| now == windows),
-        };
-        match unchanged {
+        let (display, windows) = watching;
+        match self.screen_now(display, &excluded).is_some_and(|now| now == windows) {
             true => {}
-            // Moved, resized, closed, or a new window (a dialog or menu opened): the pointer may be
-            // wrong now, so hide it and look again.
+            // A window moved, closed, opened or came to the front (the step's click often does
+            // that): the ring may be wrong now, so hide it and look again.
             false => {
                 self.hide();
                 if let Some(run) = &mut self.run {
@@ -518,15 +500,6 @@ impl Coordinator {
         }
         self.run = None;
     }
-}
-
-/// What the pointer depends on while it shows (see `Coordinator::watch`).
-#[derive(Clone)]
-enum Watch {
-    /// A known control's window: its id, bounds, and how many windows its app shows.
-    Window(i64, Rect, usize),
-    /// A place on the picture: the display, and its windows with their bounds.
-    Screen(Rect, Vec<(i64, Rect)>),
 }
 
 enum Guidance {

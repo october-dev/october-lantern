@@ -50,6 +50,9 @@ final class ShowMe: ObservableObject {
     private var host: NSHostingController<ShowMeCard>?
     private var ring: NSPanel?
     private var ringExpiry: Task<Void, Never>?
+    /// Where the ring is, on screen, and the watch for clicks inside it (`clicked`).
+    private var ringTarget: CGRect?
+    private var clickMonitor: Any?
     private var cueRevision = 0
 
     /// Starts a guide for `question` on `screen` (the display the person is looking at). A guide
@@ -99,6 +102,7 @@ final class ShowMe: ObservableObject {
         jpeg = nil
         picture = nil
         ring?.orderOut(nil)
+        stopWatchingClicks()
         panel?.orderOut(nil)
         Analytics.shared.capture("show_me_stopped", ["step": step])
     }
@@ -232,7 +236,7 @@ final class ShowMe: ObservableObject {
     private func apply(_ m: ShowMessage) {
         step = m.step
         cueRevision += 1; ringExpiry?.cancel()
-        ring?.orderOut(nil)
+        ring?.orderOut(nil); ringTarget = nil
         switch m.phase {
         case "hide": live = false; marker = nil
         case "looking": phase = .looking
@@ -278,7 +282,9 @@ final class ShowMe: ObservableObject {
         }
     }
 
-    /// A pass-through ring, sized from this capture's exact transform. It never accepts input.
+    /// A pass-through overlay over the whole display, sized from this capture's exact transform: a
+    /// ring around the place, and an arrow pointing at it from the middle of the screen with the
+    /// step's label. It never accepts input.
     private func showRing(_ box: [Double], remaining: Double) {
         guard box.count == 4, let screen, imageSize.width > 0, imageSize.height > 0 else { return }
         let sx = screen.frame.width / imageSize.width, sy = screen.frame.height / imageSize.height
@@ -289,14 +295,10 @@ final class ShowMe: ObservableObject {
         panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
         panel.ignoresMouseEvents = true; panel.level = .screenSaver
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        // Never smaller than 28 points, so a small control is still easy to spot.
-        let size = CGSize(width: max(28, target.width + 8), height: max(28, target.height + 8))
-        // At the top of the screen (the menu bar), the label goes under the ring.
-        let below = target.midY + size.height / 2 + 34 > screen.frame.maxY
-        panel.contentView = NSHostingView(rootView: ShowMeRing(step: step, size: size, labelBelow: below).padding(10))
-        let width = max(size.width, 110) + 20
-        let y = target.midY - size.height / 2 - (below ? 34 : 10)
-        panel.setFrame(CGRect(x: target.midX - width / 2, y: y, width: width, height: size.height + 44), display: true)
+        // In the overlay's own coordinates (top-left origin).
+        let local = CGRect(x: target.minX - screen.frame.minX, y: screen.frame.maxY - target.maxY, width: target.width, height: target.height)
+        panel.contentView = NSHostingView(rootView: ShowMeOverlay(step: step, target: local, bounds: screen.frame.size))
+        panel.setFrame(screen.frame, display: true)
         if let view = panel.contentView {
             view.wantsLayer = true
             let expiry = CABasicAnimation(keyPath: "opacity")
@@ -306,41 +308,113 @@ final class ShowMe: ObservableObject {
             view.layer?.add(expiry, forKey: "marker-lease")
         }
         ring = panel; panel.orderFrontRegardless()
+        ringTarget = target
+        watchClicks()
     }
 
-    /// The orange ring Lantern draws around the control, with the step's label above it; it pulses
-/// gently so it catches the eye (still, with Reduce Motion).
-private struct ShowMeRing: View {
-    let step: Int
-    let size: CGSize
-    var labelBelow = false
-    @State private var pulse = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        VStack(spacing: 4) {
-            if !labelBelow { label }
-            RoundedRectangle(cornerRadius: 8).stroke(Color.orange, lineWidth: 4)
-                .frame(width: size.width, height: size.height)
-                .shadow(color: .orange.opacity(0.8), radius: pulse ? 10 : 4)
-                .scaleEffect(pulse ? 1.06 : 1)
-            if labelBelow { label }
-        }
-        .frame(maxWidth: .infinity, alignment: .top)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { pulse = true }
+    /// A click inside the ring is the step being done: the ring goes at once, and a moment later
+    /// (once what the click opened is on screen) Lantern looks for the next step, as Next does.
+    private func watchClicks() {
+        guard clickMonitor == nil else { return }
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            let at = NSEvent.mouseLocation
+            Task { @MainActor in self?.clicked(at) }
         }
     }
 
-    private var label: some View {
-        Text("Lantern · Step \(step)").font(.system(size: 12, weight: .bold))
-            .foregroundStyle(.black).padding(.horizontal, 7).padding(.vertical, 3)
-            .background(Color.orange, in: Capsule())
+    private func clicked(_ at: CGPoint) {
+        guard open, live, let target = ringTarget, target.insetBy(dx: -16, dy: -16).contains(at) else { return }
+        ring?.orderOut(nil); live = false; ringTarget = nil
+        cueRevision += 1
+        let revision = cueRevision, run = runId
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard open, runId == run, cueRevision == revision, phase == .showing else { return }
+            next()
+        }
     }
-}
 
-// MARK: The card
+    private func stopWatchingClicks() {
+        if let monitor = clickMonitor { NSEvent.removeMonitor(monitor) }
+        clickMonitor = nil
+        ringTarget = nil
+    }
+
+    /// What Lantern draws on the screen: an orange ring around the place (never smaller than 44
+    /// points), and a thick arrow pointing at it from the middle of the screen, with the step's
+    /// label at its tail, kept on screen. Both move gently to catch the eye (still, with Reduce
+    /// Motion).
+    private struct ShowMeOverlay: View {
+        let step: Int
+        let target: CGRect
+        let bounds: CGSize
+        @State private var pulse = false
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+        var body: some View {
+            let size = CGSize(width: max(44, target.width + 16), height: max(44, target.height + 16))
+            // Kept whole on screen, even around the Apple menu in the corner.
+            let ring = CGRect(x: min(max(target.midX - size.width / 2, 9), bounds.width - size.width - 9),
+                              y: min(max(target.midY - size.height / 2, 9), bounds.height - size.height - 9),
+                              width: size.width, height: size.height)
+            let center = CGPoint(x: ring.midX, y: ring.midY)
+            // Towards the middle of the screen, so the arrow and label are always on it.
+            var dx = bounds.width / 2 - center.x, dy = bounds.height / 2 - center.y
+            let length = max(1, (dx * dx + dy * dy).squareRoot())
+            (dx, dy) = length < 40 ? (0.6, 0.8) : (dx / length, dy / length)
+            let reach = max(ring.width, ring.height) / 2 + 14
+            let bob: CGFloat = pulse ? 10 : 0
+            let tip = CGPoint(x: center.x + dx * (reach + bob), y: center.y + dy * (reach + bob))
+            let tail = CGPoint(x: tip.x + dx * 170, y: tip.y + dy * 170)
+            let labelAt = CGPoint(x: min(max(tail.x + dx * 40, 110), bounds.width - 110), y: min(max(tail.y + dy * 26, 30), bounds.height - 30))
+            return ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 12).stroke(Color.black.opacity(0.55), lineWidth: 10)
+                    .frame(width: ring.width, height: ring.height).position(center)
+                RoundedRectangle(cornerRadius: 12).stroke(Color.orange, lineWidth: 6)
+                    .frame(width: ring.width, height: ring.height).position(center)
+                    .shadow(color: .orange.opacity(0.9), radius: pulse ? 16 : 6)
+                    .scaleEffect(pulse ? 1.08 : 1, anchor: UnitPoint(x: center.x / bounds.width, y: center.y / bounds.height))
+                Arrow(from: tail, to: tip).stroke(Color.black.opacity(0.55), style: StrokeStyle(lineWidth: 13, lineCap: .round, lineJoin: .round))
+                Arrow(from: tail, to: tip).stroke(Color.orange, style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+                    .shadow(color: .orange.opacity(0.7), radius: 6)
+                Text("Lantern · Step \(step)").font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(.black).padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(Capsule().fill(Color.orange))
+                    .overlay(Capsule().strokeBorder(Color.black.opacity(0.35)))
+                    .shadow(color: .black.opacity(0.4), radius: 6, y: 2)
+                    .fixedSize()
+                    .position(labelAt)
+            }
+            .frame(width: bounds.width, height: bounds.height)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true }
+            }
+        }
+    }
+
+    /// A line with an arrowhead at `to`.
+    private struct Arrow: Shape {
+        var from: CGPoint
+        var to: CGPoint
+
+        var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+            get { AnimatablePair(AnimatablePair(from.x, from.y), AnimatablePair(to.x, to.y)) }
+            set { (from, to) = (CGPoint(x: newValue.first.first, y: newValue.first.second), CGPoint(x: newValue.second.first, y: newValue.second.second)) }
+        }
+
+        func path(in rect: CGRect) -> Path {
+            let angle = atan2(to.y - from.y, to.x - from.x), head: CGFloat = 28, spread: CGFloat = .pi / 6
+            var p = Path()
+            p.move(to: from); p.addLine(to: to)
+            p.move(to: CGPoint(x: to.x - head * cos(angle - spread), y: to.y - head * sin(angle - spread)))
+            p.addLine(to: to)
+            p.addLine(to: CGPoint(x: to.x - head * cos(angle + spread), y: to.y - head * sin(angle + spread)))
+            return p
+        }
+    }
+
+    // MARK: The card
 
     static let cardWidth: CGFloat = 320
 
