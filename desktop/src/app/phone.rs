@@ -31,15 +31,11 @@ impl Lantern {
         if !next.busy {
             self.view.phone_sending = false;
         }
-        if paired {
-            self.view.phone_setup = false;
-        }
         self.model.phone = Some(next);
         if new_pairing {
             self.view.phone_reveal = true;
         }
         if fresh {
-            self.view.phone_setup = true;
             self.view.phone_reveal = true;
             self.windows.show_pill(true);
             self.set_panel(Some(PanelMode::October));
@@ -49,7 +45,6 @@ impl Lantern {
 
     pub(super) fn phone_action(&mut self, action: Action) {
         if action == Action::Open {
-            self.view.phone_setup = true;
             self.view.phone_reveal = true;
             self.set_panel(Some(PanelMode::October));
             if self.model.account.signed_in.is_some() && self.model.phone.as_ref().is_none_or(|s| s.pairing.is_none()) {
@@ -67,13 +62,11 @@ impl Lantern {
         let request = match action {
             Action::Open => unreachable!(),
             Action::Pair => {
-                self.view.phone_setup = true;
                 self.view.phone_reveal = true;
                 self.view.phone_copied = false;
                 json!({"type":"phone.pair"})
             }
             Action::Cancel => {
-                self.view.phone_setup = false;
                 self.view.phone_copied = false;
                 json!({"type":"phone.cancelPair"})
             }

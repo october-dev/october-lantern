@@ -44,7 +44,6 @@ pub struct Env {
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct UiState {
-    pub phone_setup: bool,
     #[serde(skip)]
     pub phone_reveal: bool,
     #[serde(skip)]

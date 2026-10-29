@@ -410,7 +410,6 @@ impl Lantern {
             }
         });
         self.model.phone = None;
-        self.view.phone_setup = false;
         self.view.phone_sending = false;
         self.model.account = Default::default();
         self.invalidate_october_models();
