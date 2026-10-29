@@ -76,12 +76,8 @@ pub enum Piece {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Failure {
     SignedOut,
-    /// Out of free questions or credit, or the plan doesn't include it: `upgrade` is where to
-    /// upgrade.
-    Plan {
-        message: String,
-        upgrade: String,
-    },
+    /// Out of free questions or credit, or the plan doesn't include it: the offers fix it.
+    Plan(String),
     Limited(String),
     Unavailable(String),
     NotDeployed,
@@ -104,7 +100,7 @@ impl std::fmt::Display for Failure {
             Self::SignedOut => "Sign in to October to ask.",
             Self::NotDeployed => "October's AI isn't available right now.",
             Self::Cancelled => "Cancelled.",
-            Self::Plan { message: m, .. }
+            Self::Plan(m)
             | Self::Limited(m)
             | Self::Unavailable(m)
             | Self::Invalid(m)
@@ -115,14 +111,11 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// Where Lantern's offers are bought: the Pro trial and Lantern Lifetime.
-pub const LANTERN: &str = "https://www.october.dev/lantern";
-
 impl Failure {
     /// What the failed answer offers.
     pub fn fix(&self) -> Option<Fix> {
         match self {
-            Self::Plan { upgrade, .. } => Some(Fix::Upgrade(upgrade.clone())),
+            Self::Plan(_) => Some(Fix::Upgrade),
             Self::OwnKey(_) => Some(Fix::EditKey),
             Self::OwnModel(_) => Some(Fix::OpenSettings),
             Self::Provider(_) => Some(Fix::UseOctober),
@@ -131,21 +124,14 @@ impl Failure {
     }
 }
 
-/// The server's upgrade link when it's October's own, else Lantern's offers page.
-fn upgrade_url(value: &Value) -> String {
-    value.as_str().and_then(|s| url::Url::parse(s).ok()).filter(october_url).map(|url| url.to_string()).unwrap_or_else(|| LANTERN.into())
-}
+/// Where Lantern's offers are bought, as a guest: it redirects to Stripe Checkout.
+const BUY: &str = "https://lantern.october.dev/buy";
 
-fn october_url(url: &url::Url) -> bool {
-    url.scheme() == "https" && matches!(url.host_str(), Some("www.october.dev" | "october.dev"))
-}
-
-/// The offers, from Lantern: `offer` "trial" or "lifetime" on October's page `base` (its own query
-/// replaced), or on Lantern's offers page when `base` isn't October's.
-pub fn offer_url(base: &str, offer: &str) -> String {
-    let mut url = url::Url::parse(base).ok().filter(october_url).unwrap_or_else(|| url::Url::parse(LANTERN).expect("a valid URL"));
-    url.set_query(Some(&format!("offer={offer}&ref=app")));
-    url.set_fragment(None);
+/// Buying `offer` ("trial" or "lifetime") from Lantern. `email`, the signed-in October account's,
+/// fills in Stripe's (fixed) email, so the purchase lands on that account.
+pub fn offer_url(offer: &str, email: Option<&str>) -> String {
+    let mut url = url::Url::parse(BUY).expect("a valid URL");
+    url.query_pairs_mut().append_pair("offer", offer).append_pair("ref", "app").extend_pairs(email.map(|email| ("email", email)));
     url.to_string()
 }
 
@@ -321,10 +307,7 @@ pub fn failure(status: u16, body: &[u8]) -> Failure {
     let error = serde_json::from_slice::<Value>(body).ok().map(|value| value["error"].clone()).unwrap_or_default();
     let code = error["code"].as_str().unwrap_or("");
     let message = error["message"].as_str().map(str::to_string);
-    let plan = |default: &str| Failure::Plan {
-        message: message.clone().unwrap_or_else(|| default.into()),
-        upgrade: upgrade_url(&error["upgradeUrl"]),
-    };
+    let plan = |default: &str| Failure::Plan(message.clone().unwrap_or_else(|| default.into()));
     let said = |default: &str| message.clone().unwrap_or_else(|| default.into());
     // Your own key's problems first: their statuses (400, 402, 429) mean other things otherwise.
     match code {
@@ -426,19 +409,13 @@ mod tests {
     fn failures_map_like_the_mac() {
         let body = |code: &str, message: &str| json!({"error": {"code": code, "message": message}}).to_string().into_bytes();
         assert_eq!(failure(401, b""), Failure::SignedOut);
-        let plan = |message: &str| Failure::Plan { message: message.into(), upgrade: LANTERN.into() };
+        let plan = |message: &str| Failure::Plan(message.into());
         assert_eq!(failure(403, &body("plan_required", "")), plan(""));
         assert_eq!(failure(402, b"{}"), plan("You've used this period's October AI credit."));
         assert_eq!(failure(429, &body("free_limit", "Out of free questions")), plan("Out of free questions"));
         assert_eq!(failure(429, &body("rate_limited", "Slow down")), Failure::Limited("Slow down".into()), "not a plan problem");
-        let ours = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://www.october.dev/pricing?from=lantern"}});
-        let upgrade = |failure: Failure| match failure.fix() {
-            Some(Fix::Upgrade(url)) => url,
-            other => panic!("{other:?}"),
-        };
-        assert_eq!(upgrade(failure(402, ours.to_string().as_bytes())), "https://www.october.dev/pricing?from=lantern");
-        let theirs = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://evil.example/pay"}});
-        assert_eq!(upgrade(failure(402, theirs.to_string().as_bytes())), LANTERN, "only October's own links");
+        let linked = json!({"error": {"code": "credit_exhausted", "upgradeUrl": "https://lantern.october.dev/#pricing"}});
+        assert_eq!(failure(402, linked.to_string().as_bytes()).fix(), Some(Fix::Upgrade), "the app's own offers, not the server's link");
         assert_eq!(failure(429, &body("free_limit", "")), plan(""), "the server's message as it is");
         assert_eq!(
             failure(429, br#"{"error":{"code":"free_limit"}}"#),
@@ -453,7 +430,7 @@ mod tests {
         let body = |code: &str, message: Option<&str>| json!({"error": {"code": code, "message": message}}).to_string().into_bytes();
         let needs = failure(402, &body("byok_requires_plan", None));
         assert_eq!(needs.to_string(), "Your own key needs Lantern Lifetime or the Pro trial.");
-        assert_eq!(needs.fix(), Some(Fix::Upgrade(LANTERN.into())));
+        assert_eq!(needs.fix(), Some(Fix::Upgrade));
         let cases = [
             (
                 400,
@@ -489,14 +466,12 @@ mod tests {
     }
 
     #[test]
-    fn offers_open_lanterns_page_on_october_only() {
-        assert_eq!(offer_url(LANTERN, "trial"), "https://www.october.dev/lantern?offer=trial&ref=app");
-        assert_eq!(offer_url(LANTERN, "lifetime"), "https://www.october.dev/lantern?offer=lifetime&ref=app");
-        assert_eq!(offer_url("https://october.dev/lantern?from=x#top", "trial"), "https://october.dev/lantern?offer=trial&ref=app");
-        assert_eq!(offer_url("https://evil.example/lantern", "lifetime"), "https://www.october.dev/lantern?offer=lifetime&ref=app");
-        assert_eq!(offer_url("http://www.october.dev/lantern", "trial"), "https://www.october.dev/lantern?offer=trial&ref=app");
+    fn offers_are_bought_as_a_guest_with_the_signed_in_email() {
+        assert_eq!(offer_url("trial", None), "https://lantern.october.dev/buy?offer=trial&ref=app");
+        assert_eq!(offer_url("lifetime", None), "https://lantern.october.dev/buy?offer=lifetime&ref=app");
+        assert_eq!(offer_url("trial", Some("a+b@x.com")), "https://lantern.october.dev/buy?offer=trial&ref=app&email=a%2Bb%40x.com");
         let none = json!({"error": {"code": "free_limit"}});
-        assert_eq!(failure(429, none.to_string().as_bytes()).fix(), Some(Fix::Upgrade(LANTERN.into())));
+        assert_eq!(failure(429, none.to_string().as_bytes()).fix(), Some(Fix::Upgrade));
     }
 
     #[test]

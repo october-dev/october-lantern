@@ -7,27 +7,32 @@ final class AskRequestTests: XCTestCase {
         OctoberAI.failure(status: status, data: try! JSONSerialization.data(withJSONObject: ["error": error]))
     }
 
-    func testPlanLimitsOfferTheTrialAndLifetimeOnlyOnOctober() {
-        let lantern = URL(string: "https://www.october.dev/lantern")!
-        func upgrade(_ f: OctoberAI.Failure) -> URL? { if case .upgrade(let url)? = f.fix { url } else { nil } }
-        XCTAssertEqual(upgrade(failure(429, ["code": "free_limit", "message": "Out"])), lantern)
-        XCTAssertEqual(upgrade(failure(402, ["code": "credit_exhausted", "upgradeUrl": "https://www.october.dev/lantern"])), lantern)
-        XCTAssertEqual(upgrade(failure(402, ["code": "credit_exhausted", "upgradeUrl": "https://evil.example/lantern"])), lantern)
-        XCTAssertEqual(upgrade(failure(403, ["code": "plan_required"])), lantern)
+    func testPlanLimitsOfferTheTrialAndLifetime() {
+        XCTAssertEqual(failure(429, ["code": "free_limit", "message": "Out"]).fix, .upgrade)
+        XCTAssertEqual(failure(402, ["code": "credit_exhausted", "upgradeUrl": "https://lantern.october.dev/#pricing"]).fix, .upgrade)
+        XCTAssertEqual(failure(403, ["code": "plan_required"]).fix, .upgrade)
         XCTAssertNil(failure(429, ["code": "rate_limited"]).fix, "slow down isn't a plan problem")
         XCTAssertNil(failure(401, [:]).fix)
         XCTAssertEqual(failure(429, ["code": "free_limit", "message": "Out"]).errorDescription, "Out")
         XCTAssertFalse(failure(429, ["code": "free_limit"]).errorDescription!.contains("5"), "the number is the server's")
 
-        XCTAssertEqual(OctoberAI.offerURL(.trial).absoluteString, "https://www.october.dev/lantern?offer=trial&ref=app")
-        XCTAssertEqual(OctoberAI.offerURL(.lifetime, base: URL(string: "https://october.dev/lantern?from=x#top")!).absoluteString,
-                       "https://october.dev/lantern?offer=lifetime&ref=app")
+    }
+
+    func testOffersAreBoughtAsAGuestWithTheSignedInEmail() {
+        XCTAssertEqual(OctoberAI.offerURL(.trial, email: nil).absoluteString, "https://lantern.october.dev/buy?offer=trial&ref=app")
+        XCTAssertEqual(OctoberAI.offerURL(.lifetime, email: nil).absoluteString, "https://lantern.october.dev/buy?offer=lifetime&ref=app")
+        let url = OctoberAI.offerURL(.trial, email: "a+b@x.com")
+        XCTAssertEqual(url.absoluteString, "https://lantern.october.dev/buy?offer=trial&ref=app&email=a%2Bb@x.com")
+        XCTAssertEqual(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.last, URLQueryItem(name: "email", value: "a+b@x.com"))
+    }
+
+    func testAnOlderUpgradeLinkStillReadsAsTheOffers() throws {
+        let saved = Data(#"{"upgrade":{"_0":"https:\/\/www.october.dev\/lantern"}}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(OctoberAI.Fix.self, from: saved), .upgrade)
     }
 
     func testOwnKeyFailuresOfferTheRightFix() {
-        let lantern = URL(string: "https://www.october.dev/lantern")!
-        XCTAssertEqual(failure(402, ["code": "byok_requires_plan", "message": "Needs Lifetime", "upgradeUrl": "https://www.october.dev/lantern"]).fix,
-                       .upgrade(lantern))
+        XCTAssertEqual(failure(402, ["code": "byok_requires_plan", "message": "Needs Lifetime"]).fix, .upgrade)
         XCTAssertEqual(failure(400, ["code": "byok_key_invalid", "message": "Bad key"]).fix, .editKey)
         XCTAssertEqual(failure(400, ["code": "byok_key_invalid", "message": "Bad key"]).errorDescription, "Bad key")
         XCTAssertEqual(failure(400, ["code": "byok_model_unavailable"]).fix, .openSettings)

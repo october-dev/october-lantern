@@ -561,7 +561,7 @@ fn own_key(ui: &mut Ui, cx: &mut Ctx) {
         if signed_in && cx.model.lantern_rights().is_some_and(|rights| !rights.byok) {
             caption(ui, "Your own key needs Lantern Lifetime or the Pro trial; until then October's AI answers.");
             ui.add_space(2.0);
-            super::assistant::offer_buttons(ui, cx, crate::october_ai::LANTERN, "own_key");
+            super::assistant::offer_buttons(ui, cx, "own_key");
             ui.add_space(10.0);
         }
     });

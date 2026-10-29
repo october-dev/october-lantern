@@ -294,13 +294,15 @@ pub(super) fn via(ui: &mut Ui, provider: &str) {
         .on_hover_text(format!("Your own {provider} key answered; {provider} bills you for it."));
 }
 
-/// Lantern's two offers (Swift `OfferButtons`): the Pro trial and Lifetime, on October's page `url`.
-pub(super) fn offer_buttons(ui: &mut Ui, cx: &mut Ctx, url: &str, from: &'static str) {
+/// Lantern's two offers (Swift `OfferButtons`): the Pro trial and Lifetime, bought on Stripe for
+/// the signed-in account's email.
+pub(super) fn offer_buttons(ui: &mut Ui, cx: &mut Ctx, from: &'static str) {
+    let email = cx.model.account.signed_in.as_ref().map(|account| account.email.trim()).filter(|email| email.contains('@'));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         for (title, offer) in [("Start free trial ↗", "trial"), ("Buy Lifetime ↗", "lifetime")] {
-            if c::secondary_button(ui, title).on_hover_text("Opens October in your browser").clicked() {
-                cx.emit(UiAction::OpenUpgrade { url: crate::october_ai::offer_url(url, offer), from, offer });
+            if c::secondary_button(ui, title).on_hover_text("Opens Stripe checkout in your browser").clicked() {
+                cx.emit(UiAction::OpenUpgrade { url: crate::october_ai::offer_url(offer, email), from, offer });
             }
         }
     });
@@ -310,7 +312,7 @@ pub(super) fn offer_buttons(ui: &mut Ui, cx: &mut Ctx, url: &str, from: &'static
 /// (`retry`, this turn asked again).
 pub(super) fn fix_buttons(ui: &mut Ui, cx: &mut Ctx, fix: &Fix, from: &'static str, retry: UiAction) {
     match fix {
-        Fix::Upgrade(url) => offer_buttons(ui, cx, url, from),
+        Fix::Upgrade => offer_buttons(ui, cx, from),
         Fix::EditKey | Fix::OpenSettings => {
             let title = if *fix == Fix::EditKey { "Edit key" } else { "Open Settings" };
             if c::secondary_button(ui, title).on_hover_text("Your own AI key, in Settings › October").clicked() {
@@ -968,24 +970,26 @@ mod tests {
         let turn = &mut fixture.model.assistant.turns[0];
         turn.failed = true;
         turn.via = Some("OpenAI".into());
-        turn.fix = Some(Fix::Upgrade(crate::october_ai::LANTERN.into()));
+        turn.fix = Some(Fix::Upgrade);
         let id = turn.id;
         let mut view = UiState::default();
         let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
         let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(has(&texts, "via OpenAI") && !has(&texts, "Upgrade to October Pro ↗"));
+        fixture.model.account.signed_in.as_mut().unwrap().email = "a+b@x.com".into();
         assert_eq!(
             click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Start free trial ↗"),
             vec![UiAction::OpenUpgrade {
-                url: "https://www.october.dev/lantern?offer=trial&ref=app".into(),
+                url: "https://lantern.october.dev/buy?offer=trial&ref=app&email=a%2Bb%40x.com".into(),
                 from: "assistant",
                 offer: "trial"
             }]
         );
+        fixture.model.account.signed_in = None;
         assert_eq!(
             click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Buy Lifetime ↗"),
             vec![UiAction::OpenUpgrade {
-                url: "https://www.october.dev/lantern?offer=lifetime&ref=app".into(),
+                url: "https://lantern.october.dev/buy?offer=lifetime&ref=app".into(),
                 from: "assistant",
                 offer: "lifetime"
             }]
