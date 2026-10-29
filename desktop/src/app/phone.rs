@@ -45,6 +45,9 @@ impl Lantern {
             self.view.phone_setup = true;
             self.view.phone_reveal = true;
             self.set_panel(Some(PanelMode::October));
+            if self.model.account.signed_in.is_some() && self.model.phone.as_ref().is_none_or(|s| s.pairing.is_none()) {
+                self.phone_action(Action::Pair);
+            }
             return;
         }
         if self.model.account.signed_in.is_none() {
@@ -143,6 +146,19 @@ mod tests {
         assert_eq!(app.model.panel, Some(PanelMode::October));
         assert!(app.model.phone.is_none());
         assert!(sent(&app).is_empty());
+    }
+    #[test]
+    fn connect_cta_creates_one_intent_and_reopening_preserves_a_live_comparison() {
+        let mut app = app();
+        app.phone_action(Action::Open);
+        assert_eq!(app.model.panel, Some(PanelMode::October));
+        assert_eq!(sent(&app), vec![json!({"type":"phone.pair"})]);
+        app.phone_action(Action::Open);
+        assert!(sent(&app).is_empty(), "a request is already in flight");
+        app.phone_event(confirmation("123456"));
+        app.phone_action(Action::Open);
+        assert!(sent(&app).is_empty(), "opening the panel must not replace the phone's code");
+        assert_eq!(app.model.phone.as_ref().unwrap().pairing.as_ref().unwrap().code.as_deref(), Some("123456"));
     }
     #[test]
     fn pairing_secret_is_absent_from_model_serialization_and_debug_output() {

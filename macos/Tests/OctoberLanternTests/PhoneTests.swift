@@ -47,7 +47,13 @@ final class PhoneTests: XCTestCase {
         XCTAssertEqual(PhoneModel.recovery(for: nil, outcome: "denied"), "Start again")
     }
     func testQRIsReadableAndContainsTheFullHTTPSURL() throws {
-        let link = "https://october.dev/pair#" + Data(String(repeating: "example-test-payload", count: 25).utf8).base64EncodedString()
+        // Synthetic v2 payload, with the same UUID/key lengths as the phone contract.
+        let payload: [String: Any] = ["v": 2, "hostId": "00000000-0000-4000-8000-000000000001",
+            "intentId": "00000000-0000-4000-8000-000000000002", "hostStatic": String(repeating: "a", count: 43),
+            "secret": String(repeating: "b", count: 43), "exp": 9999999999999]
+        let fragment = try JSONSerialization.data(withJSONObject: payload).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        let link = "https://october.dev/pair#" + fragment
         let image = try XCTUnwrap(PhoneCard.qrImage(link))
         let cg = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
         let request = VNDetectBarcodesRequest(); request.symbologies = [.qr]
@@ -57,11 +63,11 @@ final class PhoneTests: XCTestCase {
     func testPhoneViewsRenderAtTheRealCardWidthWithoutAnEngine() throws {
         let model = PhoneModel()
         let account = OctoberAccount.detached(signedIn: true)
-        for (name, state) in [("install", try state()), ("scan", try state()), ("confirm", try state(code: "123456")),
+        for (name, state) in [("ready", try state()), ("scan", try state()), ("confirm", try state(code: "123456")),
                                ("finishing", try state(code: "123456", finishing: true)), ("done", try state(outcome: "paired")),
                                ("denied", try state(outcome: "denied"))] {
-            model.reset(); model.receive(state); model.setup = name == "install"
-            if name == "install" {
+            model.reset(); model.receive(state)
+            if name == "ready" {
                 let empty = try JSONDecoder().decode(PhoneModel.State.self, from: Data("""
                 {"status":"offline","devices":[],"busy":false,"installUrl":"https://example.com/test-install"}
                 """.utf8))

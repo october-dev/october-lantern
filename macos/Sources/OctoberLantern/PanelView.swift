@@ -140,6 +140,9 @@ struct PanelView: View {
         Button("Connect your phone") {
             PhoneModel.shared.setup = true
             model.panel = .october
+            if OctoberAccount.shared.signedIn && PhoneModel.shared.state?.pairing == nil {
+                PhoneModel.shared.pair()
+            }
         }
         .buttonStyle(SecondaryButtonStyle())
         .padding(.bottom, 10)

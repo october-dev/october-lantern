@@ -365,7 +365,7 @@ fn expired_phone_code_is_not_copied_and_signed_out_users_get_account_guidance() 
 }
 
 #[test]
-fn getting_the_app_and_showing_its_pairing_code_are_distinct_actions() {
+fn pair_creates_a_code_directly_and_install_is_only_a_link_beside_the_qr() {
     let ctx = egui::Context::default();
     theme::install(&ctx);
     let assets = Assets::load(&ctx);
@@ -373,11 +373,26 @@ fn getting_the_app_and_showing_its_pairing_code_are_distinct_actions() {
     let phone = f.model.phone.as_mut().unwrap();
     phone.pairing = None;
     phone.install_url = Some("https://example.com/phone-install".into());
-    f.view.phone_setup = true;
     render(&ctx, &assets, &mut f, Vec::new());
     let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
-    assert!(find_text(&output, "Get the October app").is_some());
+    assert!(find_text(&output, "Show pairing code").is_none());
     assert!(find_text(&output, "Open your iPhone Camera and point it here").is_none());
-    let pos = text_rect(&output, "Show pairing code").center();
+    let pos = text_rect(&output, "Pair").center();
     assert_eq!(click(&ctx, &assets, &mut f, pos), vec![UiAction::Phone(crate::model::phone::Action::Pair)]);
+
+    let phone = f.model.phone.as_mut().unwrap();
+    phone.pairing = Some(crate::model::phone::Pairing {
+        intent_id: "test-intent".into(),
+        qr: Some("https://october.dev/pair#synthetic-test-only".into()),
+        expires_at: 9999999999999_f64,
+        ..Default::default()
+    });
+    // Let layout settle; the install action never creates or replaces a pairing intent.
+    render(&ctx, &assets, &mut f, Vec::new());
+    let (output, actions) = render(&ctx, &assets, &mut f, Vec::new());
+    assert!(actions.is_empty());
+    assert!(find_text(&output, "Open your iPhone Camera and point it here").is_some());
+    assert!(find_text(&output, "Show pairing code").is_none());
+    let pos = text_rect(&output, "Get the October app").center();
+    assert_eq!(click(&ctx, &assets, &mut f, pos), vec![UiAction::OpenUrl("https://example.com/phone-install".into())]);
 }

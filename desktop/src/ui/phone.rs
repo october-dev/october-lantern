@@ -29,11 +29,10 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
             ui.spacing_mut().item_spacing.y = 10.0;
             ui.horizontal(|ui| {
                 c::label(ui, "Phone", 14.0, Weight::Semibold, t::INK);
-                if !cx.view.phone_setup
-                    && phone.is_none_or(|s| s.pairing.is_none() && s.outcome.as_deref() != Some("denied"))
+                if phone.is_none_or(|s| s.pairing.is_none() && s.outcome.as_deref() != Some("denied"))
                     && ui.add_enabled_ui(!busy, |ui| c::secondary_button(ui, "Pair")).inner.clicked()
                 {
-                    cx.view.phone_setup = true;
+                    action(cx, Action::Pair);
                 }
             });
             c::label(ui, "See waiting agents and reply from your phone.", 12.0, Weight::Regular, t::MUTED);
@@ -61,38 +60,15 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                     Weight::Regular,
                     t::MUTED,
                 );
-            } else if cx.view.phone_setup && phone.is_none_or(|s| s.error_code.is_none() && s.outcome.as_deref() != Some("denied")) {
-                c::label(ui, "1 · Get the October app", 13.0, Weight::Semibold, t::INK);
-                c::label(
-                    ui,
-                    format!("Install the October iPhone beta with TestFlight, then sign in to the phone with {email}."),
-                    11.5,
-                    Weight::Regular,
-                    t::MUTED,
-                );
-                if let Some(url) = phone.and_then(|s| s.install_url.as_deref()) {
-                    if c::secondary_button(ui, "Get the October app").clicked() {
-                        cx.emit(UiAction::OpenUrl(url.into()));
-                    }
-                } else {
-                    c::label(ui, "Loading the October app's install link…", 11.5, Weight::Regular, t::MUTED);
-                }
-                c::label(
-                    ui,
-                    "Already have the app? Sign in with the account above, then show your pairing code.",
-                    11.5,
-                    Weight::Regular,
-                    t::MUTED,
-                );
-                if ui.add_enabled_ui(!busy && phone.is_some(), |ui| c::amber_button(ui, "Show pairing code")).inner.clicked() {
-                    action(cx, Action::Pair);
-                }
-                if ui.add_enabled_ui(!busy, |ui| c::secondary_button(ui, "Cancel")).inner.clicked() {
-                    cx.view.phone_setup = false;
-                }
             }
             if busy {
-                c::label(ui, "Connecting…", 11.5, Weight::Regular, t::MUTED);
+                c::label(
+                    ui,
+                    if phone.is_none_or(|s| s.pairing.is_none()) { "Creating a pairing code…" } else { "Connecting…" },
+                    11.5,
+                    Weight::Regular,
+                    t::MUTED,
+                );
             }
             if let Some(message) = cx.view.phone_error.as_deref().or(phone.and_then(|s| s.message.as_deref())) {
                 c::label(ui, message, 11.5, Weight::Regular, t::AMBER);
@@ -170,7 +146,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
 }
 
 fn scan(ui: &mut Ui, cx: &mut Ctx, p: &Pairing, email: &str, busy: bool) {
-    c::label(ui, "2 · Scan to pair", 13.0, Weight::Semibold, t::INK);
+    c::label(ui, "Scan to pair", 13.0, Weight::Semibold, t::INK);
     let remaining = p.remaining(cx.env.now_ms);
     if remaining > 0 {
         c::label(ui, "Open your iPhone Camera and point it here", 12.5, Weight::Medium, t::INK);
@@ -195,11 +171,23 @@ fn scan(ui: &mut Ui, cx: &mut Ctx, p: &Pairing, email: &str, busy: bool) {
             action(cx, Action::Cancel);
         }
     });
+    c::label(
+        ui,
+        "Need the app? Install October with TestFlight, sign in, then scan this QR. If it expires, choose New code.",
+        11.5,
+        Weight::Regular,
+        t::MUTED,
+    );
+    if let Some(url) = cx.model.phone.as_ref().and_then(|s| s.install_url.as_deref()) {
+        if c::secondary_button(ui, "Get the October app").clicked() {
+            cx.emit(UiAction::OpenUrl(url.into()));
+        }
+    }
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
 }
 
 fn confirm(ui: &mut Ui, cx: &mut Ctx, p: &Pairing, busy: bool) {
-    c::label(ui, "3 · Confirm your phone", 13.0, Weight::Semibold, t::INK);
+    c::label(ui, "Confirm your phone", 13.0, Weight::Semibold, t::INK);
     c::label(ui, p.label.as_deref().unwrap_or("Your phone"), 13.0, Weight::Medium, t::INK);
     c::label(ui, if p.platform.as_deref() == Some("ios") { "iPhone" } else { "Phone" }, 11.5, Weight::Regular, t::MUTED);
     if let Some(code) = &p.code {

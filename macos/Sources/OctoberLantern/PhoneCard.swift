@@ -68,7 +68,7 @@ final class PhoneModel: ObservableObject {
         localError = nil
         if send() { sending = true } else { localError = "Lantern's connection is restarting. Try again when it is ready." }
     }
-    func pair() { perform { engine?.phonePair() ?? false } }
+    func pair() { setup = true; perform { engine?.phonePair() ?? false } }
     func retry() { perform { engine?.phoneRetry() ?? false } }
     func cancelPairing() { perform { engine?.phoneCancelPair() ?? false }; setup = false }
     func decide(_ p: Pairing, _ allow: Bool) {
@@ -105,8 +105,8 @@ struct PhoneCard: View {
             HStack {
                 Label("Phone", systemImage: "iphone").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
                 Spacer()
-                if model.state?.pairing == nil && !model.setup && model.state?.outcome != "denied" {
-                    Button("Pair") { model.setup = true }.buttonStyle(SecondaryButtonStyle()).disabled(model.busy)
+                if model.state?.pairing == nil && model.state?.outcome != "denied" {
+                    Button("Pair") { model.pair() }.buttonStyle(SecondaryButtonStyle()).disabled(model.busy)
                 }
             }
             Text("See waiting agents and reply from your phone.").font(.system(size: 12)).foregroundStyle(Theme.muted)
@@ -121,11 +121,12 @@ struct PhoneCard: View {
                 Label("iPhone connected", systemImage: "checkmark.circle.fill").foregroundStyle(Theme.green)
                 Text("You'll get agent alerts and can reply from your phone. Allow notifications in October on your iPhone.")
                     .foregroundStyle(Theme.muted)
-            } else if model.setup && model.state?.errorCode == nil && model.state?.outcome != "denied" {
-                install
             }
             if model.busy {
-                HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Connecting…").foregroundStyle(Theme.muted) }
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(model.state?.pairing == nil ? "Creating a pairing code…" : "Connecting…").foregroundStyle(Theme.muted)
+                }
             }
             if let message = model.localError ?? model.state?.message {
                 Text(message).foregroundStyle(Theme.amber).textSelection(.enabled)
@@ -163,34 +164,30 @@ struct PhoneCard: View {
     }
 
     private var email: String { account.session?.email ?? "the same October account as this computer" }
-    private var install: some View {
+    private var getApp: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("1 · Get the October app").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-            Text("Install the October iPhone beta with TestFlight, then sign in to the phone with \(email).")
-                .foregroundStyle(Theme.muted).textSelection(.enabled)
+            Text("Need the app? Install October with TestFlight, sign in, then scan this QR. If it expires, choose New code.")
+                .foregroundStyle(Theme.muted)
             if let url = model.state?.installUrl {
                 Button("Get the October app") { NSWorkspace.shared.open(url) }.buttonStyle(SecondaryButtonStyle())
             } else {
                 Text("Loading the October app's install link…").foregroundStyle(Theme.muted)
             }
-            Text("Already have the app? Sign in with the account above, then show your pairing code.")
-                .foregroundStyle(Theme.muted)
-            Button("Show pairing code") { model.pair() }
-                .buttonStyle(AmberButtonStyle()).disabled(model.busy || model.state == nil)
-            Button("Cancel") { model.setup = false }.buttonStyle(SecondaryButtonStyle()).disabled(model.busy)
         }
     }
 
     private func scan(_ p: PhoneModel.Pairing) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { tick in
             VStack(alignment: .leading, spacing: 10) {
-                Text("2 · Scan to pair").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+                Text("Scan to pair").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                 if p.remaining(at: tick.date) > 0 {
                     Text("Open your iPhone Camera and point it here").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.ink)
                     if let qr = p.qr, let image = Self.qrImage(qr) {
                         Image(nsImage: image).interpolation(.none).resizable().frame(width: 240, height: 240)
                             .padding(10).background(.white, in: RoundedRectangle(cornerRadius: 10))
                             .frame(maxWidth: .infinity).accessibilityLabel("Pair Lantern with the October phone app")
+                    } else {
+                        Text("The QR couldn't be drawn. Use Copy pairing link instead.").foregroundStyle(Theme.amber)
                     }
                     Text("Or use the scanner in the October app, or paste the pairing link.").foregroundStyle(Theme.muted)
                     Text("Expires in \(p.remaining(at: tick.date) / 60):\(String(format: "%02d", p.remaining(at: tick.date) % 60))")
@@ -206,13 +203,14 @@ struct PhoneCard: View {
                     Button("New code") { clearCopiedLink(); model.pair() }.buttonStyle(SecondaryButtonStyle())
                     Button("Cancel") { clearCopiedLink(); model.cancelPairing() }.buttonStyle(SecondaryButtonStyle())
                 }.disabled(model.busy)
+                getApp
             }
         }
     }
 
     private func confirm(_ p: PhoneModel.Pairing, code: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("3 · Confirm your phone").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text("Confirm your phone").font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
             Text(p.label ?? "Your phone").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
             Text(p.platform == "ios" ? "iPhone" : p.platform ?? "Phone").foregroundStyle(Theme.muted)
             Text(code.prefix(3) + " " + code.suffix(3)).font(.system(size: 32, weight: .semibold, design: .monospaced))
