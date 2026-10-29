@@ -169,16 +169,13 @@ struct PhoneCard: View {
             Text("Install the October iPhone beta with TestFlight, then sign in to the phone with \(email).")
                 .foregroundStyle(Theme.muted).textSelection(.enabled)
             if let url = model.state?.installUrl {
-                if let image = Self.qrImage(url.absoluteString) {
-                    Image(nsImage: image).interpolation(.none).resizable().frame(width: 180, height: 180)
-                        .padding(10).background(.white, in: RoundedRectangle(cornerRadius: 10))
-                        .accessibilityLabel("Scan to install the October app with TestFlight")
-                }
                 Button("Get the October app") { NSWorkspace.shared.open(url) }.buttonStyle(SecondaryButtonStyle())
             } else {
                 Text("Loading the October app's install link…").foregroundStyle(Theme.muted)
             }
-            Button("I've installed it and signed in") { model.pair() }
+            Text("Already have the app? Sign in with the account above, then show your pairing code.")
+                .foregroundStyle(Theme.muted)
+            Button("Show pairing code") { model.pair() }
                 .buttonStyle(AmberButtonStyle()).disabled(model.busy || model.state == nil)
             Button("Cancel") { model.setup = false }.buttonStyle(SecondaryButtonStyle()).disabled(model.busy)
         }

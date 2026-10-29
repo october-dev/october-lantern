@@ -71,15 +71,20 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                     t::MUTED,
                 );
                 if let Some(url) = phone.and_then(|s| s.install_url.as_deref()) {
-                    qr(ui, url, 180.0);
                     if c::secondary_button(ui, "Get the October app").clicked() {
                         cx.emit(UiAction::OpenUrl(url.into()));
                     }
                 } else {
                     c::label(ui, "Loading the October app's install link…", 11.5, Weight::Regular, t::MUTED);
                 }
-                if ui.add_enabled_ui(!busy && phone.is_some(), |ui| c::amber_button(ui, "I've installed it and signed in")).inner.clicked()
-                {
+                c::label(
+                    ui,
+                    "Already have the app? Sign in with the account above, then show your pairing code.",
+                    11.5,
+                    Weight::Regular,
+                    t::MUTED,
+                );
+                if ui.add_enabled_ui(!busy && phone.is_some(), |ui| c::amber_button(ui, "Show pairing code")).inner.clicked() {
                     action(cx, Action::Pair);
                 }
                 if ui.add_enabled_ui(!busy, |ui| c::secondary_button(ui, "Cancel")).inner.clicked() {

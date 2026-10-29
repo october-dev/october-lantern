@@ -363,3 +363,21 @@ fn expired_phone_code_is_not_copied_and_signed_out_users_get_account_guidance() 
     assert!(find_text(&output, "Phone").is_none());
     assert!(find_text(&output, "Your phone uses the same October account. Sign in above to connect it.").is_some());
 }
+
+#[test]
+fn getting_the_app_and_showing_its_pairing_code_are_distinct_actions() {
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let assets = Assets::load(&ctx);
+    let mut f = phone_fixture();
+    let phone = f.model.phone.as_mut().unwrap();
+    phone.pairing = None;
+    phone.install_url = Some("https://example.com/phone-install".into());
+    f.view.phone_setup = true;
+    render(&ctx, &assets, &mut f, Vec::new());
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    assert!(find_text(&output, "Get the October app").is_some());
+    assert!(find_text(&output, "Open your iPhone Camera and point it here").is_none());
+    let pos = text_rect(&output, "Show pairing code").center();
+    assert_eq!(click(&ctx, &assets, &mut f, pos), vec![UiAction::Phone(crate::model::phone::Action::Pair)]);
+}

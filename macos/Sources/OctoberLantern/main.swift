@@ -331,6 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.windows.pillVisible { self.windows.hidePill() } else { self.windows.showPill() }
         }
         item("Routines") { [weak self] in self?.show(.routines) }
+        item("October…") { [weak self] in self?.show(.october) }
         item("Settings…", ",") { [weak self] in self?.showSettings() }
         if Updater.shared.available {
             item("Check for Updates…") { Updater.shared.checkForUpdates() }

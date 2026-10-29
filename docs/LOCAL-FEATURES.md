@@ -62,9 +62,9 @@ On Mac/Linux, `python3 scripts/smoke-driver-recovery.py path/to/debug/lantern-en
 
 ## Connect your phone
 
-Both apps expose **October panel → Phone → Pair**. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in and “Your phone uses the same October account” first. The phone section appears after sign-in.
+Both apps expose **October panel → Phone → Pair**. On Mac, **October…** is available in both the menu bar icon and the pill’s right-click menu. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in and “Your phone uses the same October account” first. The phone section appears after sign-in.
 
-1. **Get the October app:** install the iPhone beta using the TestFlight QR/link, then sign in with the email displayed in Lantern. The install URL is defined once in `protocol/phone-app.json`.
+1. **Get the October app:** install the iPhone beta using the TestFlight link, then sign in with the email displayed in Lantern. The install URL is defined once in `protocol/phone-app.json`. **Show pairing code** advances after installation/sign-in; the install step has no QR.
 2. **Scan to pair:** “Open your iPhone Camera and point it here.” The large QR contains October's HTTPS universal link. The October scanner and **Copy pairing link** are alternatives. Expiry counts down; **New code** replaces it in one click.
 3. **Confirm your phone:** the panel comes forward with the phone's name/platform, a large monospace code, “Make sure this matches your phone”, **Approve** and **Deny**. Approval is tied to that exact comparison. An expired/disconnected comparison cannot approve a later phone.
 4. **iPhone connected:** see waiting agents, receive agent alerts (with notifications allowed on the phone) and reply. A phone is listed as paired only after acknowledgement and server finalization.
