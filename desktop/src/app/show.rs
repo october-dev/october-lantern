@@ -77,9 +77,15 @@ impl Lantern {
             self.show("Type what you want Lantern to show you");
             return;
         }
+        let scale = self.guide.scale;
         self.stop_show();
-        self.guide =
-            Guide { run: uuid::Uuid::new_v4().to_string(), question, cancelled: Arc::new(AtomicBool::new(false)), ..Default::default() };
+        self.guide = Guide {
+            run: uuid::Uuid::new_v4().to_string(),
+            question,
+            scale,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            ..Default::default()
+        };
         let _ = self.engine.send(&json!({"type":"show.start","runId":self.guide.run}));
         self.model.guide = Some(json!({"phase":"looking","question":self.guide.question,"step":1}));
         self.set_panel(Some(PanelMode::ShowMe));
@@ -160,10 +166,9 @@ impl Lantern {
                         && expires > now
                         && let Some(display) = self.guide.display
                         && let Some(target) = target_box(&state).and_then(|r| display.target(self.guide.size, r))
-                        && let Some(observer) = &self.guide.observer
+                        && self.guide.observer.is_some()
                     {
                         let title = format!("October Lantern · Show me {}", self.guide.capture_id);
-                        observer.point(Some(native::Cue { target, expires_at: expires, title: title.clone() }));
                         self.guide.ring = Some(Ring {
                             display,
                             target,
@@ -208,6 +213,7 @@ impl Lantern {
                 return;
             }
         };
+        self.guide.display = Some(captured.display);
         if !captured.stable {
             let _ = self.engine.send(&json!({"type":"show.again","runId":run}));
             return;
@@ -215,7 +221,6 @@ impl Lantern {
         self.guide.jpeg = Some(captured.jpeg);
         self.guide.size = captured.size;
         self.view.show_picture = Some(captured.picture);
-        self.guide.display = Some(captured.display);
         self.guide.reduce_motion = captured.reduce_motion;
         self.guide.overlay_note = captured.note;
         self.guide.observer = captured.observer;
@@ -309,6 +314,7 @@ impl Lantern {
         }
         let mut failed = false;
         let reduce_motion = self.guide.observer.as_ref().map_or(self.guide.reduce_motion, Observer::reduce_motion);
+        let observer = self.guide.observer.as_ref();
         ctx.show_viewport_immediate(ViewportId::from_hash_of(&ring.title), builder, |ui, _| {
             if !ring.placed {
                 ring.placed = native::place(&ring.title, display);
@@ -320,7 +326,21 @@ impl Lantern {
             }
             let pulse =
                 if reduce_motion { 0.0 } else { (1.0 - (ring.started.elapsed().as_secs_f32() * std::f32::consts::PI / 0.7).cos()) / 2.0 };
-            crate::show_overlay::paint(ui, display, ring.target, ring.step, pulse);
+            // winit's X11 scale policy can differ between monitors. Read the native scale of
+            // this viewport, never the pill's monitor and never the user's egui zoom.
+            #[cfg(target_os = "linux")]
+            {
+                ring.display.scale = ui.ctx().native_pixels_per_point().unwrap_or(display.scale);
+            }
+            crate::show_overlay::paint(ui, ring.display, ring.target, ring.step, pulse);
+            if let Some(observer) = observer {
+                observer.point(Some(native::Cue {
+                    display: ring.display,
+                    target: ring.target,
+                    expires_at: ring.expires,
+                    title: ring.title.clone(),
+                }));
+            }
             if !reduce_motion {
                 ui.ctx().request_repaint_after(Duration::from_millis(16));
             }
@@ -575,5 +595,19 @@ mod tests {
             assert_eq!(message["appWatchesScreen"], live);
             assert!(app.guide.reduce_motion);
         }
+    }
+
+    #[test]
+    fn returning_to_the_real_app_keeps_the_guide_and_its_pending_next() {
+        let mut app = client();
+        app.model.panel = Some(PanelMode::ShowMe);
+        app.show_event(showing());
+        app.show_screen("run", "capture", Change::Clicked);
+        app.panel_lost_focus();
+        assert!(!app.actions.contains(&crate::ui::UiAction::SetPanel(None)));
+        assert!(app.guide.next_at.is_some());
+        app.model.panel = Some(PanelMode::Agents);
+        app.panel_lost_focus();
+        assert!(app.actions.contains(&crate::ui::UiAction::SetPanel(None)), "ordinary idle panels still dismiss");
     }
 }

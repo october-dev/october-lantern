@@ -243,8 +243,11 @@ impl Desktop {
         if let Ok(mut x) = Self::connect()
             && let Ok(window) = x.find(title)
         {
-            let _ = x.conn.unmap_window(window);
-            let _ = x.conn.flush();
+            // Wait for acknowledgement before another connection (including winit) can read
+            // or paint the old window. Merely flushing leaves an inter-client ordering race.
+            if let Ok(cookie) = x.conn.unmap_window(window) {
+                let _ = cookie.check();
+            }
         }
     }
 }
@@ -278,6 +281,7 @@ mod tests {
         };
         let mut desktop = Desktop::connect()?;
         let display = desktop.display(None, 1.0)?;
+        let before_open = desktop.screen(display)?;
         let target = desktop.conn.generate_id()?;
         desktop
             .conn
@@ -308,6 +312,7 @@ mod tests {
             assert!(Instant::now() < deadline, "X11 test desktop/window didn't become ready");
             std::thread::sleep(Duration::from_millis(50));
         };
+        assert!(before_open.changed(&baseline), "opening a target window wasn't observed");
         desktop.conn.set_input_focus(InputFocus::POINTER_ROOT, target, CURRENT_TIME)?.check()?;
         std::thread::sleep(Duration::from_millis(150));
         let focus = desktop.conn.get_input_focus()?.reply()?.focus;
@@ -370,16 +375,39 @@ mod tests {
         }
         Desktop::hide(&title);
         assert_ne!(desktop.conn.get_window_attributes(overlay)?.reply()?.map_state, MapState::VIEWABLE);
+        std::thread::sleep(Duration::from_millis(100));
         let image = desktop.capture(display)?;
         assert_eq!(image.dimensions(), (display.bounds.width() as u32, display.bounds.height() as u32));
+        let pixel = image.get_pixel((point.x - display.bounds.min.x) as u32, (point.y - display.bounds.min.y) as u32);
+        assert!(
+            (70..=200).contains(&pixel[0]) && (70..=200).contains(&pixel[1]),
+            "root capture didn't include the real target's grey background: {pixel:?}"
+        );
+        let before_move = desktop.screen(display)?;
+        let original_bounds = before_move.windows.iter().find(|w| w.id == target as u64).unwrap().bounds;
         desktop.conn.configure_window(target, &ConfigureWindowAux::new().x(150).y(150))?.check()?;
         desktop.conn.flush()?;
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !baseline.changed(&desktop.screen(display)?) {
+        loop {
+            let now = desktop.screen(display)?;
+            if now.windows.iter().any(|w| w.id == target as u64 && w.bounds != original_bounds) {
+                assert!(before_move.changed(&now));
+                break;
+            }
             assert!(Instant::now() < deadline, "moving the target wasn't observed");
             std::thread::sleep(Duration::from_millis(20));
         }
         desktop.conn.destroy_window(target)?.check()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = desktop.screen(display)?;
+            if !now.windows.iter().any(|w| w.id == target as u64) {
+                assert!(before_move.changed(&now));
+                break;
+            }
+            assert!(Instant::now() < deadline, "closing the target wasn't observed");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         desktop.conn.destroy_window(overlay)?.check()?;
         Ok(())
     }

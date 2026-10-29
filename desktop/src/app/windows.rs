@@ -438,13 +438,22 @@ impl Lantern {
             if w.panel_focused != now_focused {
                 super::trace!("panel focused={now_focused}");
             }
-            if w.panel_focused && !now_focused {
-                let draft_empty = self.inputs.drafts.is_empty();
-                if shell::closes_on_focus_loss(draft_empty, self.model.dictating, w.native_dialog, false) {
-                    self.actions.push(crate::ui::UiAction::SetPanel(None));
-                }
-            }
+            let lost_focus = w.panel_focused && !now_focused;
             w.panel_focused = now_focused;
+            if lost_focus {
+                self.panel_lost_focus();
+            }
+        }
+    }
+
+    pub(super) fn panel_lost_focus(&mut self) {
+        // Doing the highlighted step means returning to the real app. Closing this panel
+        // would call stop_show and cancel the click's pending Next before it could run.
+        if self.model.panel == Some(crate::model::PanelMode::ShowMe) {
+            return;
+        }
+        if shell::closes_on_focus_loss(self.inputs.drafts.is_empty(), self.model.dictating, self.windows.native_dialog, false) {
+            self.actions.push(crate::ui::UiAction::SetPanel(None));
         }
     }
 }

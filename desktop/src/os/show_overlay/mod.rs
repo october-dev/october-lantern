@@ -40,6 +40,7 @@ pub enum Change {
 
 #[derive(Clone)]
 pub struct Cue {
+    pub display: Display,
     pub target: Rect,
     pub expires_at: f64,
     pub title: String,
@@ -134,6 +135,7 @@ pub fn capture(run: String, capture: String, previous: Option<Display>, scale: f
             return;
         }
         let mut checked = Instant::now();
+        let mut armed = false;
         let send = |change| {
             let _ = tx.send(Event::ShowScreen { run: run.clone(), capture: capture.clone(), change });
         };
@@ -141,9 +143,18 @@ pub fn capture(run: String, capture: String, previous: Option<Display>, scale: f
             let current = cue.lock().unwrap_or_else(|e| e.into_inner()).clone();
             match desktop.clicks() {
                 Ok(clicks) => {
+                    if current.is_some() && !armed {
+                        // Drop clicks queued before the first painted frame. Merely receiving
+                        // an AI answer must not turn an earlier ordinary click into Next.
+                        armed = true;
+                        continue;
+                    }
+                    if current.is_none() {
+                        armed = false;
+                    }
                     if let Some(current) = &current
                         && now_ms() < current.expires_at
-                        && clicks.into_iter().any(|at| geometry::hit(baseline.display, current.target, at))
+                        && clicks.into_iter().any(|at| geometry::hit(current.display, current.target, at))
                     {
                         // Hide before notifying the UI. Do not race the one-second Next timer
                         // with the window change the person's click caused.
