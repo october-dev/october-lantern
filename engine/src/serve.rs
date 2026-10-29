@@ -192,8 +192,14 @@ enum Request {
     PhoneCancelPair,
     #[serde(rename = "phone.decide")]
     PhoneDecide {
+        #[serde(rename = "intentId")]
+        intent_id: String,
+        bind: String,
+        code: String,
         allow: bool,
     },
+    #[serde(rename = "phone.retry")]
+    PhoneRetry,
     #[serde(rename = "phone.revoke")]
     PhoneRevoke {
         bind: String,
@@ -753,9 +759,14 @@ pub fn run() -> Result<()> {
                         p.send(crate::mobile::host::Cmd::CancelPair);
                     }
                 }
-                Ok(Request::PhoneDecide { allow }) => {
+                Ok(Request::PhoneDecide { intent_id, bind, code, allow }) => {
                     if let Some(p) = &phone {
-                        p.send(crate::mobile::host::Cmd::Decide(allow));
+                        p.send(crate::mobile::host::Cmd::Decide { intent_id, bind, code, allow });
+                    }
+                }
+                Ok(Request::PhoneRetry) => {
+                    if let Some(p) = &phone {
+                        p.send(crate::mobile::host::Cmd::Retry);
                     }
                 }
                 Ok(Request::PhoneRevoke { bind }) => {

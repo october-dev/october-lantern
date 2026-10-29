@@ -293,7 +293,7 @@ mod tests {
         let model = Model {
             panel: Some(PanelMode::October),
             account: crate::model::AccountState {
-                signed_in: Some(Account { email: "me@example.com".into(), plan: Some("PRO".into()), lantern: None }),
+                signed_in: Some(Account { email: "me@example.com".into(), plan: Some("PRO".into()), lantern: None, mobile_allowed: None }),
                 ..Default::default()
             },
             ..Default::default()

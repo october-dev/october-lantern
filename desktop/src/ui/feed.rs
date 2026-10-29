@@ -38,6 +38,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
                 if cx.model.panel == Some(PanelMode::Agents) {
                     if cx.model.agents.is_empty() {
                         empty(ui, "No agents running", "Start Claude Code, Codex, OpenCode, Pi, Gemini or another agent in any terminal.");
+                        connect_phone(ui, cx);
                     }
                     for agent in &cx.model.agents {
                         row(ui, cx, agent);
@@ -51,6 +52,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
                             format!("{} agent{} running.", cx.model.agents.len(), if cx.model.agents.len() == 1 { "" } else { "s" })
                         };
                         empty(ui, "Nothing waiting on you", &detail);
+                        connect_phone(ui, cx);
                     }
                     for id in &cx.model.inbox.new {
                         if let Some(agent) = cx.model.agent(id) {
@@ -422,5 +424,11 @@ fn ended(ui: &mut Ui, cx: &mut Ctx) {
 fn toggle(values: &mut std::collections::HashSet<String>, key: &str) {
     if !values.remove(key) {
         values.insert(key.into());
+    }
+}
+
+fn connect_phone(ui: &mut Ui, cx: &mut Ctx) {
+    if c::secondary_button(ui, "Connect your phone").clicked() {
+        cx.emit(UiAction::Phone(crate::model::phone::Action::Open));
     }
 }

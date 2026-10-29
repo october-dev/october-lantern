@@ -33,6 +33,7 @@ use crate::actions::{Outcome, Ticket};
 use crate::model::Agent;
 use crate::serve::{Deliver, Incoming};
 
+#[derive(Clone)]
 pub enum Cmd {
     /// A fresh October access token (after sign-in or refresh).
     Token(String),
@@ -41,7 +42,13 @@ pub enum Cmd {
     /// Stop pairing (the QR stops working; a phone mid-pairing is dropped).
     CancelPair,
     /// Allow or deny the phone showing the pairing code.
-    Decide(bool),
+    Decide {
+        intent_id: String,
+        bind: String,
+        code: String,
+        allow: bool,
+    },
+    Retry,
     Revoke(String),
     Stop,
 }
@@ -71,9 +78,8 @@ impl MobileHost {
         let shared = agents.clone();
         std::thread::spawn(move || match Host::new(access_token, rx, shared, emit, deliver) {
             Ok(host) => host.run(),
-            Err(e) => emit(
-                &json!({"type": "phone", "status": "error", "message": format!("{e:#}"), "hostId": null, "devices": [], "pairing": null}),
-            ),
+            Err(e) => emit(&json!({"type": "phone", "status": "error", "message": format!("{e:#}"), "errorCode": "host_unavailable",
+                    "busy": false, "hostId": null, "devices": [], "pairing": null, "installUrl": install_url()})),
         });
         MobileHost { tx, agents }
     }
@@ -104,6 +110,14 @@ struct Session {
     last: Instant,
 }
 
+#[derive(Clone)]
+struct Acknowledgement {
+    bind: String,
+    version: i64,
+    at: Instant,
+    credential: String,
+}
+
 struct PairingState {
     intent_id: String,
     qr: String,
@@ -111,7 +125,19 @@ struct PairingState {
     /// The phone that finished the handshake: (bind, 6-digit code, label).
     code: Option<(String, String, String)>,
     /// After Allow: waiting for the phone to confirm it stored its credential.
-    awaiting_ack: Option<(String, i64, Instant)>,
+    awaiting_ack: Option<Acknowledgement>,
+    ack_received: bool,
+}
+
+impl PairingState {
+    fn acknowledge(&mut self, bind: &str) -> bool {
+        if self.awaiting_ack.as_ref().is_some_and(|ack| ack.bind == bind) {
+            self.ack_received = true;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 struct Host {
@@ -128,6 +154,10 @@ struct Host {
     pairing: Option<PairingState>,
     status: &'static str,
     message: Option<String>,
+    error_code: Option<&'static str>,
+    outcome: Option<&'static str>,
+    busy: bool,
+    retry: Option<Cmd>,
     next_attempt: Instant,
     backoff: u32,
     /// Don't reconnect until something changes (e.g. the plan doesn't include mobile).
@@ -170,6 +200,10 @@ impl Host {
             pairing: None,
             status: "offline",
             message: None,
+            error_code: None,
+            outcome: None,
+            busy: false,
+            retry: None,
             next_attempt: Instant::now(),
             backoff: 0,
             parked: false,
@@ -187,19 +221,26 @@ impl Host {
     fn publish(&self) {
         let devices: Vec<Value> = store::load_devices()
             .iter()
-            .map(|d| json!({"bind": d.bind, "label": d.label, "platform": d.platform, "pairedAt": d.paired_at}))
+            .map(|d| {
+                json!({"bind": d.bind, "label": d.label, "platform": d.platform, "pairedAt": d.paired_at,
+                "lastSeenAt": d.last_seen_at, "removalPending": d.removal_pending})
+            })
             .collect();
         let pairing = self.pairing.as_ref().map(|p| {
             json!({
-                "qr": p.qr, "expiresAt": p.expires_at,
+                "intentId": p.intent_id, "bind": p.code.as_ref().map(|(b, _, _)| b.clone()),
+                "qr": if p.code.is_none() { Some(&p.qr) } else { None }, "expiresAt": p.expires_at,
                 "code": p.code.as_ref().map(|(_, c, _)| c.clone()),
                 "label": p.code.as_ref().map(|(_, _, l)| l.clone()),
+                "platform": p.code.as_ref().and_then(|(b, _, _)| self.sessions.get(b).map(|s| s.binding.platform.clone())),
                 "finishing": p.awaiting_ack.is_some(),
             })
         });
         (self.emit)(&json!({
             "type": "phone", "status": self.status, "message": self.message, "hostId": self.id.host_id,
-            "devices": devices, "pairing": pairing,
+            "devices": devices, "pairing": pairing, "errorCode": self.error_code,
+            "outcome": self.outcome, "busy": self.busy,
+            "installUrl": install_url(),
         }));
     }
 
@@ -212,9 +253,23 @@ impl Host {
                     self.publish();
                     return;
                 }
-                if let Err(e) = self.command(cmd) {
-                    self.message = Some(describe(&e));
+                if matches!(cmd, Cmd::Token(_)) {
+                    let _ = self.command(cmd);
+                    self.publish();
+                    continue;
                 }
+                let retry = if matches!(cmd, Cmd::Retry) { self.retry.clone() } else { Some(cmd.clone()) };
+                self.busy = true;
+                self.error_code = None;
+                self.message = None;
+                self.publish();
+                if let Err(e) = self.command(cmd) {
+                    self.problem(&e);
+                    self.retry = retry;
+                } else {
+                    self.retry = None;
+                }
+                self.busy = false;
                 self.publish();
             }
             self.finish_deliveries();
@@ -268,20 +323,44 @@ impl Host {
             }
             Cmd::Pair => self.start_pairing()?,
             Cmd::CancelPair => {
-                if let Some(bind) = self.pairing.take().and_then(|p| p.awaiting_ack.map(|(bind, _, _)| bind)) {
-                    let _ = store::remove_device(&bind);
-                    self.close_session(&bind, frames::CLOSE_ENDED);
-                }
+                self.clear_pairing();
+                self.outcome = None;
                 self.message = None;
             }
-            Cmd::Decide(allow) => self.decide(allow)?,
+            Cmd::Decide { intent_id, bind, code, allow } => {
+                if !self
+                    .pairing
+                    .as_ref()
+                    .is_some_and(|p| p.intent_id == intent_id && p.code.as_ref().is_some_and(|(b, c, _)| b == &bind && c == &code))
+                {
+                    bail!("This pairing request is no longer active. Start again.");
+                }
+                self.decide(allow)?;
+            }
+            Cmd::Retry => {
+                if let Some(command) = self.retry.take() {
+                    return self.command(command);
+                }
+                if let Some(bind) =
+                    self.pairing.as_ref().filter(|p| p.ack_received).and_then(|p| p.awaiting_ack.as_ref().map(|ack| ack.bind.clone()))
+                {
+                    self.finish_pairing(&bind)?;
+                } else if self.pairing.is_none() {
+                    self.start_pairing()?;
+                }
+                self.parked = false;
+                self.next_attempt = Instant::now();
+            }
             Cmd::Revoke(bind) => {
                 self.cancel_deliveries(Some(&bind));
                 let body = json!({"hostId": self.id.host_id, "bind": bind});
-                let result = control::signed_post("mobile-device-revoke", "device-revoke", &body, &self.id, &self.token);
-                store::remove_device(&bind)?;
+                // Block locally first, including push, even if October is unreachable. Retain
+                // the row until cloud removal succeeds so the user has a visible Retry action.
+                store::block_device(&bind)?;
                 self.close_session(&bind, frames::CLOSE_REVOKED);
-                result?;
+                control::signed_post("mobile-device-revoke", "device-revoke", &body, &self.id, &self.token)?;
+                store::remove_device(&bind)?;
+                self.outcome = Some("removed");
             }
             Cmd::Stop => {}
         }
@@ -289,17 +368,16 @@ impl Host {
     }
 
     fn start_pairing(&mut self) -> Result<()> {
+        self.clear_pairing();
+        self.outcome = None;
         let machine = if machine_model().contains("Book") { "laptop" } else { "desktop" };
         let body = json!({
             "hostId": self.id.host_id, "hostSignPub": self.id.sign_public(), "hostStaticPub": self.id.static_public,
-            "name": computer_name(), "platform": "mac", "machine": machine,
+            "name": computer_name(), "platform": host_platform(), "machine": machine,
         });
         let r = control::signed_post("mobile-pair-create", "pair-create", &body, &self.id, &self.token)?;
-        let (Some(intent_id), Some(secret)) = (r["intentId"].as_str(), r["secret"].as_str()) else { bail!("pairing response is invalid") };
-        let expires_at = r["expiresAt"].as_u64().unwrap_or(crate::hooks::now_ms() + 300_000);
-        let qr_payload = json!({"v": 2, "hostId": self.id.host_id, "hostStatic": self.id.static_public, "intentId": intent_id, "secret": secret, "exp": expires_at});
-        let qr = format!("https://october.dev/pair#{}", B64.encode(serde_json::to_vec(&qr_payload)?));
-        self.pairing = Some(PairingState { intent_id: intent_id.into(), qr, expires_at, code: None, awaiting_ack: None });
+        let (intent_id, qr, expires_at) = pairing_link(&self.id, &r, crate::hooks::now_ms())?;
+        self.pairing = Some(PairingState { intent_id, qr, expires_at, code: None, awaiting_ack: None, ack_received: false });
         if !self.id.registered {
             self.id.registered = true;
             self.id.save()?;
@@ -314,23 +392,41 @@ impl Host {
 
     fn decide(&mut self, allow: bool) -> Result<()> {
         let Some(p) = self.pairing.as_mut() else { bail!("no phone is waiting") };
+        if p.expires_at <= crate::hooks::now_ms() || p.awaiting_ack.is_some() {
+            bail!("This pairing request is no longer awaiting approval.");
+        }
         let Some((bind, _, _)) = p.code.clone() else { bail!("no phone is waiting") };
         let Some(session) = self.sessions.get(&bind) else { bail!("the phone disconnected") };
         let b = session.binding.clone();
         let body = json!({
             "intentId": p.intent_id, "bind": b.bind, "deviceStaticPub": b.device_static_raw, "deviceSignPub": b.device_sign_pub,
-            "decision": if allow { "approve" } else { "deny" }, "stateVersion": b.state_version.unwrap_or(0),
+            "decision": if allow { "approve" } else { "deny" },
+            "stateVersion": b.state_version.ok_or_else(|| anyhow::anyhow!("pairing is missing its server state version"))?,
         });
-        let r = control::signed_post("mobile-pair-decide", "pair-decide", &body, &self.id, &self.token)?;
+        let r = match control::signed_post("mobile-pair-decide", "pair-decide", &body, &self.id, &self.token) {
+            Ok(r) => r,
+            Err(error) => {
+                if error.downcast_ref::<ControlError>().is_some_and(|c| c.status < 500 && c.status != 409) {
+                    return Err(error);
+                }
+                let state = control::pairing_state(&self.id.host_id, &p.intent_id, &self.token).ok().flatten();
+                match state.filter(|s| decision_committed(s, &b, allow)) {
+                    Some(s) => json!({"stateVersion": s["state_version"]}),
+                    None => return Err(error),
+                }
+            }
+        };
         if !allow {
             self.pairing = None;
+            self.outcome = Some("denied");
             self.close_session(&bind, frames::CLOSE_ENDED);
             return Ok(());
         }
-        let state_version = r["stateVersion"].as_i64().unwrap_or(0);
-        let credential = store::add_device(&bind, &b.label, &b.platform)?;
+        let state_version = r["stateVersion"].as_i64().ok_or_else(|| anyhow::anyhow!("invalid decision response"))?;
+        let credential = store::new_credential()?;
         if let Some(p) = self.pairing.as_mut() {
-            p.awaiting_ack = Some((bind.clone(), state_version, Instant::now()));
+            p.awaiting_ack =
+                Some(Acknowledgement { bind: bind.clone(), version: state_version, at: Instant::now(), credential: credential.clone() });
         }
         self.send_frame(&bind, Kind::PairCredential, &serde_json::to_vec(&json!({"credential": credential}))?, 0);
         Ok(())
@@ -338,31 +434,74 @@ impl Host {
 
     fn finish_pairing(&mut self, bind: &str) -> Result<()> {
         let Some(p) = self.pairing.as_ref() else { return Ok(()) };
-        let Some((expected, state_version, _)) = p.awaiting_ack.clone() else { return Ok(()) };
-        if expected != bind {
+        let Some(ack) = p.awaiting_ack.clone() else { return Ok(()) };
+        if ack.bind != bind || !p.ack_received {
             return Ok(());
         }
-        let body = json!({"intentId": p.intent_id, "stateVersion": state_version});
+        let body = json!({"intentId": p.intent_id, "stateVersion": ack.version});
         let r = control::signed_post("mobile-pair-finalize", "pair-finalize", &body, &self.id, &self.token)?;
-        let final_version = r["stateVersion"].as_i64().unwrap_or(state_version);
+        if r["state"] != "active" {
+            bail!("pairing did not become active");
+        }
+        let final_version = r["stateVersion"].as_i64().ok_or_else(|| anyhow::anyhow!("invalid finalization response"))?;
+        let session = self.sessions.get(bind).ok_or_else(|| anyhow::anyhow!("the phone disconnected before finalization"))?;
+        store::add_device(bind, &session.binding.label, &session.binding.platform, &ack.credential)?;
         self.send_frame(bind, Kind::PairActive, &serde_json::to_vec(&json!({"bind": bind, "stateVersion": final_version}))?, 0);
+        if self.ws.is_none() {
+            store::remove_device(bind)?;
+            bail!("the phone disconnected before pairing completed");
+        }
         self.pairing = None;
         self.message = None;
+        self.error_code = None;
+        self.outcome = Some("paired");
         Ok(())
+    }
+
+    fn clear_pairing(&mut self) {
+        if let Some(p) = self.pairing.take() {
+            let binds: Vec<_> = self
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.binding.intent_id.as_deref() == Some(&p.intent_id))
+                .map(|(b, _)| b.clone())
+                .collect();
+            for bind in binds {
+                self.close_session(&bind, frames::CLOSE_ENDED);
+            }
+        }
+    }
+
+    fn problem(&mut self, error: &anyhow::Error) {
+        let (code, message) = phone_problem(error);
+        self.error_code = Some(code);
+        self.message = Some(message.into());
+        if code == "plan_required" {
+            self.parked = true;
+            self.status = "plan-required";
+        }
+        if code == "SESSION_REQUIRED" {
+            self.parked = true;
+            self.status = "signed-out";
+        }
     }
 
     /// Pairings run out whether or not the relay is connected.
     fn expire_pairing(&mut self) {
         let Some(p) = &self.pairing else { return };
-        let ack_timed_out = p.awaiting_ack.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= Duration::from_secs(60));
-        if !ack_timed_out && crate::hooks::now_ms() <= p.expires_at + 60_000 {
+        let ack_timed_out = p.awaiting_ack.as_ref().is_some_and(|ack| ack.at.elapsed() >= Duration::from_secs(60));
+        // The QR expires at the advertised deadline. An approved phone has its separate
+        // 60-second acknowledgement/finalization deadline, as on October Desktop.
+        if !ack_timed_out && (p.awaiting_ack.is_some() || crate::hooks::now_ms() < p.expires_at) {
             return;
         }
-        if let Some((bind, _, _)) = p.awaiting_ack.clone() {
-            let _ = store::remove_device(&bind);
-        }
-        self.pairing = None;
-        self.message = Some(if ack_timed_out { "The phone didn't finish pairing. Try again." } else { "The pairing code expired." }.into());
+        self.clear_pairing();
+        self.outcome = Some("expired");
+        self.error_code = Some("PAIRING_EXPIRED");
+        self.message = Some(
+            if ack_timed_out { "The phone didn't finish pairing in time. Create a new code." } else { "This pairing code has expired." }
+                .into(),
+        );
         self.publish();
     }
 
@@ -406,14 +545,14 @@ impl Host {
             Err(e) => {
                 if let Some(c) = e.downcast_ref::<ControlError>() {
                     match c.code.as_deref() {
-                        Some("plan_required") => return self.park("plan-required", "Your October plan doesn't include the phone app."),
+                        Some("plan_required") => return self.park("plan-required", "Your plan does not currently include mobile access."),
                         Some("SESSION_REQUIRED") => return self.park("signed-out", "Sign in to October again to reconnect your phone."),
                         Some("HOST_INACTIVE") => return self.park("offline", "Pair a phone to connect."),
                         _ => {}
                     }
                 }
                 self.status = "offline";
-                self.message = Some(describe(&e));
+                self.problem(&e);
                 self.schedule_reconnect();
             }
         }
@@ -437,6 +576,7 @@ impl Host {
         }
         self.cancel_deliveries(None);
         self.sessions.clear();
+        self.clear_confirmation(None);
         self.status = status;
     }
 
@@ -445,6 +585,7 @@ impl Host {
         self.ws = None;
         self.cancel_deliveries(None);
         self.sessions.clear();
+        self.clear_confirmation(None);
         self.status = "connecting";
         self.message = Some(message);
         self.schedule_reconnect();
@@ -464,10 +605,11 @@ impl Host {
                 self.ws = None;
                 self.cancel_deliveries(None);
                 self.sessions.clear();
+                self.clear_confirmation(None);
                 match code {
                     4409 => self.park("offline", "Another copy of Lantern connected with this identity."),
                     4403 | 4401 => self.park("offline", "October closed the connection. Pair the phone again."),
-                    4408 => self.park("plan-required", "Your October plan doesn't include the phone app."),
+                    4408 => self.park("plan-required", "Your plan does not currently include mobile access."),
                     _ => {
                         self.status = "connecting";
                         self.schedule_reconnect();
@@ -489,7 +631,17 @@ impl Host {
         }
     }
 
+    fn clear_confirmation(&mut self, bind: Option<&str>) {
+        if self.pairing.as_ref().is_some_and(|p| p.code.as_ref().is_some_and(|(b, _, _)| bind.is_none_or(|bind| b == bind))) {
+            self.pairing = None;
+            self.retry = None;
+            self.error_code = Some("PAIRING_DISCONNECTED");
+            self.message = Some("The phone disconnected before pairing finished. Create a new code.".into());
+        }
+    }
+
     fn close_session(&mut self, bind: &str, code: u16) {
+        self.clear_confirmation(Some(bind));
         self.cancel_deliveries(Some(bind));
         if let Some(s) = self.sessions.remove(bind)
             && let Ok(f) = frames::encode_outer(frames::OUTER_CLOSE, bind, s.connection_id, &code.to_be_bytes())
@@ -504,6 +656,7 @@ impl Host {
         match outer.kind {
             frames::OUTER_OPEN => {
                 self.cancel_deliveries(Some(&outer.bind));
+                self.clear_confirmation(Some(&outer.bind));
                 // Who is this? Ask October, never the phone.
                 let Some(binding) = control::resolve_binding(&self.id.host_id, &outer.bind, &self.token)? else {
                     self.sessions.remove(&outer.bind);
@@ -533,6 +686,8 @@ impl Host {
                 if self.sessions.get(&outer.bind).is_some_and(|s| s.connection_id == outer.connection_id) {
                     self.cancel_deliveries(Some(&outer.bind));
                     self.sessions.remove(&outer.bind);
+                    self.clear_confirmation(Some(&outer.bind));
+                    self.publish();
                 }
             }
             frames::OUTER_DATA => {
@@ -587,8 +742,11 @@ impl Host {
                         Kind::Ping => self.send_frame(bind, Kind::Pong, &[], id),
                         Kind::PairOffer => {}
                         Kind::PairAck => {
+                            if !self.pairing.as_mut().is_some_and(|p| p.acknowledge(bind)) {
+                                bail!("no credential is awaiting acknowledgement from this phone");
+                            }
                             if let Err(e) = self.finish_pairing(bind) {
-                                self.message = Some(describe(&e));
+                                self.problem(&e);
                             }
                             self.publish();
                         }
@@ -619,8 +777,14 @@ impl Host {
             if let Some(Session { stage: Some(Stage::Active { credential, .. }), .. }) = self.sessions.get_mut(bind) {
                 *credential = Some(presented);
             }
+            store::seen(bind, crate::hooks::now_ms())?;
+            self.publish();
             return Ok(());
         };
+        if !store::credential_ok(bind, &credential) {
+            bail!("this phone's access was removed");
+        }
+        store::seen(bind, crate::hooks::now_ms())?;
         match kind {
             Kind::Req => {
                 let request: Value = serde_json::from_slice(&data)?;
@@ -821,6 +985,7 @@ impl Host {
         if self.last_heartbeat.elapsed() >= Duration::from_secs(15) {
             self.last_heartbeat = Instant::now();
             self.broadcast("cursor.heartbeat", "", json!({}));
+            self.publish();
         }
         let idle: Vec<String> =
             self.sessions.iter().filter(|(_, s)| s.last.elapsed() >= Duration::from_secs(60)).map(|(b, _)| b.clone()).collect();
@@ -915,15 +1080,71 @@ pub(crate) fn deliver_and_wait(deliver: &Sender<Incoming>, a: &Agent, text: &str
     }
 }
 
-fn describe(e: &anyhow::Error) -> String {
+/// One shared, non-secret app install destination for both native UIs.
+fn install_url() -> Value {
+    serde_json::from_str::<Value>(include_str!("../../../protocol/phone-app.json"))
+        .ok()
+        .and_then(|v| v.get("installUrl").cloned())
+        .unwrap_or(Value::Null)
+}
+
+fn host_platform() -> &'static str {
+    if cfg!(windows) {
+        "win"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "mac"
+    }
+}
+
+/// The fixed build-37 phone contract. Never substitute a guessed expiry or log this URL.
+fn pairing_link(id: &HostIdentity, response: &Value, now: u64) -> Result<(String, String, u64)> {
+    let intent = response["intentId"].as_str().filter(|s| canonical_uuid(s)).ok_or_else(|| anyhow::anyhow!("invalid pairing intent"))?;
+    let secret = response["secret"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| anyhow::anyhow!("missing pairing secret"))?;
+    let expiry = response["expiresAt"]
+        .as_u64()
+        .filter(|n| *n > now && *n <= 9_007_199_254_740_991)
+        .ok_or_else(|| anyhow::anyhow!("invalid pairing expiry"))?;
+    if !canonical_uuid(&id.host_id) || store::decode_key(&id.static_public).is_none() {
+        bail!("invalid host identity");
+    }
+    let payload =
+        json!({"v": 2, "hostId": id.host_id, "hostStatic": id.static_public, "intentId": intent, "secret": secret, "exp": expiry});
+    Ok((intent.into(), format!("https://october.dev/pair#{}", B64.encode(serde_json::to_vec(&payload)?)), expiry))
+}
+
+fn decision_committed(state: &Value, b: &Binding, allow: bool) -> bool {
+    state["state"] == if allow { "approved" } else { "denied" }
+        && state["bind"] == b.bind
+        && state["device_static_pub"] == b.device_static_raw
+        && state["device_sign_pub"] == b.device_sign_pub
+        && state["state_version"].as_i64().is_some_and(|version| b.state_version.is_some_and(|old| version > old))
+}
+
+fn canonical_uuid(raw: &str) -> bool {
+    uuid::Uuid::parse_str(raw).is_ok_and(|id| {
+        id.hyphenated().to_string() == raw && matches!(id.get_version_num(), 1..=5) && id.get_variant() == uuid::Variant::RFC4122
+    })
+}
+
+fn phone_problem(e: &anyhow::Error) -> (&'static str, &'static str) {
     if let Some(c) = e.downcast_ref::<ControlError>() {
         return match c.code.as_deref() {
-            Some("plan_required") => "Your October plan doesn't include the phone app.".into(),
-            Some("SESSION_REQUIRED") => "Sign in to October again.".into(),
-            _ => format!("October: {}", c.message),
+            Some("plan_required") => ("plan_required", "Your plan does not currently include mobile access."),
+            Some("SESSION_REQUIRED") => ("SESSION_REQUIRED", "Sign in to October again to connect your phone."),
+            Some("PAIRING_REJECTED") => ("PAIRING_REJECTED", "Use the same October account on your phone and this computer."),
+            Some("PAIRING_EXPIRED") => ("PAIRING_EXPIRED", "This pairing code has expired."),
+            Some("PAIRING_USED") => ("PAIRING_USED", "A phone already used this pairing code."),
+            Some("PAIRING_DENIED") => ("PAIRING_DENIED", "This pairing request was denied."),
+            Some("plan_authority_unavailable") => ("plan_authority_unavailable", "October couldn't check your plan right now. Try again."),
+            _ if c.status == 503 || c.status >= 500 => {
+                ("service_unavailable", "October's phone service is unavailable right now. Try again.")
+            }
+            _ => ("request_failed", "October couldn't complete this request. Try again."),
         };
     }
-    format!("{e:#}")
+    ("service_unavailable", "Couldn't connect to October's phone service. Check your connection and try again.")
 }
 
 fn computer_name() -> String {
@@ -986,6 +1207,31 @@ mod delivery_tests {
 
     #[test]
     fn pending_retries_share_delivery_and_cancel_is_scoped_to_the_phone() {
+        // This test now exercises the real stored-credential checks too. Run the fixture in
+        // its own process/profile: never change process-wide environment during parallel tests
+        // and never write a fake phone into the user's real pairing store.
+        let profile = std::env::var_os("LANTERN_TEST_PROFILE").map(std::path::PathBuf::from);
+        let isolated = profile.as_ref().is_some_and(|p| {
+            p.starts_with(std::env::temp_dir())
+                && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("lantern-phone-test-"))
+                && std::env::var_os("LANTERN_PHONE_DELIVERY_TEST").as_deref() == Some(p.as_os_str())
+        });
+        if !isolated {
+            let profile = std::env::temp_dir().join(format!("lantern-phone-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&profile).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mobile::host::delivery_tests::pending_retries_share_delivery_and_cancel_is_scoped_to_the_phone"])
+                .env("LANTERN_TEST_PROFILE", &profile)
+                .env("LANTERN_PHONE_DELIVERY_TEST", &profile)
+                .output();
+            let _ = std::fs::remove_dir_all(&profile);
+            let output = output.unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        for bind in ["phone-a", "phone-b"] {
+            store::add_device(bind, "Test phone", "ios", "credential").unwrap();
+        }
         let (sender, incoming) = channel();
         let a = crate::tests::agent_for(123, 1, Some("ttys001"));
         let request = json!({"apiVersion": 2, "requestId": "first", "idempotencyKey": "k", "method": "bus.mutate",
@@ -1054,5 +1300,148 @@ mod delivery_tests {
         let timeout = pending.until;
         assert!(pending.poll(timeout).is_none());
         assert!(matches!(pending.poll(timeout + STARTED_GRACE), Some(Outcome::Uncertain(_))));
+    }
+}
+
+#[cfg(test)]
+mod onboarding_tests {
+    use super::*;
+    fn identity() -> HostIdentity {
+        serde_json::from_value(json!({"hostId":"11111111-1111-4111-8111-111111111111", "canvasId":"canvas",
+            "signSeed":B64.encode([1;32]), "staticSecret":B64.encode([2;32]), "staticPublic":B64.encode([3;32])}))
+        .unwrap()
+    }
+    fn response() -> Value {
+        json!({"intentId":"22222222-2222-4222-8222-222222222222", "secret":B64.encode([4;32]), "expiresAt":300001})
+    }
+    fn host() -> Host {
+        let (_, rx) = channel();
+        let (deliver, _) = channel();
+        Host::with_identity(identity(), String::new(), rx, Arc::new(Mutex::new(Vec::new())), |_| {}, deliver)
+    }
+    fn pairing(expiry: u64) -> PairingState {
+        PairingState {
+            intent_id: "intent".into(),
+            qr: "in-memory-only".into(),
+            expires_at: expiry,
+            code: Some(("phone".into(), "123456".into(), "Test iPhone".into())),
+            awaiting_ack: None,
+            ack_received: false,
+        }
+    }
+    #[test]
+    fn qr_is_exactly_the_build_37_universal_link_contract() {
+        let id = identity();
+        let r = response();
+        let (_, link, expiry) = pairing_link(&id, &r, 1).unwrap();
+        let url = url::Url::parse(&link).unwrap();
+        assert_eq!((url.scheme(), url.host_str(), url.path(), url.query()), ("https", Some("october.dev"), "/pair", None));
+        let fragment = url.fragment().unwrap();
+        assert!(!fragment.contains('='));
+        let payload: Value = serde_json::from_slice(&B64.decode(fragment).unwrap()).unwrap();
+        assert_eq!(
+            payload,
+            json!({"v":2,"hostId":id.host_id,"hostStatic":id.static_public,
+            "intentId":r["intentId"],"secret":r["secret"],"exp":expiry})
+        );
+    }
+    #[test]
+    fn invalid_server_contract_is_refused_instead_of_guessing_an_expiry() {
+        for (key, value) in [
+            ("expiresAt", Value::Null),
+            ("expiresAt", json!(1)),
+            ("expiresAt", json!(9_007_199_254_740_992_u64)),
+            ("intentId", json!("AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA")),
+            ("intentId", json!("not-a-uuid")),
+            ("secret", json!("")),
+        ] {
+            let mut r = response();
+            r[key] = value;
+            assert!(pairing_link(&identity(), &r, 1).is_err(), "invalid {key} accepted");
+        }
+    }
+    #[test]
+    fn errors_have_distinct_recovery_codes_and_never_echo_server_secrets() {
+        for code in [
+            "plan_required",
+            "plan_authority_unavailable",
+            "PAIRING_REJECTED",
+            "PAIRING_EXPIRED",
+            "PAIRING_USED",
+            "PAIRING_DENIED",
+            "SESSION_REQUIRED",
+        ] {
+            let e: anyhow::Error =
+                ControlError { status: 403, code: Some(code.into()), message: "secret that must not appear".into() }.into();
+            let (kind, message) = phone_problem(&e);
+            assert_eq!(kind, code);
+            assert!(!message.contains("secret"));
+        }
+        let e: anyhow::Error = ControlError { status: 503, code: None, message: "private".into() }.into();
+        assert_eq!(phone_problem(&e).0, "service_unavailable");
+    }
+    #[test]
+    fn code_expires_at_its_deadline_and_drops_the_pending_session() {
+        let mut h = host();
+        h.pairing = Some(pairing(0));
+        h.expire_pairing();
+        assert!(h.pairing.is_none());
+        assert_eq!(h.error_code, Some("PAIRING_EXPIRED"));
+        assert_eq!(h.outcome, Some("expired"));
+    }
+    #[test]
+    fn only_the_approved_phone_can_acknowledge_its_credential() {
+        let mut p = pairing(u64::MAX);
+        assert!(!p.acknowledge("phone"), "approval must precede acknowledgement");
+        p.awaiting_ack = Some(Acknowledgement { bind: "phone".into(), version: 2, at: Instant::now(), credential: "ephemeral".into() });
+        assert!(!p.acknowledge("other-phone"));
+        assert!(!p.ack_received);
+        assert!(p.acknowledge("phone"));
+        assert!(p.ack_received);
+    }
+
+    #[test]
+    fn stale_approval_is_rejected_before_any_network_or_credential_write() {
+        let mut h = host();
+        h.pairing = Some(pairing(crate::hooks::now_ms() + 60_000));
+        assert!(h.command(Cmd::Decide { intent_id: "intent".into(), bind: "phone".into(), code: "654321".into(), allow: true }).is_err());
+        assert!(h.pairing.as_ref().unwrap().awaiting_ack.is_none());
+    }
+    #[test]
+    fn another_phones_disconnect_cannot_clear_the_current_confirmation() {
+        let mut h = host();
+        h.pairing = Some(pairing(u64::MAX));
+        h.clear_confirmation(Some("other-phone"));
+        assert!(h.pairing.is_some());
+        h.clear_confirmation(Some("phone"));
+        assert!(h.pairing.is_none());
+        assert_eq!(h.error_code, Some("PAIRING_DISCONNECTED"));
+    }
+    #[test]
+    fn decision_recovery_requires_the_same_bind_keys_and_newer_server_version() {
+        let b = Binding {
+            bind: "phone".into(),
+            pairing: true,
+            device_static: [0; 32],
+            device_static_raw: "static".into(),
+            device_sign_pub: "sign".into(),
+            label: "iPhone".into(),
+            platform: "ios".into(),
+            intent_id: Some("intent".into()),
+            state_version: Some(1),
+        };
+        let state = json!({"state":"approved","state_version":2,"bind":"phone","device_static_pub":"static","device_sign_pub":"sign"});
+        assert!(decision_committed(&state, &b, true));
+        assert!(!decision_committed(&state, &b, false));
+        for (key, value) in [
+            ("bind", json!("other")),
+            ("device_static_pub", json!("other")),
+            ("device_sign_pub", json!("other")),
+            ("state_version", json!(1)),
+        ] {
+            let mut bad = state.clone();
+            bad[key] = value;
+            assert!(!decision_committed(&bad, &b, true));
+        }
     }
 }

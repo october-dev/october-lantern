@@ -28,6 +28,7 @@ pub mod fixture;
 mod images;
 mod logs;
 mod menu;
+mod phone;
 mod point_ask;
 mod preferences;
 mod select;
@@ -252,6 +253,9 @@ impl Lantern {
                         self.model.account.error = None;
                         crate::analytics::identify(&session.access, &session.email);
                         self.session = Some(session);
+                        if self.model.phone.is_none() {
+                            self.give_engine_sign_in();
+                        }
                         if welcome {
                             crate::analytics::capture("october_signed_in", serde_json::json!({}));
                             self.signed_in();
@@ -271,6 +275,11 @@ impl Lantern {
                     (Ok(plan), Some(session)) => {
                         self.model.account.signed_in = Some(account(&session.email, &plan));
                         session.plan = plan;
+                        if self.model.account.signed_in.as_ref().is_some_and(|a| a.mobile_allowed == Some(true))
+                            && self.model.phone.as_ref().is_some_and(|p| p.status == "plan-required")
+                        {
+                            self.phone_action(crate::model::phone::Action::Retry);
+                        }
                     }
                     (Err(error), Some(_)) => self.show(format!("Couldn't refresh your plan: {error}")),
                     _ => {}
@@ -400,6 +409,9 @@ impl Lantern {
                 let _ = vault.send(crate::account::VaultCommand::Clear);
             }
         });
+        self.model.phone = None;
+        self.view.phone_setup = false;
+        self.view.phone_sending = false;
         self.model.account = Default::default();
         self.invalidate_october_models();
         self.clear_assistant();
@@ -408,6 +420,8 @@ impl Lantern {
     /// The engine stopped: Lantern starts it again (up to three times in five minutes), except
     /// while uninstalling, which stops it on purpose.
     fn engine_stopped(&mut self, error: String) {
+        self.model.phone = None;
+        self.view.phone_sending = false;
         self.model.control_sending = false;
         for pending in self.pending.values() {
             if let Pending::Models { kind } = pending {
@@ -522,6 +536,7 @@ fn account(email: &str, plan: &Value) -> crate::model::Account {
         email: email.to_string(),
         plan: plan["plan"].as_str().or(plan["tier"].as_str()).map(str::to_string),
         lantern: crate::model::LanternRights::from_plan(plan),
+        mobile_allowed: plan["features"]["mobile"]["enabled"].as_bool(),
     }
 }
 

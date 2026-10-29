@@ -1,6 +1,6 @@
 # Local task features
 
-This describes the source branch, rather than an installer release. Remote devices, SSH, cloud execution, phone expansion, remote routines and task moves are outside this change.
+This describes the source branch, rather than an installer release. Remote devices, SSH, cloud execution, remote routines and task moves are outside these local features.
 
 ## Cards
 
@@ -59,3 +59,16 @@ Native overlay regression tests run on Windows CI and a disposable Xvfb/Openbox/
 Run `scripts/check.sh` (Mac/Linux), `scripts/check.ps1` (Windows), and `scripts/check-windows-types.sh` for a cross-target type check. The latter does not execute Windows code. `scripts/smoke-local-cards.py` exercises card transport, cancellation, routine editing and Show me cancellation against a private debug profile without starting a paid model. Native UI/model tests must also be recorded separately.
 
 On Mac/Linux, `python3 scripts/smoke-driver-recovery.py path/to/debug/lantern-engine path/to/cached/cua-driver` additionally exercises an actual engine crash against the pinned driver already verified by Lantern's installer. It uses no models, screenshots or UI input and does not qualify desktop permissions.
+
+## Connect your phone
+
+Both apps expose **October panel → Phone → Pair**. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in and “Your phone uses the same October account” first. The phone section appears after sign-in.
+
+1. **Get the October app:** install the iPhone beta using the TestFlight QR/link, then sign in with the email displayed in Lantern. The install URL is defined once in `protocol/phone-app.json`.
+2. **Scan to pair:** “Open your iPhone Camera and point it here.” The large QR contains October's HTTPS universal link. The October scanner and **Copy pairing link** are alternatives. Expiry counts down; **New code** replaces it in one click.
+3. **Confirm your phone:** the panel comes forward with the phone's name/platform, a large monospace code, “Make sure this matches your phone”, **Approve** and **Deny**. Approval is tied to that exact comparison. An expired/disconnected comparison cannot approve a later phone.
+4. **iPhone connected:** see waiting agents, receive agent alerts (with notifications allowed on the phone) and reply. A phone is listed as paired only after acknowledgement and server finalization.
+
+The permanent section lists paired phones and last-seen authenticated activity, with confirmed **Remove**. Local access and push are blocked even if October is unreachable; **Retry removal** finishes the server revocation. Plan-required errors lead to **Upgrade**, temporary plan/service errors to **Retry**, expiry/used codes to **New code**, and denial to **Start again**. Wrong-account consume errors are shown by the phone; Lantern keeps the correct account's email next to the QR.
+
+Phone traffic is end-to-end encrypted. Keep this computer awake with Lantern open for access and alerts. No phone wire format, branding prefix or mobile app changes are required. Automated tests cover the fixed build-37 link shape, QR decoding, expiry, stale approvals, decision reconciliation, local revocation, safe state serialization and the setup views. Fresh-install pairing through Lantern Home, a real reply, expiry, denial, wrong-account and revoke still require a physical iPhone running TestFlight build 37 or later; automated tests do not substitute for that acceptance pass.

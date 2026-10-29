@@ -97,6 +97,11 @@ pub struct Device {
     pub platform: String,
     credential_hash: String,
     pub paired_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<u64>,
+    /// Access is blocked locally even if the server couldn't yet confirm removal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removal_pending: bool,
     /// The phone's Expo push token, set by `remote.push.register`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub push_token: Option<String>,
@@ -118,11 +123,11 @@ fn edit_devices(change: impl FnOnce(&mut Vec<Device>) -> Result<()>) -> Result<(
 /// Changes a paired phone's push settings; refused for a phone that isn't paired (or was revoked).
 fn edit_push(bind: &str, change: impl FnOnce(&mut Device)) -> Result<()> {
     edit_devices(|devices| match devices.iter_mut().find(|d| d.bind == bind) {
-        Some(d) => {
+        Some(d) if !d.removal_pending => {
             change(d);
             Ok(())
         }
-        None => bail!("this phone isn't paired"),
+        _ => bail!("this phone isn't paired"),
     })
 }
 
@@ -151,7 +156,16 @@ pub fn forget_push_token(bind: &str, token: &str) -> Result<()> {
 
 /// (bind, Expo token) for every paired phone that wants notifications.
 pub fn push_targets() -> Vec<(String, String)> {
-    load_devices().into_iter().filter(|d| !d.muted).filter_map(|d| Some((d.bind, d.push_token?))).collect()
+    push_targets_from(load_devices())
+}
+
+fn push_targets_from(devices: Vec<Device>) -> Vec<(String, String)> {
+    devices.into_iter().filter(|d| !d.muted && !d.removal_pending).filter_map(|d| Some((d.bind, d.push_token?))).collect()
+}
+
+fn credential_matches(devices: &[Device], bind: &str, credential: &str) -> bool {
+    let h = hash_credential(credential);
+    devices.iter().any(|d| !d.removal_pending && d.bind == bind && bool::from(d.credential_hash.as_bytes().ct_eq(h.as_bytes())))
 }
 
 pub fn hash_credential(credential: &str) -> String {
@@ -170,25 +184,30 @@ fn save_devices(devices: &[Device]) -> Result<()> {
     write_private(&dir().join("devices.json"), &serde_json::to_vec_pretty(devices)?)
 }
 
-/// Stores a newly paired phone and returns the credential to hand it (only its hash is kept).
-pub fn add_device(bind: &str, label: &str, platform: &str) -> Result<String> {
+/// An ephemeral credential for an approved phone, before it acknowledges and finalizes pairing.
+pub fn new_credential() -> Result<String> {
     let mut raw = [0u8; 32];
     getrandom::fill(&mut raw).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let credential = B64.encode(raw);
+    Ok(B64.encode(raw))
+}
+
+/// Store only after finalization; pending phones never appear as connected after a restart.
+pub fn add_device(bind: &str, label: &str, platform: &str, credential: &str) -> Result<()> {
     edit_devices(|devices| {
         devices.retain(|d| d.bind != bind);
         devices.push(Device {
             bind: bind.into(),
             label: label.into(),
             platform: platform.into(),
-            credential_hash: hash_credential(&credential),
+            credential_hash: hash_credential(credential),
             paired_at: crate::hooks::now_ms(),
+            last_seen_at: None,
+            removal_pending: false,
             push_token: None,
             muted: false,
         });
         Ok(())
-    })?;
-    Ok(credential)
+    })
 }
 
 /// Forgets a phone, and with it its push token: a revoked phone gets no more notifications.
@@ -199,10 +218,32 @@ pub fn remove_device(bind: &str) -> Result<()> {
     })
 }
 
+pub fn block_device(bind: &str) -> Result<()> {
+    edit_devices(|devices| {
+        if let Some(d) = devices.iter_mut().find(|d| d.bind == bind) {
+            d.removal_pending = true;
+            d.push_token = None;
+        }
+        Ok(())
+    })
+}
+
+/// Authenticated activity only; coalesce disk writes while the phone is active.
+pub fn seen(bind: &str, now: u64) -> Result<()> {
+    let _guard = DEVICES_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut devices = load_devices();
+    if let Some(d) = devices.iter_mut().find(|d| d.bind == bind && !d.removal_pending)
+        && d.last_seen_at.is_none_or(|last| now.saturating_sub(last) >= 60_000)
+    {
+        d.last_seen_at = Some(now);
+        save_devices(&devices)?;
+    }
+    Ok(())
+}
+
 /// Constant-time check of a phone's credential against the stored hash.
 pub fn credential_ok(bind: &str, credential: &str) -> bool {
-    let h = hash_credential(credential);
-    load_devices().iter().any(|d| d.bind == bind && bool::from(d.credential_hash.as_bytes().ct_eq(h.as_bytes())))
+    credential_matches(&load_devices(), bind, credential)
 }
 
 pub fn decode_key(value: &str) -> Option<[u8; 32]> {
@@ -213,6 +254,19 @@ pub fn decode_key(value: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removal_blocks_credentials_and_push_before_the_cloud_confirms() {
+        let mut d: Device = serde_json::from_value(serde_json::json!({"bind":"phone", "label":"Test phone", "platform":"ios",
+            "credentialHash":hash_credential("secret"), "pairedAt":1, "pushToken":"ExponentPushToken[test]"}))
+        .unwrap();
+        assert!(credential_matches(&[d.clone()], "phone", "secret"));
+        assert_eq!(push_targets_from(vec![d.clone()]).len(), 1);
+        d.removal_pending = true;
+        assert!(!credential_matches(&[d.clone()], "phone", "secret"));
+        assert!(push_targets_from(vec![d.clone()]).is_empty());
+        assert!(!serde_json::to_string(&d).unwrap().contains("secret"), "only a credential hash is persisted");
+    }
 
     #[test]
     fn devices_from_older_lanterns_load_without_push_settings() {

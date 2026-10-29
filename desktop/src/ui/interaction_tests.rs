@@ -300,3 +300,66 @@ fn the_dictation_question_answers_by_button_or_escape_in_the_panel() {
     let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
     assert!(find_text(&output, "Turn on dictation?").is_none());
 }
+
+fn phone_fixture() -> crate::app::fixture::Fixture {
+    let mut f = fixture("inbox");
+    f.model.panel = Some(PanelMode::October);
+    f.model.account.signed_in = Some(crate::model::Account { email: "person@example.com".into(), ..Default::default() });
+    f.model.phone = Some(
+        serde_json::from_value(serde_json::json!({"status":"connected", "pairing":{
+            "intentId":"intent", "bind":"phone", "code":"123456", "label":"Test iPhone", "platform":"ios", "expiresAt":9999999999999_f64
+        }}))
+        .unwrap(),
+    );
+    f
+}
+
+#[test]
+fn phone_approval_carries_the_exact_comparison_and_busy_buttons_do_nothing() {
+    for busy in [false, true] {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let mut f = phone_fixture();
+        f.model.phone.as_mut().unwrap().busy = busy;
+        render(&ctx, &assets, &mut f, Vec::new());
+        let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+        assert!(find_text(&output, "Make sure this matches your phone").is_some());
+        let pos = text_rect(&output, "Approve").center();
+        let actions = click(&ctx, &assets, &mut f, pos);
+        assert_eq!(
+            actions,
+            if busy {
+                vec![]
+            } else {
+                vec![UiAction::Phone(crate::model::phone::Action::Decide {
+                    intent_id: "intent".into(),
+                    bind: "phone".into(),
+                    code: "123456".into(),
+                    allow: true,
+                })]
+            }
+        );
+    }
+}
+
+#[test]
+fn expired_phone_code_is_not_copied_and_signed_out_users_get_account_guidance() {
+    let ctx = egui::Context::default();
+    theme::install(&ctx);
+    let assets = Assets::load(&ctx);
+    let mut f = phone_fixture();
+    let p = f.model.phone.as_mut().unwrap().pairing.as_mut().unwrap();
+    p.code = None;
+    p.qr = Some("synthetic-test-link".into());
+    p.expires_at = 0.0;
+    render(&ctx, &assets, &mut f, Vec::new());
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    assert!(find_text(&output, "This pairing code has expired.").is_some());
+    assert!(find_text(&output, "Copy pairing link").is_none());
+    assert!(find_text(&output, "New code").is_some());
+    f.model.account.signed_in = None;
+    let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
+    assert!(find_text(&output, "Phone").is_none());
+    assert!(find_text(&output, "Your phone uses the same October account. Sign in above to connect it.").is_some());
+}

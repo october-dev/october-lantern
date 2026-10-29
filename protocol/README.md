@@ -220,7 +220,8 @@ App → engine:
 {"type":"phone.token","accessToken":"<October Supabase access token>"}
 {"type":"phone.pair"}
 {"type":"phone.cancelPair"}
-{"type":"phone.decide","allow":true}
+{"type":"phone.decide","intentId":"<displayed intent uuid>","bind":"<displayed phone bind>","code":"123456","allow":true}
+{"type":"phone.retry"}
 {"type":"phone.revoke","bind":"<device bind uuid>"}
 {"type":"phone.stop"}
 ```
@@ -230,10 +231,20 @@ App → engine:
 Engine → app: the whole phone state, sent whenever it changes.
 ```json
 {"type":"phone","status":"offline|connecting|connected|plan-required|signed-out|error","message":null,
- "hostId":"…","devices":[{"bind":"…","label":"Harsh's iPhone","platform":"ios","pairedAt":1790000000000}],
- "pairing":{"qr":"https://october.dev/pair#…","expiresAt":1790000300000,"code":"123456","label":"Harsh's iPhone","finishing":false}}
+ "errorCode":null,"outcome":null,"busy":false,"installUrl":"<October app install URL>",
+ "hostId":"…","devices":[{"bind":"…","label":"Example iPhone","platform":"ios","pairedAt":1790000000000,"lastSeenAt":1790000001000,"removalPending":false}],
+ "pairing":{"intentId":"…","bind":"…","qr":null,"expiresAt":1790000300000,"code":"123456","label":"Example iPhone","platform":"ios","finishing":false}}
 ```
 `error` (with `hostId` null) means the host couldn't start, for example because `phone/host.json` is corrupt; `message` says why.
+
+The apps expose **October panel → Phone → Pair**, also reached by **Connect your phone** in an empty agent list. Sign-in comes first, with the same account's email shown during setup. Both UIs use `protocol/phone-app.json` as their single install destination, delivered by the engine as `installUrl`. Installation has its own QR/link, separate from the pairing QR. The pairing QR contains exactly the full `https://october.dev/pair#<base64url JSON>` URL, with `{v:2,hostId,hostStatic,intentId,secret,exp}`. UUIDs must be canonical, `exp` is epoch milliseconds, and a malformed create response is refused instead of inventing missing fields. URLs and plaintext pairing credentials stay in memory, never settings, logs or analytics; the deliberate clipboard fallback copies the link to the user's clipboard.
+
+Before the phone's handshake, `pairing.qr` contains the URL and `code`, `bind`, `label` and `platform` are null. After the handshake the URL is hidden (`qr:null`) and those comparison fields are populated. A new comparison raises the October panel at Phone. A decision must match the displayed intent, bind and code; stale decisions are rejected. The QR expires at the advertised deadline; an approved phone has up to 60 seconds to acknowledge/finalize. A disconnected comparison is discarded, requiring a new code. Pending credentials are not saved as paired devices; only their hashes are saved after finalization succeeds.
+
+`outcome` is `paired`, `denied`, `expired`, `removed` or null. `busy` gates repeated UI actions while a command runs. `phone.retry` retries the failed command (including a failed approval/removal), retries an acknowledged finalization, or reconnects the relay. Decision recovery after a lost response reads the authoritative intent and requires the same bind, device keys and a newer version; it never assumes the earlier request committed. Error codes distinguish `plan_required` (Upgrade), `plan_authority_unavailable`/`service_unavailable` (Retry), `SESSION_REQUIRED` (Sign in again), `PAIRING_EXPIRED`/`PAIRING_USED`/`PAIRING_DISCONNECTED` (New code), `PAIRING_DENIED` (Start again) and `PAIRING_REJECTED` (same-account guidance). Failed **consume** calls, such as a wrong-account phone, do not reach Lantern; the phone owns those errors, and Lantern always displays “Sign in to the phone with <email>” beside its QR.
+
+`lastSeenAt` is authenticated activity seen by this host, coalesced to at most one disk write per minute; null means it has not yet authenticated since pairing. Remove cancels pending deliveries, closes the phone's session and blocks its credential and push locally before calling October's revoke endpoint. If that call fails, the row remains with `removalPending:true` and **Retry removal**; it is removed from the list only once October confirms revocation. Neither UI promises phone access or alerts while this computer is asleep or Lantern is closed.
+
 
 On the phone, Lantern appears as one canvas whose nodes are Lantern's agents. Lantern supports these requests:
 - `core.handshake` (with the HMAC proof)

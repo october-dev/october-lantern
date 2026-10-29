@@ -55,7 +55,8 @@ fn read(mut resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
     let value: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     if !(200..300).contains(&status) {
         let code = value["code"].as_str().or(value["error"].as_str()).map(String::from);
-        let message = value["message"].as_str().or(value["msg"].as_str()).unwrap_or("request failed").to_string();
+        let message =
+            value["message"].as_str().or(value["msg"].as_str()).or(value["error"].as_str()).unwrap_or("request failed").to_string();
         return Err(ControlError { status, code, message }.into());
     }
     Ok(value)
@@ -88,6 +89,18 @@ fn rest_get(path: &str, access_token: &str) -> Result<Value> {
         .header("accept", "application/json")
         .call()?;
     read(resp)
+}
+
+/// Owner-readable intent, for recovering a decision whose response was lost. Never resend an
+/// approval against a guessed state version: the decision RPC intentionally uses compare-and-set.
+pub fn pairing_state(host_id: &str, intent_id: &str, access_token: &str) -> Result<Option<Value>> {
+    let rows = rest_get(
+        &format!(
+            "mobile_pair_intents?select=state,state_version,bind,device_static_pub,device_sign_pub&host_id=eq.{host_id}&intent_id=eq.{intent_id}&limit=1"
+        ),
+        access_token,
+    )?;
+    Ok(rows.as_array().and_then(|rows| rows.first()).cloned())
 }
 
 pub fn relay_ticket(id: &HostIdentity, access_token: &str) -> Result<String> {

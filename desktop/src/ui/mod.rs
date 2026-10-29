@@ -12,6 +12,7 @@ mod feed;
 pub mod icons;
 mod markdown;
 mod october;
+mod phone;
 mod point_ask;
 mod question;
 pub(crate) mod routines;
@@ -43,6 +44,17 @@ pub struct Env {
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct UiState {
+    pub phone_setup: bool,
+    #[serde(skip)]
+    pub phone_reveal: bool,
+    #[serde(skip)]
+    pub phone_sending: bool,
+    #[serde(skip)]
+    pub phone_error: Option<String>,
+    #[serde(skip)]
+    pub phone_copied: bool,
+    #[serde(skip)]
+    pub phone_remove: Option<String>,
     #[serde(skip)]
     pub show_picture: Option<egui::ColorImage>,
     pub routine_form: routines::Form,
@@ -177,6 +189,7 @@ pub enum SettingChange {
 /// Everything a person can do (CONTRACT §4; Atlas owns this enum, payloads frozen with the skeleton).
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiAction {
+    Phone(crate::model::phone::Action),
     Control {
         action: String,
         launch: Option<String>,

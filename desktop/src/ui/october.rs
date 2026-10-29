@@ -31,6 +31,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
                     });
                 });
                 cards::account::render(ui, cx);
+                super::phone::render(ui, cx);
                 cards::desktop::render(ui, cx, true);
             });
         });

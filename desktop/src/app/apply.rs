@@ -8,6 +8,7 @@ use serde_json::json;
 impl Lantern {
     pub(super) fn apply(&mut self, action: UiAction) {
         match action {
+            UiAction::Phone(action) => self.phone_action(action),
             UiAction::Control { action, launch } => {
                 if action == "continue" && !self.model.prefs.computer_use {
                     self.model.control_message = Some("Turn on app access in Settings before continuing.".into());

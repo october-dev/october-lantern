@@ -106,6 +106,7 @@ impl Lantern {
                     self.show(format!("Couldn't open @{handle}: {}", text(&event, "message").unwrap_or_else(|| "unknown error".into())));
                 }
             }
+            "phone" => self.phone_event(event.clone()),
             "october" => self.model.october = serde_json::from_value::<OctoberLink>(event["october"].clone()).ok(),
             "computerHold" => {
                 self.model.control_held = event["held"] == true;

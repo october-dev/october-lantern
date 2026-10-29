@@ -6,6 +6,7 @@ pub mod cards;
 pub mod drafts;
 pub mod inbox;
 pub mod inputs;
+pub mod phone;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -715,6 +716,7 @@ pub struct Account {
     pub plan: Option<String>,
     /// What the plan gives in Lantern; `None` when October's plan didn't say.
     pub lantern: Option<LanternRights>,
+    pub mobile_allowed: Option<bool>,
 }
 
 /// `lantern` in October's `/api/plan` (SQL `lantern_rights`).
@@ -1086,6 +1088,8 @@ pub struct Model {
     pub new_session: NewSessionModel,
     pub point_ask: PointAskModel,
     pub account: AccountState,
+    #[serde(skip_serializing)]
+    pub phone: Option<phone::Phone>,
     pub own_key: OwnKeyState,
     pub october: Option<OctoberLink>,
     pub harness: Option<HarnessStatus>,

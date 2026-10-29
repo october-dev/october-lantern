@@ -552,12 +552,16 @@ struct AgentTile: View {
 struct OctoberView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var account = OctoberAccount.shared
+    @ObservedObject private var phone = PhoneModel.shared
 
     @ObservedObject private var metrics = PanelMetrics.shared
 
     var body: some View {
-        ScrollView {
-            content
+        ScrollViewReader { scroll in
+            ScrollView { content }
+                .onAppear { if phone.setup { scroll.scrollTo("phone", anchor: .top) } }
+                .onChange(of: phone.setup) { _, setup in if setup { scroll.scrollTo("phone", anchor: .top) } }
+                .onChange(of: phone.state?.pairing?.code) { _, code in if code != nil { scroll.scrollTo("phone", anchor: .top) } }
         }
         .frame(maxHeight: max(200, metrics.maxHeight - 60))
         .fixedSize(horizontal: false, vertical: true)
@@ -574,6 +578,12 @@ struct OctoberView: View {
                 }
             }
             AccountCard()
+            if account.signedIn {
+                PhoneCard().id("phone")
+            } else {
+                Text("Your phone uses the same October account. Sign in above to connect it.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+            }
             DesktopCard(model: model, compact: true)
         }
         .padding(.horizontal, 16)

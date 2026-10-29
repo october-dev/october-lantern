@@ -92,6 +92,7 @@ struct PanelView: View {
                 title: "Nothing waiting on you",
                 detail: model.agents.isEmpty ? "No agents running." : "\(model.agents.count) agent\(model.agents.count == 1 ? "" : "s") running."
             )
+            connectPhone
         } else {
             ForEach(model.newInbox) { agent in
                 InboxCard(agent: agent, selected: model.target?.id == agent.id, isNew: true, model: model)
@@ -117,6 +118,7 @@ struct PanelView: View {
     @ViewBuilder private var agentList: some View {
         if model.agents.isEmpty {
             EmptyState(title: "No agents running", detail: "Start Claude Code, Codex, OpenCode, Pi, Gemini or another agent in any terminal.")
+            connectPhone
         } else {
             ForEach(model.ranked) { agent in
                 Button { model.openChat(agent) } label: {
@@ -132,6 +134,15 @@ struct PanelView: View {
             }
         }
         endedList
+    }
+
+    private var connectPhone: some View {
+        Button("Connect your phone") {
+            PhoneModel.shared.setup = true
+            model.panel = .october
+        }
+        .buttonStyle(SecondaryButtonStyle())
+        .padding(.bottom, 10)
     }
 
     /// Sessions Lantern started that have ended: what they asked and what they reported, kept

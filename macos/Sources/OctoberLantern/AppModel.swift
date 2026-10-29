@@ -206,7 +206,14 @@ final class AppModel: ObservableObject {
             }
             if self?.octoberLink != link { self?.octoberLink = link }
         }
-        engine.onPhone = { state in PhoneModel.shared.receive(state) }
+        engine.onPhone = { [weak self] state in
+            guard OctoberAccount.shared.signedIn else { return }
+            if PhoneModel.shared.receive(state) {
+                NSApp.activate()
+                self?.panel = .october
+                self?.reshowPanel.send()
+            }
+        }
         PhoneModel.shared.engine = engine
         engine.onShow = { message in ShowMe.shared.receive(message) }
         ShowMe.shared.send = { [weak self] type, fields in self?.engine.show(type, fields) ?? false }

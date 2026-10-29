@@ -419,6 +419,7 @@ impl Lantern {
             ctx_commands(ui.ctx(), frame);
             if raise {
                 ui.ctx().send_viewport_cmd(ViewportCommand::Focus);
+                ui.ctx().send_viewport_cmd(ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
             }
             if cleared {
                 return; // a screen capture is waiting for Lantern's windows to clear
@@ -454,7 +455,7 @@ impl Lantern {
     pub(super) fn panel_lost_focus(&mut self) {
         // Doing the highlighted step means returning to the real app. Closing this panel
         // would call stop_show and cancel the click's pending Next before it could run.
-        if self.model.panel == Some(crate::model::PanelMode::ShowMe) {
+        if self.model.panel == Some(crate::model::PanelMode::ShowMe) || self.model.panel == Some(crate::model::PanelMode::October) {
             return;
         }
         if shell::closes_on_focus_loss(self.inputs.drafts.is_empty(), self.model.dictating, self.windows.native_dialog, false) {

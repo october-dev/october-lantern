@@ -342,7 +342,11 @@ final class EngineClient {
     @discardableResult func phoneToken(_ accessToken: String) -> Bool { send(["type": "phone.token", "accessToken": accessToken]) }
     @discardableResult func phonePair() -> Bool { send(["type": "phone.pair"]) }
     @discardableResult func phoneCancelPair() -> Bool { send(["type": "phone.cancelPair"]) }
-    @discardableResult func phoneDecide(allow: Bool) -> Bool { send(["type": "phone.decide", "allow": allow]) }
+    @discardableResult func phoneDecide(_ pairing: PhoneModel.Pairing, allow: Bool) -> Bool {
+        guard let bind = pairing.bind, let code = pairing.code else { return false }
+        return send(["type": "phone.decide", "intentId": pairing.intentId, "bind": bind, "code": code, "allow": allow])
+    }
+    @discardableResult func phoneRetry() -> Bool { send(["type": "phone.retry"]) }
     @discardableResult func phoneRevoke(bind: String) -> Bool { send(["type": "phone.revoke", "bind": bind]) }
     @discardableResult func phoneStop() -> Bool { send(["type": "phone.stop"]) }
 
