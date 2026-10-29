@@ -89,6 +89,16 @@ pub fn hit(display: Display, target: Rect, point: Pos2) -> bool {
     point.is_finite() && layout(display, target, 0.0).ring.expand(16.0 * display.scale).contains(point)
 }
 
+/// Keep the guide's interactive card off the control below the click-through ring. All
+/// coordinates use the same units; the caller uses its panel viewport's points.
+pub fn panel_away(panel: Rect, work: Rect, target: Rect) -> Rect {
+    if !panel.expand(16.0).intersects(target) {
+        return panel;
+    }
+    let x = if target.center().x >= work.center().x { work.left() + 16.0 } else { work.right() - panel.width() - 16.0 };
+    Rect::from_min_size(pos2(x.clamp(work.left(), (work.right() - panel.width()).max(work.left())), panel.top()), panel.size())
+}
+
 pub fn paint(ui: &eframe::egui::Ui, display: Display, target: Rect, step: u64, pulse: f32) {
     use eframe::egui::{Align2, Color32, FontId, Shape, Stroke, StrokeKind};
     let physical = layout(display, target, pulse);
@@ -197,5 +207,19 @@ mod tests {
         now = first.clone();
         now.display.scale = 1.5;
         assert!(first.changed(&now));
+    }
+
+    #[test]
+    fn the_guide_card_moves_away_from_a_covered_control_but_not_one_on_another_monitor() {
+        let work = Rect::from_min_size(pos2(-1600.0, 0.0), vec2(1600.0, 1000.0));
+        let panel = Rect::from_min_size(pos2(-400.0, 100.0), vec2(380.0, 600.0));
+        let target = Rect::from_min_size(pos2(-200.0, 150.0), vec2(50.0, 40.0));
+        let away = panel_away(panel, work, target);
+        assert!(!away.intersects(target));
+        assert!(work.contains_rect(away));
+        assert_eq!(away.size(), panel.size());
+        assert_eq!(panel_away(panel, work, target.translate(vec2(2000.0, 0.0))), panel);
+        let left_target = Rect::from_min_size(away.min + vec2(50.0, 50.0), vec2(20.0, 20.0));
+        assert!(!panel_away(away, work, left_target).intersects(left_target));
     }
 }

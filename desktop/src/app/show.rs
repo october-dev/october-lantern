@@ -286,6 +286,10 @@ impl Lantern {
         }
     }
 
+    pub(super) fn show_target(&self) -> Option<Rect> {
+        self.guide.display?.target(self.guide.size, target_box(self.model.guide.as_ref()?)?)
+    }
+
     /// A separate native viewport. OS placement uses physical bounds rather than dividing a
     /// secondary monitor's origin by the pill's DPI (which breaks mixed-scale desktops).
     pub(super) fn show_overlay(&mut self, ctx: &egui::Context) {

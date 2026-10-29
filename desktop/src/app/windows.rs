@@ -376,7 +376,8 @@ impl Lantern {
     }
 
     /// The panel window beside the pill, while a panel is open.
-    fn panel(&mut self, ctx: &egui::Context, work: Rect, _scale: f32) {
+    fn panel(&mut self, ctx: &egui::Context, work: Rect, scale: f32) {
+        let guide_target = (self.model.panel == Some(crate::model::PanelMode::ShowMe)).then(|| self.show_target()).flatten();
         let w = &mut self.windows;
         if self.model.panel.is_none() {
             w.panel_opened = None;
@@ -388,7 +389,11 @@ impl Lantern {
         let pill = Rect::from_min_size(w.pill_at.unwrap_or_default(), w.pill_size.unwrap_or(PILL_COLLAPSED));
         let edge = self.model.prefs.edge;
         let wanted = vec2(ui::theme::PANEL_WIDTH, if w.panel_height > 0.0 { w.panel_height } else { 200.0 });
-        let frame = shell::panel_frame(pill, wanted, edge, work);
+        let mut frame = shell::panel_frame(pill, wanted, edge, work);
+        if let Some(target) = guide_target {
+            let target = Rect::from_min_max((target.min.to_vec2() / scale).to_pos2(), (target.max.to_vec2() / scale).to_pos2());
+            frame = crate::show_overlay::panel_away(frame, work, target);
+        }
         if !w.panel_adopted && w.frames.is_multiple_of(5) {
             w.panel_adopted = platform::adopt(PANEL_TITLE, Role::Panel);
         }
