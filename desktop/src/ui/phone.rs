@@ -62,13 +62,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                 );
             }
             if busy {
-                c::label(
-                    ui,
-                    if phone.is_none_or(|s| s.pairing.is_none()) { "Creating a pairing code…" } else { "Connecting…" },
-                    11.5,
-                    Weight::Regular,
-                    t::MUTED,
-                );
+                c::label(ui, "Working…", 11.5, Weight::Regular, t::MUTED);
             }
             if let Some(message) = cx.view.phone_error.as_deref().or(phone.and_then(|s| s.message.as_deref())) {
                 c::label(ui, message, 11.5, Weight::Regular, t::AMBER);

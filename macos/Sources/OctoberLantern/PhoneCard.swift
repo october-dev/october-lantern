@@ -125,7 +125,7 @@ struct PhoneCard: View {
             if model.busy {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
-                    Text(model.state?.pairing == nil ? "Creating a pairing code…" : "Connecting…").foregroundStyle(Theme.muted)
+                    Text("Working…").foregroundStyle(Theme.muted)
                 }
             }
             if let message = model.localError ?? model.state?.message {
