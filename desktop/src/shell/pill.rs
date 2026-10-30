@@ -1,7 +1,7 @@
 //! The always-on button (Swift `PillView`): collapsed, just the lantern, lit with a count when
-//! agents are waiting on you; hovered (or with a panel open) it shows its four actions.
+//! agents are waiting on you; hovered (or with a panel open) it shows its five actions.
 //! Metrics from PillView.swift: padding 6, lantern 34 (+2), sections 8 apart, actions 32 square
-//! and 6 apart, a 22x1 divider with 2 below; 50 x 50 collapsed, 50 x 213 expanded.
+//! and 6 apart, a 22x1 divider with 2 below; 50 x 50 collapsed, 50 x 251 expanded.
 use crate::model::{EngineHealth, Model, PanelMode};
 use crate::ui::components::{material_tint, paint_glass};
 use crate::ui::icons::{Icon, paint_icon};
@@ -33,7 +33,7 @@ pub fn help_font() -> egui::FontId {
     theme::font(12.0, theme::Weight::Regular)
 }
 
-/// Draws the pill filling `ui`'s window and reports actions. `expanded` decides whether the four
+/// Draws the pill filling `ui`'s window and reports actions. `expanded` decides whether the five
 /// actions show.
 pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, out: &mut Vec<UiAction>) -> PillInput {
     let rect = ui.max_rect();
@@ -75,12 +75,13 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
         painter.hline(rect.center().x - 11.0..=rect.center().x + 11.0, y + 0.5, Stroke::new(1.0, theme::STROKE));
         y += 1.0 + 2.0 + 6.0;
         let panel = model.panel;
-        // PillView.swift's order: Ask Lantern, Point & Ask, a new agent, your agents.
+        // PillView.swift's order: Ask Lantern, Point & Ask, a new agent, your agents, Connections.
         for (icon, help, active) in [
             (Icon::Sparkles, "Ask Lantern: ask anything, or tell it what to do", panel == Some(PanelMode::Assistant)),
             (Icon::PointAsk, "Point & Ask: select part of the screen and ask about it", false),
             (Icon::Plus, "Start a new agent", panel == Some(PanelMode::NewSession)),
             (Icon::Layers, "Your agents", panel.is_some_and(PanelMode::is_list)),
+            (Icon::Devices, "Connections", panel == Some(PanelMode::October)),
         ] {
             let slot = Rect::from_min_size(pos2(rect.center().x - ICON / 2.0, y), vec2(ICON, ICON));
             let response = ui.interact(slot, ui.id().with(help), Sense::click());
@@ -99,6 +100,7 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
                     Icon::Sparkles => UiAction::TogglePanel(PanelMode::Assistant),
                     Icon::Layers => UiAction::TogglePanel(PanelMode::Inbox),
                     Icon::Plus => UiAction::StartNewSession,
+                    Icon::Devices => UiAction::TogglePanel(PanelMode::October),
                     _ => UiAction::StartPointAsk,
                 });
             }
@@ -206,7 +208,7 @@ mod tests {
         let ctx = egui::Context::default();
         theme::install(&ctx);
         let assets = Assets::load(&ctx);
-        let size = if expanded { vec2(50.0, 213.0) } else { vec2(50.0, 50.0) };
+        let size = if expanded { crate::shell::PILL_EXPANDED } else { crate::shell::PILL_COLLAPSED };
         let mut help = None;
         for _ in 0..2 {
             let input = egui::RawInput {
@@ -232,16 +234,17 @@ mod tests {
         assert_eq!(help_at(&model, false, lantern).as_deref(), Some("2 new, waiting on you · Ask Lantern"));
         let badge = problem_badge(Rect::from_min_size(pos2(PAD, PAD), vec2(LANTERN, LANTERN))).center();
         assert_eq!(help_at(&model, false, badge), problem_text(&model.engine));
-        // Expanded, top to bottom: Ask Lantern, Point & Ask, a new agent, your agents.
+        // Expanded, top to bottom: Ask Lantern, Point & Ask, a new agent, your agents, Connections.
         let first = PAD + LANTERN + 8.0 + 9.0 + ICON / 2.0;
-        let helps: Vec<_> = (0..4).map(|i| help_at(&model, true, pos2(25.0, first + i as f32 * (ICON + 6.0))).unwrap()).collect();
+        let helps: Vec<_> = (0..5).map(|i| help_at(&model, true, pos2(25.0, first + i as f32 * (ICON + 6.0))).unwrap()).collect();
         assert_eq!(
             helps,
             [
                 "Ask Lantern: ask anything, or tell it what to do",
                 "Point & Ask: select part of the screen and ask about it",
                 "Start a new agent",
-                "Your agents"
+                "Your agents",
+                "Connections"
             ]
         );
     }

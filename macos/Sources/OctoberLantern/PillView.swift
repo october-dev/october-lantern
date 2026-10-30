@@ -69,6 +69,9 @@ struct PillView: View {
                     PillIcon(symbol: "square.stack.3d.up", active: model.panel?.isList == true, help: "Your agents") {
                         model.toggle(.inbox)
                     }
+                    PillIcon(symbol: "laptopcomputer.and.iphone", active: model.panel == .october, help: "Connections") {
+                        model.toggle(.october)
+                    }
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }

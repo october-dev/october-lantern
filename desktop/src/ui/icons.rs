@@ -6,6 +6,8 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke};
 pub enum Icon {
     Sparkles,
     Layers,
+    /// A computer and phone (Connections).
+    Devices,
     Plus,
     PointAsk,
     Close,
@@ -216,6 +218,12 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             p.line(&[(6.0, 9.0), (10.0, 12.0), (6.0, 15.0)]);
             p.line(&[(12.0, 15.0), (18.0, 15.0)]);
         }
+        Devices => {
+            p.rect((2.0, 3.0), (16.0, 15.0), 1.5, false);
+            p.line(&[(2.0, 15.0), (1.0, 19.5), (14.0, 19.5)]);
+            p.rect((16.0, 8.0), (23.0, 22.0), 1.5, false);
+            p.line(&[(18.5, 19.5), (20.5, 19.5)]);
+        }
         Window => {
             p.rect((2.0, 4.0), (22.0, 20.0), 2.0, false);
             p.circle(5.0, 7.0, 0.6, true);
@@ -386,6 +394,7 @@ mod tests {
                 Icon::Refresh,
                 Icon::PlayCircle,
                 Icon::Bubble,
+                Icon::Devices,
             ] {
                 let mut output = ctx.run_ui(egui::RawInput::default(), |ui| paint_icon(ui.painter(), rect, icon, Color32::WHITE));
                 output.textures_delta.clear();

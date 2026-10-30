@@ -62,7 +62,7 @@ On Mac/Linux, `python3 scripts/smoke-driver-recovery.py path/to/debug/lantern-en
 
 ## Connect your phone
 
-Both apps expose **October panel → Phone → Pair**. On Mac, **October…** is available in both the menu bar icon and the pill’s right-click menu. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in and “Your phone uses the same October account” first. The phone section appears after sign-in.
+Both apps expose **October panel → Phone → Pair**. The **Connections** button (computer and phone) at the bottom of the expanded pill opens the October panel, with account, phone and October Desktop setup. On Mac, **October…** is also available in both the menu bar icon and the pill’s right-click menu. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in and “Your phone uses the same October account” first. The phone section appears after sign-in.
 
 1. **Pair:** creates the pairing QR immediately; the signed-in **Connect your phone** shortcut does the same. Reopening a live pairing preserves its code. There is no installation gate or install QR.
 2. **Scan to pair:** “Open your iPhone Camera and point it here.” The large QR contains October's HTTPS universal link. The October scanner and **Copy pairing link** are alternatives. **Get the October app** sits alongside the QR, using the single TestFlight destination in `protocol/phone-app.json`. New users install, sign in with the displayed email, and scan. Expiry counts down; **New code** replaces it in one click if installation took longer.

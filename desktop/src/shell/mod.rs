@@ -13,9 +13,9 @@ pub const EDGE_GAP: f32 = 10.0;
 pub const SCREEN_MARGIN: f32 = 8.0;
 /// Between the pill and the panel.
 pub const PANEL_GAP: f32 = 10.0;
-/// Pill sizes: collapsed (just the lantern) and expanded (lantern + 4 actions).
+/// Pill sizes: collapsed (just the lantern) and expanded (lantern + 5 actions).
 pub const PILL_COLLAPSED: Vec2 = vec2(50.0, 50.0);
-pub const PILL_EXPANDED: Vec2 = vec2(50.0, 213.0);
+pub const PILL_EXPANDED: Vec2 = vec2(50.0, 251.0);
 /// Collapse this long after the pointer leaves.
 pub const COLLAPSE_AFTER: f64 = 0.7;
 /// After Welcome, the pill stays expanded this long so people can find it.
