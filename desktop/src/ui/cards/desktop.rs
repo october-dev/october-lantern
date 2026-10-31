@@ -16,6 +16,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, compact: bool) {
             if !compact { artwork(ui, cx, paired, status(link) == "pairing"); }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
+                if compact { ui.add(egui::Image::new(&cx.assets.october).fit_to_exact_size(egui::Vec2::splat(30.0)).corner_radius(7)); }
                 let (title, action) = action(link);
                 let button_width = ui.painter().layout_no_wrap(title.into(), t::font(12.0, Weight::Semibold), t::INK).size().x + 24.0;
                 let width = (ui.available_width() - button_width - 8.0).max(1.0);
@@ -34,6 +35,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, compact: bool) {
                 if clicked { cx.emit(action); }
             });
             if !compact { c::label(ui, "October Desktop is October's app for running teams of agents on a shared canvas. Connect it and the agents on your canvas show up in Lantern with their names and questions, and your replies reach them through October.", 11.5, Weight::Regular, t::white(0.8)); }
+            if compact { c::label(ui, "Bring your canvas agents into Lantern.", 11.5, Weight::Regular, t::white(0.85)); }
             c::label(ui, detail(link), 11.5, Weight::Regular, t::MUTED);
             if let Some(code) = link.and_then(|link| link.pairing_code.as_deref()) {
                 egui::Frame::new().fill(t::AMBER.gamma_multiply(0.1)).corner_radius(10).inner_margin(Margin::same(10)).show(ui, |ui| {

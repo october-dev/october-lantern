@@ -15,6 +15,7 @@ struct DesktopCard: View {
             if !compact { DesktopArtwork(connected: paired, pairing: link?.status == "pairing") }
             // Title with its status under it, the action on the right; the explanation below, full width.
             HStack(alignment: .center, spacing: 8) {
+                if compact { OctoberLogo(size: 30) }
                 VStack(alignment: .leading, spacing: 4) {
                     Text("October Desktop").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
                     StatusPill(text: statusText(link), color: statusColor(link))
@@ -27,6 +28,10 @@ struct DesktopCard: View {
             Text("October Desktop is October's app for running teams of agents on a shared canvas. Connect it and the agents on your canvas show up in Lantern with their names and questions, and your replies reach them through October.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.8))
                 .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+            }
+            if compact {
+                Text("Bring your canvas agents into Lantern.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
             }
             Text(detail(link)).font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)

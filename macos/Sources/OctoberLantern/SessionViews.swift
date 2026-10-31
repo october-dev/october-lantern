@@ -548,50 +548,6 @@ struct AgentTile: View {
     }
 }
 
-/// October: the account, October Desktop and the phone app, each as its own card.
-struct OctoberView: View {
-    @ObservedObject var model: AppModel
-    @ObservedObject var account = OctoberAccount.shared
-    @ObservedObject private var phone = PhoneModel.shared
-
-    @ObservedObject private var metrics = PanelMetrics.shared
-
-    var body: some View {
-        ScrollViewReader { scroll in
-            ScrollView { content }
-                .onAppear { if phone.setup { scroll.scrollTo("phone", anchor: .top) } }
-                .onChange(of: phone.setup) { _, setup in if setup { scroll.scrollTo("phone", anchor: .top) } }
-                .onChange(of: phone.state?.pairing?.intentId) { _, intent in if intent != nil { scroll.scrollTo("phone", anchor: .top) } }
-                .onChange(of: phone.state?.pairing?.code) { _, code in if code != nil { scroll.scrollTo("phone", anchor: .top) } }
-        }
-        .frame(maxHeight: max(200, metrics.maxHeight - 60))
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var content: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                OctoberLogo(size: 40)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("October").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
-                    Text("Optional. Sign in for Ask and Point & Ask answers; connect October Desktop to see its agents here.")
-                        .font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            AccountCard()
-            if account.signedIn {
-                PhoneCard().id("phone")
-            } else {
-                Text("Your phone uses the same October account. Sign in above to connect it.")
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
-            }
-            DesktopCard(model: model, compact: true)
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 16)
-    }
-}
-
 struct OctoberLogo: View {
     var size: CGFloat = 26
 
