@@ -91,7 +91,7 @@ final class PhoneModel: ObservableObject {
     }
 }
 
-/// October panel → Phone → Pair. The same section owns installation, scanning, comparison,
+/// Connections → Phone → Pair. The same section owns installation, scanning, comparison,
 /// completion and device management; a pending request never opens a different dialog.
 struct PhoneCard: View {
     @ObservedObject var model = PhoneModel.shared
@@ -109,7 +109,7 @@ struct PhoneCard: View {
                     Button("Pair") { model.pair() }.buttonStyle(AmberButtonStyle()).disabled(model.busy)
                 }
             }
-            Text("See waiting agents and reply from your phone.").font(.system(size: 12)).foregroundStyle(Theme.muted)
+            Text("See waiting agents and reply in the October iPhone app.").font(.system(size: 12)).foregroundStyle(Theme.muted)
             if model.state?.status == "plan-required" || account.plan?.features?.mobile?.enabled == false {
                 Text("Your plan does not currently include mobile access.").foregroundStyle(Theme.amber)
                 Button("Upgrade") { NSWorkspace.shared.open(URL(string: "https://www.october.dev/pricing")!) }

@@ -62,7 +62,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) -> f32 {
 /// The window's segmented control (SwiftUI TabView in Settings): one rounded track, text-only
 /// segments, the selected one filled, thin dividers between unselected neighbours.
 fn tabs(ui: &mut Ui, cx: &mut Ctx) {
-    const TITLES: [&str; 4] = ["General", "Agents", "October", "About"];
+    const TITLES: [&str; 4] = ["General", "Agents", "Connections", "About"];
     let (row, _) = ui.allocate_exact_size(vec2(SIZE.x, 48.0), Sense::hover());
     let font = t::font(13.0, Weight::Regular);
     let galleys: Vec<_> = TITLES.iter().map(|title| ui.painter().layout_no_wrap((*title).into(), font.clone(), t::INK)).collect();
@@ -467,16 +467,10 @@ fn agents(ui: &mut Ui, cx: &mut Ctx) {
 fn october(ui: &mut Ui, cx: &mut Ctx) {
     ui.painter().rect_filled(ui.max_rect().expand(20.0), 0, Color32::from_gray(28));
     ui.spacing_mut().item_spacing.y = 14.0;
-    c::label(
-        ui,
-        "Lantern works on its own. Signing in to October adds Ask and Point & Ask answers; October Desktop shows its agents here.",
-        12.0,
-        Weight::Regular,
-        t::MUTED,
-    );
+    c::label(ui, "Manage your account, your own AI key, and optional app connections.", 12.0, Weight::Regular, t::MUTED);
     cards::account::render(ui, cx);
     own_key(ui, cx);
-    cards::desktop::render(ui, cx, false);
+    cards::desktop::render(ui, cx);
 }
 
 /// "Your own AI key" (Swift `OwnKeySection`): saved, it shows the provider, its last four
@@ -826,7 +820,7 @@ mod tests {
         for (index, title, content) in [
             (0, "General", "Open at login"),
             (1, "Agents", "Count in Waiting and notify"),
-            (2, "October", "Connect to October"),
+            (2, "Connections", "Sign in to Lantern"),
             (3, "About", "October Lantern"),
         ] {
             assert!(screen.click(title).is_empty());
@@ -969,7 +963,7 @@ mod tests {
         let mut screen = Screen::new(1);
         screen.ctx.enable_accesskit();
         let tree = screen.frame(Vec::new()).1.platform_output.accesskit_update.unwrap();
-        for label in ["General", "Agents", "October", "About", "Claude Code", "Codex", "OpenCode"] {
+        for label in ["General", "Agents", "Connections", "About", "Claude Code", "Codex", "OpenCode"] {
             assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some(label)), "missing accessible control {label}");
         }
         assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some("Claude Code") && node.role() == egui::accesskit::Role::Switch));

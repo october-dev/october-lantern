@@ -13,7 +13,7 @@ struct SettingsView: View {
         TabView(selection: $tab) {
             general.tabItem { Label("General", systemImage: "gearshape") }.tag(0)
             agents.tabItem { Label("Agents", systemImage: "square.stack.3d.up") }.tag(1)
-            october.tabItem { Label("October", systemImage: "leaf") }.tag(2)
+            october.tabItem { Label("Connections", systemImage: "person.crop.circle") }.tag(2)
             about.tabItem { Label("About", systemImage: "info.circle") }.tag(3)
         }
         .frame(width: 520, height: 480)
@@ -153,7 +153,7 @@ struct SettingsView: View {
     private var october: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Lantern works on its own. Signing in to October adds Ask and Point & Ask answers, from October's AI or your own AI key; October Desktop shows its agents here.")
+                Text("Manage your account, your own AI key, and optional app connections.")
                     .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 AccountCard()
                 OwnKeyCard()

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Connect to October": sign in with an October account, or show who's signed in.
+/// Lantern account entry points, backed by the shared October identity.
 struct AccountCard: View {
     @ObservedObject var account = OctoberAccount.shared
     @State private var useEmail = false
@@ -17,14 +17,14 @@ struct AccountCard: View {
                         .font(.system(size: 17)).foregroundStyle(account.signedIn ? Theme.green : Theme.amber)
                         .frame(width: 30, height: 30)
                         .background(RoundedRectangle(cornerRadius: 9).fill((account.signedIn ? Theme.green : Theme.amber).opacity(0.1)))
-                    Text(account.signedIn ? "Connected to October" : "Connect to October")
+                    Text(account.signedIn ? "Your account" : "Sign in to Lantern")
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
                     Spacer(minLength: 4)
                     if let plan = account.plan, account.signedIn {
                         StatusPill(text: "\(plan.plan.capitalized) plan", color: Theme.green)
                     }
                 }
-                Text(account.signedIn ? (account.session?.email ?? "Signed in") : "One October account for Lantern and your phone.")
+                Text(account.signedIn ? (account.session?.email ?? "Signed in") : "Your helper is one sign-in away.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -61,6 +61,11 @@ struct AccountCard: View {
                         field(TextField("Email", text: $email))
                         field(SecureField("Password", text: $password).onSubmit(signInWithEmail))
                         HStack {
+                            Button("Forgot password?") { NSWorkspace.shared.open(OctoberAccount.passwordResetURL) }
+                                .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.amber)
+                            Spacer()
+                        }
+                        HStack {
                             Button("Back") { useEmail = false }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.muted)
                             Spacer()
                             Button(account.signingIn ? "Signing in…" : "Sign In", action: signInWithEmail)
@@ -88,6 +93,16 @@ struct AccountCard: View {
                         }
                         .buttonStyle(.plain)
                     }
+                }
+                if !account.signingIn {
+                    HStack(spacing: 4) {
+                        Text("New to Lantern?").foregroundStyle(Theme.muted)
+                        Button("Create account") { password = ""; useEmail = false; account.createAccount() }
+                            .buttonStyle(.plain).foregroundStyle(Theme.amber)
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                    Text("Lantern is made by October. Already have an October account? Use it here and in the October phone app.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 if let error = account.error {
                     Text(error).font(.system(size: 11.5)).foregroundStyle(Theme.red).fixedSize(horizontal: false, vertical: true)

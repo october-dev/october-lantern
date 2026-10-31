@@ -34,7 +34,7 @@ struct PillView: View {
                 Button(dictation.isActive ? "Stop Dictating" : "Dictate a Reply") { model.toggleDictation() }
                 Divider()
                 Button("Routines…") { model.panel = .routines }
-                Button("October…") { model.panel = .october }
+                Button("Connections…") { model.panel = .october }
                 Button("Settings…") { onMenu() }
                 Divider()
                 // Also in the menu bar icon's menu, which a full menu bar can hide.

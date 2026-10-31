@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// October panel: account, phone setup and the optional Desktop connection.
+/// Connections: the user's account and phone. Optional integrations live in Settings.
 struct OctoberView: View {
-    @ObservedObject var model: AppModel
     @ObservedObject var account = OctoberAccount.shared
     @ObservedObject var phone = PhoneModel.shared
     @ObservedObject private var metrics = PanelMetrics.shared
@@ -16,10 +15,9 @@ struct OctoberView: View {
                     if account.signedIn {
                         PhoneCard(model: phone, account: account).id("phone")
                     } else {
-                        Text("Your phone uses the same October account. Sign in above to connect it.")
+                        Text("Sign in to Lantern to connect your phone. Use the same account in the October app.")
                             .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                     }
-                    DesktopCard(model: model, compact: true)
                 }
                 .padding(.horizontal, 16).padding(.bottom, 16)
             }
@@ -36,11 +34,8 @@ struct OctoberView: View {
 struct ConnectionsHeader: View {
     var body: some View {
         HStack(spacing: 12) {
-            ZStack(alignment: .bottomTrailing) {
-                if let logo = Assets.logo {
-                    Image(nsImage: logo).resizable().interpolation(.high).scaledToFit().frame(width: 48, height: 48)
-                }
-                OctoberLogo(size: 18).padding(2).background(Color(white: 0.13), in: RoundedRectangle(cornerRadius: 6)).offset(x: 3, y: 1)
+            if let logo = Assets.logo {
+                Image(nsImage: logo).resizable().interpolation(.high).scaledToFit().frame(width: 48, height: 48)
             }
             VStack(alignment: .leading, spacing: 5) {
                 Text("Keep your agents close.")

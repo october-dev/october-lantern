@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onNotify = { agent in Notifier.shared.post(for: agent) }
 
         _ = Updater.shared
-        // Restore a saved October sign-in now, not when the October panel is first opened.
+        // Restore a saved October sign-in now, not when Connections is first opened.
         _ = OctoberAccount.shared
         model.start()
         windows.showPill()
@@ -331,7 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if self.windows.pillVisible { self.windows.hidePill() } else { self.windows.showPill() }
         }
         item("Routines") { [weak self] in self?.show(.routines) }
-        item("October…") { [weak self] in self?.show(.october) }
+        item("Connections…") { [weak self] in self?.show(.october) }
         item("Settings…", ",") { [weak self] in self?.showSettings() }
         if Updater.shared.available {
             item("Check for Updates…") { Updater.shared.checkForUpdates() }

@@ -87,6 +87,23 @@ pub fn render_with(ui: &mut Ui, cx: &mut Ctx, show_header: bool) {
                         }
                     });
                 }
+                if !cx.model.account.pending {
+                    ui.horizontal(|ui| {
+                        c::label(ui, "New to Lantern?", 11.5, Weight::Medium, t::MUTED);
+                        if c::plain_button(ui, "Create account", 11.5, Weight::Medium, t::AMBER).clicked() {
+                            cx.view.account_password.clear();
+                            cx.view.account_use_email = false;
+                            cx.emit(UiAction::CreateAccount);
+                        }
+                    });
+                    c::label(
+                        ui,
+                        "Lantern is made by October. Already have an October account? Use it here and in the October phone app.",
+                        11.0,
+                        Weight::Regular,
+                        t::MUTED,
+                    );
+                }
                 if let Some(error) = &cx.model.account.error {
                     c::label(ui, error, 11.5, Weight::Regular, t::RED);
                 }
@@ -106,15 +123,9 @@ fn header(ui: &mut Ui, cx: &mut Ctx, signed_in: bool) {
             ui.painter().circle_filled(badge.center(), 4.5, t::GREEN);
             c::paint_icon(ui.painter(), badge.shrink(1.5), Icon::Check, t::black(0.85));
         }
-        c::label(ui, if signed_in { "Connected to October" } else { "Connect to October" }, 13.0, Weight::Semibold, t::INK);
+        c::label(ui, if signed_in { "Your account" } else { "Sign in to Lantern" }, 13.0, Weight::Semibold, t::INK);
     });
-    c::label(
-        ui,
-        if signed_in { detail(cx) } else { "One October account for Lantern and your phone.".into() },
-        11.5,
-        Weight::Regular,
-        t::MUTED,
-    );
+    c::label(ui, if signed_in { detail(cx) } else { "Your helper is one sign-in away.".into() }, 11.5, Weight::Regular, t::MUTED);
 }
 
 /// What the plan gives in Lantern (Lifetime, the trial, October's questions a day), Refresh, and
@@ -244,6 +255,9 @@ fn email_form(ui: &mut Ui, cx: &mut Ctx) {
         field(ui, "account-email", "Email", &mut cx.view.account_email, false);
         let password = field(ui, "account-password", "Password", &mut cx.view.account_password, true);
         let enter = password.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if c::plain_button(ui, "Forgot password?", 11.5, Weight::Regular, t::AMBER).clicked() {
+            cx.emit(UiAction::OpenUrl(crate::account::PASSWORD_RESET_URL.into()));
+        }
         ui.horizontal(|ui| {
             if c::plain_button(ui, "Back", 12.0, Weight::Regular, t::MUTED).clicked() {
                 cx.view.account_use_email = false;

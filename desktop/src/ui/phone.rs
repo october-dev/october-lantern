@@ -1,4 +1,4 @@
-//! October panel → Phone → Pair. Installation, QR and code comparison share one section.
+//! Connections → Phone → Pair. Installation, QR and code comparison share one section.
 use super::{
     Ctx, UiAction, components as c,
     theme::{self as t, Weight},
@@ -16,7 +16,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
     }
     let model = cx.model;
     let Some(account) = &model.account.signed_in else {
-        c::label(ui, "Your phone uses the same October account. Sign in above to connect it.", 11.5, Weight::Regular, t::MUTED);
+        c::label(ui, "Sign in to Lantern to connect your phone. Use the same account in the October app.", 11.5, Weight::Regular, t::MUTED);
         return;
     };
     let email = if account.email.is_empty() { "the same October account as this computer" } else { &account.email };
@@ -40,7 +40,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                     }
                 });
             });
-            c::label(ui, "See waiting agents and reply from your phone.", 12.0, Weight::Regular, t::MUTED);
+            c::label(ui, "See waiting agents and reply in the October iPhone app.", 12.0, Weight::Regular, t::MUTED);
             let plan_required = account.mobile_allowed == Some(false) || phone.is_some_and(|s| s.status == "plan-required");
             if plan_required {
                 c::label(ui, "Your plan does not currently include mobile access.", 11.5, Weight::Regular, t::AMBER);
