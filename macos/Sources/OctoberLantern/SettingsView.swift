@@ -94,7 +94,7 @@ struct SettingsView: View {
                 Text("Point & Ask and Ask Lantern can point at what you asked about, on your screen, step by step. Each step sends a picture of the whole screen and the names of the buttons and menus on it (never what's typed in fields) to October's AI; nothing is kept. Pointing on screen uses Cua Driver (above); without it, the place is marked on a picture instead.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Ask before agents act", isOn: $prefs.askFirst)
-                Text("Off: agents Lantern starts work without stopping to ask (Claude Code, Codex and others in their auto-approve mode), so tasks finish on their own. On: each agent asks you before it runs commands or changes files.")
+                Text("Off: agents Lantern starts work without stopping to ask, so tasks finish on their own. Claude Code runs in its auto mode, which still holds back risky actions; Codex and others in their auto-approve mode. On: each agent asks you before it runs commands or changes files.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Also give new sessions the list of tools on this Mac", isOn: $prefs.toolkitInSessions)
                 HStack {

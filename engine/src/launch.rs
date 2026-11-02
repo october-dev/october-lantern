@@ -11,7 +11,6 @@
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -172,6 +171,8 @@ pub struct LaunchEnv {
     pub env: Vec<(String, String)>,
     /// Without the agent's auto-approve flags (`hands_free_args`).
     pub ask_first: bool,
+    /// A Claude Code without auto mode, which bypasses its permission checks instead.
+    pub claude_bypass: bool,
     pub run_once: bool,
 }
 
@@ -185,6 +186,7 @@ pub(crate) fn october_env(on_path: bool, bundled: Option<&crate::harness::Bundle
         path_prefix: bundled.map(|b| b.node_bin.to_string_lossy().into_owned()),
         env: session,
         ask_first: false,
+        claude_bypass: false,
         run_once: false,
     }
 }
@@ -400,7 +402,7 @@ pub(crate) fn agent_command_with(
         cmd.push(' ');
         cmd.push_str(&quote(arg));
     }
-    for arg in hands_free_args(kind, extra.ask_first) {
+    for arg in hands_free_args(kind, extra.ask_first, extra.claude_bypass) {
         cmd.push(' ');
         cmd.push_str(&quote(arg));
     }
@@ -469,6 +471,7 @@ fn unix_command_in(
         bail!("the agent executable is missing");
     }
     let mut direct = extra.clone();
+    direct.claude_bypass = kind == Kind::Claude && !extra.ask_first && !claude_has_auto_mode(env.command_at(&binary), &binary);
     direct.program = Some(binary.to_string_lossy().into_owned());
     direct.path_prefix = None;
     direct.env.clear();
@@ -604,6 +607,11 @@ pub(crate) fn agent_argv(
     };
     // Asked before the Bus's arguments are added: whether Codex takes it depends only on Codex.
     let no_daemon = !run_once && kind == Kind::Codex && codex_has_no_daemon(&executable, &program, &args);
+    let claude_bypass = kind == Kind::Claude && !ask_first && {
+        let mut help = Command::new(&program);
+        help.args(&args);
+        !claude_has_auto_mode(help, &executable)
+    };
     if let Some(b) = bus {
         args.extend(b.args.iter().cloned());
     }
@@ -611,7 +619,7 @@ pub(crate) fn agent_argv(
         args.push("--no-daemon".into());
     }
     args.extend(once_args(kind, run_once).iter().map(|a| a.to_string()));
-    args.extend(hands_free_args(kind, ask_first).iter().map(|a| a.to_string()));
+    args.extend(hands_free_args(kind, ask_first, claude_bypass).iter().map(|a| a.to_string()));
     if let (Some(m), Some(flag)) = (model, crate::models::flag(kind)) {
         args.extend([flag.to_string(), m.to_string()]);
     }
@@ -652,16 +660,20 @@ fn once_args(kind: Kind, once: bool) -> &'static [&'static str] {
 
 /// Agents Lantern starts work without stopping to ask: Lantern's tasks often run in the
 /// background, where nobody sees a question (one waited half an hour on "Do you trust this
-/// folder?"). Each agent's own auto-approve mode: Claude Code bypasses its permission checks,
-/// without the mode's one-time warning; its folder is trusted by `trust_claude_folder`. Codex
-/// skips its folder question when it's given an approval mode. Pi, OpenCode and the October
-/// harness don't ask. `ask_first` (Settings: "Ask before agents act") leaves them asking.
-pub(crate) fn hands_free_args(kind: Kind, ask_first: bool) -> &'static [&'static str] {
+/// folder?"). Each agent's own auto-approve mode. Claude Code runs in auto mode: it goes on
+/// without asking but holds back risky actions (deleting what you didn't ask it to, sending
+/// your data away). A Claude Code too old for auto mode (`claude_bypass`) would refuse the flag
+/// and not start, so it bypasses its permission checks instead, without that mode's one-time
+/// warning. Claude's folder is trusted by `trust_claude_folder`. Codex skips its folder question
+/// when it's given an approval mode. Pi, OpenCode and the October harness don't ask.
+/// `ask_first` (Settings: "Ask before agents act") leaves them asking.
+pub(crate) fn hands_free_args(kind: Kind, ask_first: bool, claude_bypass: bool) -> &'static [&'static str] {
     if ask_first {
         return &[];
     }
     match kind {
-        Kind::Claude => &["--dangerously-skip-permissions", "--settings", r#"{"skipDangerousModePermissionPrompt":true}"#],
+        Kind::Claude if claude_bypass => &["--dangerously-skip-permissions", "--settings", r#"{"skipDangerousModePermissionPrompt":true}"#],
+        Kind::Claude => &["--permission-mode", "auto"],
         Kind::Codex => &["--dangerously-bypass-approvals-and-sandbox"],
         Kind::Gemini | Kind::Qwen => &["--yolo"],
         Kind::Copilot => &["--allow-all-tools", "--allow-all-paths"],
@@ -713,6 +725,29 @@ pub(crate) fn trust_claude_folder_in(file: &Path, folder: &Path) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
     })?;
     Ok(())
+}
+
+/// Whether this Claude Code has auto mode, from its `--help`. Read once per installed version
+/// (`help` runs it; `binary` is where it's installed, followed to the version an update links
+/// it to). When the help can't be read, it's treated as an older Claude Code.
+fn claude_has_auto_mode(mut help: Command, binary: &Path) -> bool {
+    static KNOWN: std::sync::Mutex<Option<std::collections::HashMap<PathBuf, bool>>> = std::sync::Mutex::new(None);
+    let key = binary.canonicalize().unwrap_or_else(|_| binary.to_path_buf());
+    let mut known = KNOWN.lock().unwrap();
+    *known.get_or_insert_with(Default::default).entry(key).or_insert_with(|| {
+        crate::run::output(help.arg("--help"), Duration::from_secs(20))
+            .ok()
+            .filter(|out| out.status.success())
+            .is_some_and(|out| help_offers_auto_mode(&String::from_utf8_lossy(&out.stdout)))
+    })
+}
+
+/// Whether `claude --help` lists "auto" among `--permission-mode`'s choices.
+pub(crate) fn help_offers_auto_mode(help: &str) -> bool {
+    let mut lines = help.lines().skip_while(|line| !line.trim_start().starts_with("--permission-mode"));
+    let Some(first) = lines.next() else { return false };
+    // The choices follow on the option's own line and the indented ones after it.
+    std::iter::once(first).chain(lines.take_while(|line| !line.trim_start().starts_with('-'))).any(|line| line.contains("\"auto\""))
 }
 
 /// Codex runs its TUI through a shared background app-server ("daemon") by default since 0.160.
@@ -1265,16 +1300,32 @@ mod hands_free_tests {
     #[test]
     fn agents_start_without_stopping_to_ask() {
         let claude = agent_command(Kind::Claude, Path::new("/tmp/p"), Some("hi"), None, None, None);
+        assert!(claude.contains("'--permission-mode' 'auto'") && !claude.contains("--dangerously-skip-permissions"), "{claude}");
+        // A Claude Code without auto mode would refuse the flag, so it bypasses its checks.
+        let old = LaunchEnv { claude_bypass: true, ..Default::default() };
+        let claude = agent_command_with(Kind::Claude, Path::new("/tmp/p"), None, &[], None, None, &old);
         assert!(claude.contains("--dangerously-skip-permissions") && claude.contains("skipDangerousModePermissionPrompt"), "{claude}");
         let codex = agent_command(Kind::Codex, Path::new("/tmp/p"), Some("hi"), None, None, None);
         assert!(codex.contains("--dangerously-bypass-approvals-and-sandbox"), "{codex}");
         assert!(agent_command(Kind::Goose, Path::new("/tmp/p"), None, None, None, None).contains("GOOSE_MODE="));
-        assert!(hands_free_args(Kind::Pi, false).is_empty());
+        assert!(hands_free_args(Kind::Pi, false, false).is_empty());
         // "Ask before agents act": no auto-approve flags at all.
         let asking = LaunchEnv { ask_first: true, ..Default::default() };
         let claude = agent_command_with(Kind::Claude, Path::new("/tmp/p"), None, &[], None, None, &asking);
-        assert!(!claude.contains("--dangerously-skip-permissions"), "{claude}");
+        assert!(!claude.contains("--dangerously-skip-permissions") && !claude.contains("--permission-mode"), "{claude}");
         assert!(hands_free_env(Kind::Goose, true).is_empty());
+    }
+
+    #[test]
+    fn claude_help_is_read_for_auto_mode() {
+        let new = "Options:\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: \"acceptEdits\", \"auto\",\n                                        \"bypassPermissions\", \"manual\",\n                                        \"dontAsk\", \"plan\")\n  --plugin-dir <path>  Load plugins\n";
+        assert!(help_offers_auto_mode(new));
+        assert!(help_offers_auto_mode(&new.replace('\n', "\r\n")), "Windows line endings");
+        let old = new.replace("\"auto\",", "");
+        assert!(!help_offers_auto_mode(&old));
+        // "auto" elsewhere in the help doesn't count.
+        assert!(!help_offers_auto_mode(&format!("{old}  --auto-update  (choices: \"auto\")\n")));
+        assert!(!help_offers_auto_mode(""));
     }
 
     #[test]

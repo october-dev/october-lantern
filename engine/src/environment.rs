@@ -178,9 +178,14 @@ impl Environment {
 
     pub fn command(&self, name: &str) -> Result<Command> {
         let path = self.find(name).context("program is not installed on the launch PATH")?;
+        Ok(self.command_at(&path))
+    }
+
+    /// `path` run with this environment (and so its PATH, for a script's interpreter).
+    pub fn command_at(&self, path: &Path) -> Command {
         let mut cmd = Command::new(path);
         cmd.env_clear().envs(&self.values);
-        Ok(cmd)
+        cmd
     }
 
     pub fn exports(&self) -> Vec<u8> {
