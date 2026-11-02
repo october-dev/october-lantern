@@ -4,7 +4,7 @@ pub mod desktop;
 #[cfg(test)]
 mod tests {
     use crate::{
-        model::{EngineHealth, Inputs, Model, OctoberLink, PanelMode},
+        model::{EngineHealth, Inputs, Model, PanelMode},
         ui::{Assets, Ctx, Env, Provider, UiAction, UiState, render_panel, theme},
     };
     use eframe::egui;
@@ -97,26 +97,5 @@ mod tests {
         assert!(click(&ctx, &assets, &model, &mut view, "Signing in…").is_empty());
         assert!(click(&ctx, &assets, &model, &mut view, "Back").is_empty());
         assert_eq!(click(&ctx, &assets, &model, &mut view, "Cancel"), vec![UiAction::CancelSignIn]);
-    }
-
-    #[test]
-    fn desktop_buttons_route_every_connection_state_without_pairing_side_effects() {
-        let ctx = egui::Context::default();
-        theme::install(&ctx);
-        let assets = Assets::load(&ctx);
-        let mut model = Model { panel: Some(PanelMode::October), engine: EngineHealth::Ready, ..Default::default() };
-        let mut view = UiState::default();
-        for (state, title, action) in [
-            ("notInstalled", "Get October", UiAction::GetOctober),
-            ("notRunning", "Open October", UiAction::OpenOctober),
-            ("readOnly", "Connect", UiAction::DesktopConnect),
-            ("error", "Connect", UiAction::DesktopConnect),
-            ("pairing", "Cancel", UiAction::DesktopCancelPairing),
-            ("connected", "Disconnect", UiAction::DesktopDisconnect),
-        ] {
-            model.october = Some(OctoberLink { status: state.into(), paired: state == "connected", ..Default::default() });
-            assert_eq!(click(&ctx, &assets, &model, &mut view, title), vec![action]);
-            assert_eq!(model.october.as_ref().unwrap().status, state);
-        }
     }
 }

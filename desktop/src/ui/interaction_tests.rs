@@ -361,7 +361,7 @@ fn expired_phone_code_is_not_copied_and_signed_out_users_get_account_guidance() 
     f.model.account.signed_in = None;
     let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
     assert!(find_text(&output, "Phone").is_none());
-    assert!(find_text(&output, "Your phone uses the same October account. Sign in above to connect it.").is_some());
+    assert!(find_text(&output, "Sign in to Lantern to connect your phone. Use the same account in the October app.").is_some());
 }
 
 #[test]

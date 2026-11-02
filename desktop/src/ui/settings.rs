@@ -788,6 +788,20 @@ mod tests {
             }
             actions
         }
+
+        /// Scrolls the page down until `title` is on screen (a page can be taller than the
+        /// window) and returns what's shown there.
+        fn reveal(&mut self, title: &str) -> Vec<(String, Rect)> {
+            for step in 0..=30 {
+                self.view.settings_scroll = Some(step as f32 * 100.0);
+                self.frame(Vec::new());
+                let shown = texts(&self.frame(Vec::new()).1);
+                if shown.iter().any(|(text, _)| text == title) {
+                    return shown;
+                }
+            }
+            panic!("{title} isn't anywhere on the page");
+        }
     }
 
     fn texts(output: &egui::FullOutput) -> Vec<(String, Rect)> {
@@ -942,7 +956,7 @@ mod tests {
         use crate::own_key::{AiProvider, OwnKey};
         let mut screen = Screen::new(2);
         screen.model.own_key.status = KeyStatus::Missing;
-        let shown = texts(&screen.frame(Vec::new()).1);
+        let shown = screen.reveal("Save Key");
         let has = |texts: &Vec<(String, Rect)>, value: &str| texts.iter().any(|(text, _)| text == value);
         assert!(has(&shown, "Your own AI key") && has(&shown, OWN_KEY_DETAIL));
         assert!(screen.click("Save Key").is_empty(), "nothing to save yet");
@@ -951,11 +965,30 @@ mod tests {
         assert_eq!(screen.click("Save Key"), vec![UiAction::SaveOwnKey(OwnKey::new(AiProvider::Anthropic, "sk-test-abcd", "").unwrap())]);
         screen.model.own_key.status = KeyStatus::Saved { provider: AiProvider::OpenAI, ending: "…abcd".into(), model: "gpt-4.1".into() };
         screen.view.own_key_input.clear();
-        let shown = texts(&screen.frame(Vec::new()).1);
+        let shown = screen.reveal("Remove key");
         assert!(has(&shown, "OpenAI key …abcd · gpt-4.1") && !shown.iter().any(|(text, _)| text.contains("sk-")));
         assert_eq!(screen.click("Remove key"), vec![UiAction::RemoveOwnKey]);
         screen.model.own_key.status = KeyStatus::Unavailable;
-        assert!(has(&texts(&screen.frame(Vec::new()).1), crate::app::UNAVAILABLE_KEYRING));
+        screen.reveal(crate::app::UNAVAILABLE_KEYRING);
+    }
+
+    #[test]
+    fn desktop_buttons_route_every_connection_state_without_pairing_side_effects() {
+        use crate::model::OctoberLink;
+        let mut screen = Screen::new(2);
+        for (state, title, action) in [
+            ("notInstalled", "Get October", UiAction::GetOctober),
+            ("notRunning", "Open October", UiAction::OpenOctober),
+            ("readOnly", "Connect", UiAction::DesktopConnect),
+            ("error", "Connect", UiAction::DesktopConnect),
+            ("pairing", "Cancel", UiAction::DesktopCancelPairing),
+            ("connected", "Disconnect", UiAction::DesktopDisconnect),
+        ] {
+            screen.model.october = Some(OctoberLink { status: state.into(), paired: state == "connected", ..Default::default() });
+            screen.reveal(title);
+            assert_eq!(screen.click(title), vec![action]);
+            assert_eq!(screen.model.october.as_ref().unwrap().status, state);
+        }
     }
 
     #[test]

@@ -400,7 +400,8 @@ mod tests {
     pub(super) fn test_sender() -> (Sidecar, EngineSender) {
         let mut engine = echo();
         engine.send(&json!({"type":"hello","protocol":3})).unwrap();
-        engine.events.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        // The first reply waits for the stand-in to start: PowerShell can be slow on a busy runner.
+        engine.events.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
         let sender = engine.sender();
         (engine, sender)
     }
