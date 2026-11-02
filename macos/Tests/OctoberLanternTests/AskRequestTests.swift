@@ -113,4 +113,12 @@ final class AskTaskPromptTests: XCTestCase {
         XCTAssertEqual(Assistant.taskPrompt(question: "yes, do that", suggested: "Fix the Wi-Fi on this Mac", followUp: true),
                        "Fix the Wi-Fi on this Mac")
     }
+
+    @MainActor func testARecipeStaysInFrontOfYourWords() {
+        let recipe = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:"
+        XCTAssertEqual(Assistant.taskPrompt(question: "make me an ad for Bean Cafe", suggested: recipe + "\n\nMake a video ad for Bean Cafe", followUp: false),
+                       recipe + "\n\nmake me an ad for Bean Cafe")
+        XCTAssertEqual(Assistant.taskPrompt(question: "make me an ad", suggested: "Follow the recipe at https://example.com/x.md\n\nMake an ad", followUp: false),
+                       "make me an ad")
+    }
 }

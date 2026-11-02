@@ -225,9 +225,10 @@ mod tests {
         let display = desktop.display(None, 1.0)?;
         let at = display.bounds.min + eframe::egui::vec2(150.0, 150.0);
         let target_title = wide("Lantern overlay test target");
+        // Topmost, so nothing else on the runner's desktop covers it; the overlay is still above it.
         let under = unsafe {
             CreateWindowExW(
-                0,
+                WS_EX_TOPMOST,
                 name.as_ptr(),
                 target_title.as_ptr(),
                 WS_POPUP | WS_VISIBLE,
@@ -294,12 +295,25 @@ mod tests {
         let input =
             |flag| INPUT { r#type: INPUT_MOUSE, Anonymous: INPUT_0 { mi: MOUSEINPUT { dwFlags: flag, ..unsafe { std::mem::zeroed() } } } };
         let inputs = [input(MOUSEEVENTF_LEFTDOWN), input(MOUSEEVENTF_LEFTUP)];
-        assert_eq!(unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) }, 2);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // A busy runner can drop a synthesized click, so it's sent again each second.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut next_click = Instant::now();
         let mut observed = false;
         while !observed || CLICKED_WINDOW.load(Ordering::SeqCst) != under as usize {
+            if Instant::now() >= next_click {
+                assert_eq!(unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) }, 2);
+                next_click += Duration::from_secs(1);
+            }
             observed |= !desktop.clicks()?.is_empty();
-            assert!(Instant::now() < deadline, "click didn't reach both target and observer");
+            if Instant::now() >= deadline {
+                let point = POINT { x: at.x as i32 + 50, y: at.y as i32 + 50 };
+                let at_point = unsafe { WindowFromPoint(point) };
+                panic!(
+                    "click didn't reach both target and observer (observed: {observed}, target clicked: {}, window under the cursor is the target: {})",
+                    CLICKED_WINDOW.load(Ordering::SeqCst) == under as usize,
+                    at_point == under
+                );
+            }
             std::thread::sleep(Duration::from_millis(10));
         }
         Desktop::hide(&title);

@@ -503,11 +503,19 @@ final class Assistant: ObservableObject {
 
     /// What the agent is asked: your own words when you asked for it outright, not October's
     /// rewording ("find the user's thesis"). A follow-up ("yes, do that") only makes sense with
-    /// the conversation, so then October's self-contained version is used.
+    /// the conversation, so then October's self-contained version is used. When October picked a
+    /// recipe for the work, its first paragraph says so, and it stays in front.
     static func taskPrompt(question: String, suggested: String, followUp: Bool) -> String {
         let mine = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        return followUp || mine.isEmpty ? suggested : mine
+        if followUp || mine.isEmpty { return suggested }
+        if let end = suggested.range(of: "\n\n"), suggested.hasPrefix(recipeLead) {
+            return suggested[..<end.lowerBound] + "\n\n" + mine
+        }
+        return mine
     }
+
+    /// How October's prompt starts when the work has a recipe (see `recipes/` in the repo).
+    static let recipeLead = "Follow the recipe at https://lantern.october.dev/recipes/"
 
     /// Point & Ask decided its question is work: a new conversation here with that question and
     /// answer, starting the task with the selection's screenshot. October's prompt is used as it

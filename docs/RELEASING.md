@@ -50,6 +50,12 @@ them unless `ALLOW_UNSIGNED=1`. To sign with
 [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) (formerly
 Trusted Signing):
 
+0. Check eligibility first: Public Trust validates an organization registered in the US, Canada,
+   the EU, the UK or a few other countries (individuals: US and Canada only), with a website and
+   two email addresses on its own domain, and Microsoft may require about three years of tax
+   history. It needs a pay-as-you-go Azure subscription (Basic is $9.99 a month, billed from the
+   day the account is created), and validation takes 1 to 20 business days. If it fails, delete
+   the account, and use a `.pfx` from a commercial certificate authority instead (below).
 1. In the Azure portal, open the Artifact Signing account and complete **identity validation**,
    then create a **certificate profile** (Public Trust).
 2. Create an app registration (Microsoft Entra ID › App registrations) with a client secret, and

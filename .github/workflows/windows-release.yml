@@ -39,6 +39,11 @@ jobs:
       - run: python scripts/smoke-windows.py --bus
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
+      # Microsoft's signtool plug-in (scripts/sign-windows.ps1) runs on .NET 8, which the runner
+      # image may no longer include.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
       - name: Package and sign
         env:
           AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}

@@ -919,10 +919,20 @@ pub fn agent_summary(agents: &[crate::model::Agent], question: &str, platform: P
 /// What the agent is asked: your own words when you asked for it outright, not October's
 /// rewording ("find the user's thesis"). A follow-up ("yes, do that") only makes sense with the
 /// conversation, so then October's self-contained version is used (Swift `Assistant.taskPrompt`).
+/// When October picked a recipe for the work, its first paragraph says so, and it stays in front.
 fn task_prompt(question: &str, suggested: String, follow_up: bool) -> String {
     let mine = question.trim();
-    if follow_up || mine.is_empty() { suggested } else { mine.to_string() }
+    if follow_up || mine.is_empty() {
+        return suggested;
+    }
+    match suggested.split_once("\n\n") {
+        Some((recipe, _)) if recipe.starts_with(RECIPE_LEAD) => format!("{recipe}\n\n{mine}"),
+        _ => mine.to_string(),
+    }
 }
+
+/// How October's prompt starts when the work has a recipe (see `recipes/` in the repo).
+const RECIPE_LEAD: &str = "Follow the recipe at https://lantern.october.dev/recipes/";
 
 #[cfg(test)]
 mod tests {
@@ -1058,6 +1068,15 @@ mod tests {
     fn a_task_goes_to_the_agent_in_your_words_unless_it_follows_up() {
         assert_eq!(super::task_prompt(" Find me my thesis ", "Find the user's thesis".into(), false), "Find me my thesis");
         assert_eq!(super::task_prompt("yes, do that", "Fix the Wi-Fi".into(), true), "Fix the Wi-Fi");
+        let recipe = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:";
+        assert_eq!(
+            super::task_prompt("make me an ad for Bean Cafe", format!("{recipe}\n\nMake a video ad for Bean Cafe"), false),
+            format!("{recipe}\n\nmake me an ad for Bean Cafe")
+        );
+        assert_eq!(
+            super::task_prompt("make me an ad", "Follow the recipe at https://example.com/x.md\n\nMake an ad".into(), false),
+            "make me an ad"
+        );
         let mut lantern = lantern(&["claude"]);
         let (generation, turn) = with_turn(&mut lantern);
         lantern.assistant_piece(generation, turn, Piece::Task { prompt: "Find the user's q".into(), agent: None, project: None, to: None });
