@@ -25,8 +25,8 @@ struct PanelView: View {
                 PanelTitle(title: "Routines", model: model)
                 RoutinesView(model: model)
             case .october:
-                PanelTitle(title: "October", model: model)
-                OctoberView(model: model)
+                PanelTitle(title: "Connections", model: model)
+                OctoberView()
             case .assistant:
                 AssistantHome(model: model)
             default:

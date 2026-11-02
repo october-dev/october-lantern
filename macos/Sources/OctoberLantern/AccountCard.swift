@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// "Connect to October": sign in with an October account, or show who's signed in.
+/// Lantern account entry points, backed by the shared October identity.
 struct AccountCard: View {
     @ObservedObject var account = OctoberAccount.shared
     @State private var useEmail = false
@@ -12,25 +12,37 @@ struct AccountCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if showsHeader || account.signedIn {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: account.signedIn ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle")
-                    .font(.system(size: 16)).foregroundStyle(account.signedIn ? Theme.green : Theme.muted).frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(account.signedIn ? "Connected to October" : "Connect to October")
+                HStack(spacing: 9) {
+                    Image(systemName: account.signedIn ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle")
+                        .font(.system(size: 17)).foregroundStyle(account.signedIn ? Theme.green : Theme.amber)
+                        .frame(width: 30, height: 30)
+                        .background(RoundedRectangle(cornerRadius: 9).fill((account.signedIn ? Theme.green : Theme.amber).opacity(0.1)))
+                    Text(account.signedIn ? "Your account" : "Sign in to Lantern")
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(Theme.ink)
-                    Text(detail).font(.system(size: 11.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
-                    ForEach(Self.lanternLines(account.plan?.lantern), id: \.self) { line in
-                        Text(line).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
+                    Spacer(minLength: 4)
+                    if let plan = account.plan, account.signedIn {
+                        StatusPill(text: "\(plan.plan.capitalized) plan", color: Theme.green)
                     }
                 }
-                Spacer(minLength: 8)
-                if account.signedIn {
-                    Button(account.loadingPlan ? "Refreshing…" : "Refresh") { account.refreshPlan() }
-                        .buttonStyle(SecondaryButtonStyle()).disabled(account.loadingPlan)
-                        .help("Reads your plan again, after buying or starting the trial in the browser")
-                    Button("Sign Out") { account.signOut() }.buttonStyle(SecondaryButtonStyle())
+                Text(account.signedIn ? (account.session?.email ?? "Signed in") : "Your helper is one sign-in away.")
+                    .font(.system(size: 11.5)).foregroundStyle(Theme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(Self.lanternLines(account.plan?.lantern), id: \.self) { line in
+                    Text(line).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-            }
+                if account.signedIn {
+                    HStack {
+                        Button(account.loadingPlan ? "Refreshing…" : "Refresh") { account.refreshPlan() }
+                            .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(Theme.muted).disabled(account.loadingPlan)
+                            .help("Reads your plan again, after buying or starting the trial in the browser")
+                        Spacer()
+                        Button("Sign Out") { account.signOut() }
+                            .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.muted)
+                    }
+                }
             }
             if account.signedIn, Self.offersUpgrade(account.plan) {
                 OfferButtons(from: "account")
@@ -48,6 +60,11 @@ struct AccountCard: View {
                     VStack(spacing: 6) {
                         field(TextField("Email", text: $email))
                         field(SecureField("Password", text: $password).onSubmit(signInWithEmail))
+                        HStack {
+                            Button("Forgot password?") { NSWorkspace.shared.open(OctoberAccount.passwordResetURL) }
+                                .buttonStyle(.plain).font(.system(size: 11.5)).foregroundStyle(Theme.amber)
+                            Spacer()
+                        }
                         HStack {
                             Button("Back") { useEmail = false }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.muted)
                             Spacer()
@@ -77,6 +94,16 @@ struct AccountCard: View {
                         .buttonStyle(.plain)
                     }
                 }
+                if !account.signingIn {
+                    HStack(spacing: 4) {
+                        Text("New to Lantern?").foregroundStyle(Theme.muted)
+                        Button("Create account") { password = ""; useEmail = false; account.createAccount() }
+                            .buttonStyle(.plain).foregroundStyle(Theme.amber)
+                    }
+                    .font(.system(size: 11.5, weight: .medium))
+                    Text("Lantern is made by October. Already have an October account? Use it here and in the October phone app.")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+                }
                 if let error = account.error {
                     Text(error).font(.system(size: 11.5)).foregroundStyle(Theme.red).fixedSize(horizontal: false, vertical: true)
                 }
@@ -85,12 +112,6 @@ struct AccountCard: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.faint))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(account.signedIn ? Theme.green.opacity(0.35) : Theme.hairline))
-    }
-
-    private var detail: String {
-        guard let s = account.session else { return "Sign in with your October account." }
-        let plan = account.plan.map { " · \($0.plan.capitalized) plan" } ?? ""
-        return (s.email ?? "Signed in") + plan
     }
 
     /// "Lantern Lifetime" or "Pro trial · ends Nov 1", then the daily questions on October's AI.

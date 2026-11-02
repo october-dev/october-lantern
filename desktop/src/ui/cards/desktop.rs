@@ -1,4 +1,4 @@
-//! DesktopCard.swift, including the full card reused by Settings › October.
+//! DesktopCard.swift, including the full card reused by Settings › Connections.
 use super::super::{
     Ctx, UiAction, components as c,
     theme::{self as t, Weight},
@@ -6,14 +6,14 @@ use super::super::{
 use crate::model::{AgentKind, OctoberLink};
 use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
-pub fn render(ui: &mut Ui, cx: &mut Ctx, compact: bool) {
+pub fn render(ui: &mut Ui, cx: &mut Ctx) {
     let link = cx.model.october.as_ref();
     let paired = link.is_some_and(|link| link.paired);
     egui::Frame::new().fill(t::FAINT).stroke(Stroke::new(1.0, if paired { t::GREEN.gamma_multiply(0.35) } else { t::HAIRLINE }))
         .corner_radius(14).inner_margin(Margin::same(12)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 10.0;
-            if !compact { artwork(ui, cx, paired, status(link) == "pairing"); }
+            artwork(ui, cx, paired, status(link) == "pairing");
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 let (title, action) = action(link);
@@ -33,7 +33,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, compact: bool) {
                 }
                 if clicked { cx.emit(action); }
             });
-            if !compact { c::label(ui, "October Desktop is October's app for running teams of agents on a shared canvas. Connect it and the agents on your canvas show up in Lantern with their names and questions, and your replies reach them through October.", 11.5, Weight::Regular, t::white(0.8)); }
+            c::label(ui, "October Desktop is October's app for running teams of agents on a shared canvas. Connect it and the agents on your canvas show up in Lantern with their names and questions, and your replies reach them through October.", 11.5, Weight::Regular, t::white(0.8));
             c::label(ui, detail(link), 11.5, Weight::Regular, t::MUTED);
             if let Some(code) = link.and_then(|link| link.pairing_code.as_deref()) {
                 egui::Frame::new().fill(t::AMBER.gamma_multiply(0.1)).corner_radius(10).inner_margin(Margin::same(10)).show(ui, |ui| {

@@ -46,7 +46,7 @@ impl Lantern {
             Entry::Item(dictate.into(), UiAction::ToggleDictation { owner }),
             Entry::Separator,
             Entry::Item("Routines…".into(), UiAction::SetPanel(Some(PanelMode::Routines))),
-            Entry::Item("October…".into(), UiAction::SetPanel(Some(PanelMode::October))),
+            Entry::Item("Connections…".into(), UiAction::SetPanel(Some(PanelMode::October))),
             Entry::Item("Settings…".into(), UiAction::ShowSettings),
             // Also in the tray menu, which Windows can tuck away behind the overflow arrow.
             Entry::Separator,
@@ -168,7 +168,7 @@ mod tests {
                 "Dictate a Reply",
                 "—",
                 "Routines…",
-                "October…",
+                "Connections…",
                 "Settings…",
                 "—",
                 "Quit October Lantern"

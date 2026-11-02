@@ -29,7 +29,7 @@ const HELP: &str = "October Lantern
   --new-session        Open New Session
   --point-ask          Start Point & Ask
   --ask                Open Ask Lantern
-  --connections        Open October (account and October Desktop)
+  --connections        Open Connections (account and phone)
   --settings           Open Settings
   --welcome            Open the welcome guide
   --check-sidecar      Verify the Rust engine

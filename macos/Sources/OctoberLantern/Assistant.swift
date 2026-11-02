@@ -1154,7 +1154,7 @@ struct FixButtons: View {
         }
     }
 
-    /// Settings › October, where your own key is.
+    /// Settings › Connections, where your own key is.
     static func openKeySettings() {
         (NSApp.delegate as? AppDelegate)?.showSettings(tab: 2)
     }

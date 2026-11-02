@@ -71,7 +71,7 @@ enum OctoberAI {
     enum Fix: Codable, Equatable {
         /// Start free trial / Buy Lifetime.
         case upgrade
-        /// Edit key / Open Settings: Settings › October, at your own key.
+        /// Edit key / Open Settings: Settings › Connections, at your own key.
         case editKey, openSettings
         /// Ask October's AI instead: the same question again, without your key.
         case useOctober

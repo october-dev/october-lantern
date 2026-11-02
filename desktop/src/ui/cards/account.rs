@@ -87,6 +87,23 @@ pub fn render_with(ui: &mut Ui, cx: &mut Ctx, show_header: bool) {
                         }
                     });
                 }
+                if !cx.model.account.pending {
+                    ui.horizontal(|ui| {
+                        c::label(ui, "New to Lantern?", 11.5, Weight::Medium, t::MUTED);
+                        if c::plain_button(ui, "Create account", 11.5, Weight::Medium, t::AMBER).clicked() {
+                            cx.view.account_password.clear();
+                            cx.view.account_use_email = false;
+                            cx.emit(UiAction::CreateAccount);
+                        }
+                    });
+                    c::label(
+                        ui,
+                        "Lantern is made by October. Already have an October account? Use it here and in the October phone app.",
+                        11.0,
+                        Weight::Regular,
+                        t::MUTED,
+                    );
+                }
                 if let Some(error) = &cx.model.account.error {
                     c::label(ui, error, 11.5, Weight::Regular, t::RED);
                 }
@@ -94,7 +111,7 @@ pub fn render_with(ui: &mut Ui, cx: &mut Ctx, show_header: bool) {
         });
 }
 
-/// The icon, "Connect to October" (or who's signed in) and Sign Out.
+/// Keep the identity full width; actions below must never squeeze an email into a column.
 fn header(ui: &mut Ui, cx: &mut Ctx, signed_in: bool) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 12.0;
@@ -106,22 +123,9 @@ fn header(ui: &mut Ui, cx: &mut Ctx, signed_in: bool) {
             ui.painter().circle_filled(badge.center(), 4.5, t::GREEN);
             c::paint_icon(ui.painter(), badge.shrink(1.5), Icon::Check, t::black(0.85));
         }
-        let action_width = if signed_in {
-            ui.painter().layout_no_wrap("Sign Out".into(), t::font(12.0, Weight::Semibold), t::INK).size().x + 24.0 + 12.0
-        } else {
-            0.0
-        };
-        let width = ui.available_width() - action_width;
-        ui.allocate_ui_with_layout(egui::vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
-            ui.set_width(width);
-            ui.spacing_mut().item_spacing.y = 2.0;
-            c::label(ui, if signed_in { "Connected to October" } else { "Connect to October" }, 13.0, Weight::Semibold, t::INK);
-            c::label(ui, detail(cx), 11.5, Weight::Regular, t::MUTED);
-        });
-        if signed_in && c::secondary_button(ui, "Sign Out").clicked() {
-            cx.emit(UiAction::SignOut);
-        }
+        c::label(ui, if signed_in { "Your account" } else { "Sign in to Lantern" }, 13.0, Weight::Semibold, t::INK);
     });
+    c::label(ui, if signed_in { detail(cx) } else { "Your helper is one sign-in away.".into() }, 11.5, Weight::Regular, t::MUTED);
 }
 
 /// What the plan gives in Lantern (Lifetime, the trial, October's questions a day), Refresh, and
@@ -130,24 +134,23 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     let Some(account) = &cx.model.account.signed_in else { return };
     let now = cx.env.now_ms;
     let lines = rights_lines(account.lantern.as_ref(), now);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            for line in &lines {
-                c::label(ui, line, 11.5, Weight::Regular, t::MUTED);
-            }
-        });
+    for line in &lines {
+        c::label(ui, line, 11.5, Weight::Regular, t::MUTED);
+    }
+    ui.horizontal(|ui| {
+        let refreshing = cx.model.account.refreshing;
+        let title = if refreshing { "Refreshing…" } else { "Refresh" };
+        if ui
+            .add_enabled_ui(!refreshing, |ui| c::plain_button(ui, title, 11.5, Weight::Medium, t::MUTED))
+            .inner
+            .on_hover_text("Fetch your plan again, after buying in the browser")
+            .clicked()
+        {
+            cx.emit(UiAction::RefreshPlan);
+        }
         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-            let refreshing = cx.model.account.refreshing;
-            let title = if refreshing { "Refreshing…" } else { "Refresh" };
-            if ui
-                .add_enabled_ui(!refreshing, |ui| c::plain_button(ui, title, 11.5, Weight::Semibold, t::MUTED))
-                .inner
-                .on_hover_text("Fetch your plan again, after buying in the browser")
-                .clicked()
-            {
-                cx.emit(UiAction::RefreshPlan);
+            if c::plain_button(ui, "Sign Out", 11.5, Weight::Medium, t::MUTED).clicked() {
+                cx.emit(UiAction::SignOut);
             }
         });
     });
@@ -252,6 +255,9 @@ fn email_form(ui: &mut Ui, cx: &mut Ctx) {
         field(ui, "account-email", "Email", &mut cx.view.account_email, false);
         let password = field(ui, "account-password", "Password", &mut cx.view.account_password, true);
         let enter = password.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        if c::plain_button(ui, "Forgot password?", 11.5, Weight::Regular, t::AMBER).clicked() {
+            cx.emit(UiAction::OpenUrl(crate::account::PASSWORD_RESET_URL.into()));
+        }
         ui.horizontal(|ui| {
             if c::plain_button(ui, "Back", 12.0, Weight::Regular, t::MUTED).clicked() {
                 cx.view.account_use_email = false;

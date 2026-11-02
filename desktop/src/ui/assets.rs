@@ -14,6 +14,7 @@ pub struct Assets {
     /// The 96pt logo with 72pt (3 sigma) around it, 240 x 240; tint it with the shadow colour.
     pub logo_shadow: TextureHandle,
     pub october: TextureHandle,
+    pub phone_screens: [TextureHandle; 3],
     pub google: TextureHandle,
     pub github: TextureHandle,
     /// Authored outline, not an extracted SF Symbol or a redistributed Apple font.
@@ -50,6 +51,11 @@ impl Assets {
             logo_idle: upload(ctx, "logo/idle", &idle),
             logo_shadow,
             october: texture(ctx, "october", include_bytes!("../../../macos/Resources/october.png")),
+            phone_screens: [
+                texture(ctx, "phone/dashboard", include_bytes!("../../../macos/Resources/october/phone-dashboard.jpg")),
+                texture(ctx, "phone/chat", include_bytes!("../../../macos/Resources/october/phone-agent-chat.jpg")),
+                texture(ctx, "phone/network", include_bytes!("../../../macos/Resources/october/phone-agent-network.jpg")),
+            ],
             google: svg_texture(ctx, "brands/google", include_bytes!("../../../macos/Resources/brands/google.svg")),
             github: svg_texture(ctx, "brands/github", include_bytes!("../../../macos/Resources/brands/github.svg")),
             apple: svg_texture(ctx, "brands/apple-authored", br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="#fff" d="M15.7 1.5c.3 2.1-1.2 4.2-3.4 4.5-.3-2 1.3-4 3.4-4.5ZM18.4 12.5c0-2 1.1-3.2 2.1-3.8-1.1-1.6-2.6-2.1-3.8-2.1-1.6-.1-2.9 1-3.9 1-1.1 0-2.4-1-3.9-1-2.9.1-4.8 2.5-4.8 5.8 0 4 2.8 9.3 5 9.3 1.2 0 1.6-.8 3.4-.8 1.7 0 2.1.8 3.4.8 1.8 0 3.7-3.1 4.5-5.1-1.2-.6-2-2.1-2-4.1Z"/></svg>"##),

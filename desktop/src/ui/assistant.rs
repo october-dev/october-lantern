@@ -309,7 +309,7 @@ pub(super) fn fix_buttons(ui: &mut Ui, cx: &mut Ctx, fix: &Fix, from: &'static s
         Fix::Upgrade => offer_buttons(ui, cx, from),
         Fix::EditKey | Fix::OpenSettings => {
             let title = if *fix == Fix::EditKey { "Edit key" } else { "Open Settings" };
-            if c::secondary_button(ui, title).on_hover_text("Your own AI key, in Settings › October").clicked() {
+            if c::secondary_button(ui, title).on_hover_text("Your own AI key, in Settings › Connections").clicked() {
                 cx.emit(UiAction::OpenOwnKeySettings);
             }
         }
@@ -1055,7 +1055,7 @@ mod tests {
         assert!(has("Sign in to ask Lantern"));
         assert!(has("Ask anything about your agents, or tell Lantern what to do."));
         assert!(!texts.iter().any(|(text, _)| text.contains("questions a day")), "no number before the plan is known");
-        assert!(!has("Connect to October"), "the card's own header stays in the October panel");
+        assert!(!has("Sign in to Lantern"), "the card's own header stays in Connections");
         assert!(!has("Sign in to October to ask Lantern anything"));
         for (title, provider) in [("Google", Provider::Google), ("GitHub", Provider::GitHub), ("Apple", Provider::Apple)] {
             let actions = click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, title);
@@ -1063,6 +1063,14 @@ mod tests {
         }
         assert!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Use email and password").is_empty());
         assert!(view.account_use_email, "the email form opens in place");
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Forgot password?"),
+            vec![UiAction::OpenUrl(crate::account::PASSWORD_RESET_URL.into())]
+        );
+        view.account_password = "discard-this-draft".into();
+        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Create account"), vec![UiAction::CreateAccount]);
+        assert!(view.account_password.is_empty());
+        assert!(!view.account_use_email, "browser signup replaces the email form");
     }
 
     /// Clicks the control named `label` (by its accessibility name: icon buttons have no text).

@@ -139,7 +139,7 @@ final class OwnKey: ObservableObject {
     }
 }
 
-/// Settings › October › Your own AI key.
+/// Settings › Connections › Your own AI key.
 struct OwnKeyCard: View {
     @ObservedObject var ownKey = OwnKey.shared
     @ObservedObject var account = OctoberAccount.shared
