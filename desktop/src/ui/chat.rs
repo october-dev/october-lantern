@@ -71,7 +71,7 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, max_height: f32) {
                             if c::text_button(ui,"Open",11.0,Weight::Semibold,t::AMBER).clicked(){cx.emit(UiAction::OpenAgent{agent_id:agent.id.clone()});}
                         });ui.add_space(4.0);
                     }
-                    for (key,message) in keyed(&chat.messages){bubble(ui,cx,message,&key);}
+                    for (key,message) in keyed(&chat.messages){bubble(ui,cx,message,&key,false);}
                     if agent.state==AgentState::Working{ui.horizontal(|ui|{ui.add_space(4.0);c::spinner(ui,10.0,t::MUTED,cx.env);c::label(ui,"Working…",11.0,Weight::Regular,t::MUTED);});}
                 }
             });
@@ -98,7 +98,7 @@ pub fn preview(ui: &mut Ui, cx: &mut Ctx, preview: &LaunchPreview) {
         ui.spacing_mut().item_spacing.y = 8.0;
         let prompt = without_lantern_notes(&preview.prompt).trim();
         if !prompt.is_empty() {
-            bubble(ui, cx, &ChatMessage { role: Role::User, text: prompt.into(), at: None }, "launch-preview");
+            bubble(ui, cx, &ChatMessage { role: Role::User, text: prompt.into(), at: None }, "launch-preview", false);
         }
         if let Some(error) = &preview.error {
             egui::Frame::new().inner_margin(Margin { left: 4, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
@@ -137,7 +137,7 @@ pub fn preview(ui: &mut Ui, cx: &mut Ctx, preview: &LaunchPreview) {
     }
 }
 
-pub fn bubble(ui: &mut Ui, cx: &mut Ctx, message: &ChatMessage, key: &str) {
+pub fn bubble(ui: &mut Ui, cx: &mut Ctx, message: &ChatMessage, key: &str, in_assistant: bool) {
     if message.role == Role::Tool {
         ui.horizontal(|ui| {
             ui.add_space(6.0);
@@ -165,7 +165,7 @@ pub fn bubble(ui: &mut Ui, cx: &mut Ctx, message: &ChatMessage, key: &str) {
             + 22.0;
         natural.max(42.0).min((available - 40.0).max(30.0))
     } else {
-        (available - 24.0).max(30.0)
+        (available - if in_assistant { 0.0 } else { 24.0 }).max(30.0)
     };
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -173,13 +173,19 @@ pub fn bubble(ui: &mut Ui, cx: &mut Ctx, message: &ChatMessage, key: &str) {
             ui.add_space((available - width).max(0.0));
         }
         egui::Frame::new()
-            .fill(if user { t::opacity(t::AMBER, 0.22) } else { t::FAINT })
-            .stroke(Stroke::new(1.0, if user { t::opacity(t::AMBER, 0.3) } else { t::HAIRLINE }))
+            .fill(if in_assistant {
+                if user { t::white(0.07) } else { egui::Color32::TRANSPARENT }
+            } else if user {
+                t::opacity(t::AMBER, 0.22)
+            } else {
+                t::FAINT
+            })
+            .stroke(if in_assistant { Stroke::NONE } else { Stroke::new(1.0, if user { t::opacity(t::AMBER, 0.3) } else { t::HAIRLINE }) })
             .corner_radius(14)
             // egui's stroke consumes 1pt per side; Swift's strokeBorder does not.
-            .inner_margin(Margin::symmetric(10, 7))
+            .inner_margin(if in_assistant && !user { Margin::symmetric(0, 2) } else { Margin::symmetric(10, 7) })
             .show(ui, |ui| {
-                let inner = (width - 22.0).max(8.0);
+                let inner = (width - if in_assistant && !user { 0.0 } else { 22.0 }).max(8.0);
                 ui.set_width(inner);
                 ui.spacing_mut().item_spacing.y = 4.0;
                 let expanded = cx.view.expanded_bubbles.contains(key);

@@ -132,6 +132,7 @@ struct ChatView: View {
 
 struct Bubble: View {
     let message: ChatMessage
+    var inAssistant = false
     @State private var expanded = false
     /// The message's full height, measured, to offer More only when something is cut off.
     @State private var fullHeight: CGFloat = 0
@@ -159,18 +160,18 @@ struct Bubble: View {
                     moreButton
                 }
                 .padding(.horizontal, 11).padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.amber.opacity(0.22)))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.amber.opacity(0.3)))
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(inAssistant ? Color.white.opacity(0.07) : Theme.amber.opacity(0.22)))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(inAssistant ? .clear : Theme.amber.opacity(0.3)))
             }
         case .agent:
             VStack(alignment: .leading, spacing: 4) {
                 collapsible.frame(maxWidth: .infinity, alignment: .leading)
                 moreButton
             }
-            .padding(.horizontal, 11).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.faint))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.hairline))
-            .padding(.trailing, 24)
+            .padding(.horizontal, inAssistant ? 0 : 11).padding(.vertical, inAssistant ? 2 : 8)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(inAssistant ? .clear : Theme.faint))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(inAssistant ? .clear : Theme.hairline))
+            .padding(.trailing, inAssistant ? 0 : 24)
         case .tool:
             HStack(spacing: 6) {
                 Image(systemName: "chevron.right.2").font(.system(size: 8, weight: .bold))

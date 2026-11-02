@@ -825,7 +825,7 @@ struct AssistantThread: View {
             }
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 22) {
                         ForEach(assistant.turns) { turn in
                             TurnView(turn: turn).id(turn.id)
                             if let link = turn.task {
@@ -859,6 +859,7 @@ private struct TaskCard: View {
     let latest: Bool
     @ObservedObject var model: AppModel
     @ObservedObject var assistant = Assistant.shared
+    @State private var showingActivity = false
 
     private var kind: AgentKind { AgentKind(rawValue: link.kind) }
     private var agent: Agent? { assistant.agent(for: link) }
@@ -875,8 +876,11 @@ private struct TaskCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(ChatView.keyed(messages), id: \.key) { item in Bubble(message: item.message) }
+        VStack(alignment: .leading, spacing: 10) {
+            agentHeader
+            ForEach(ChatView.keyed(messages.filter { $0.role != .tool }), id: \.key) { item in
+                Bubble(message: item.message, inAssistant: true)
+            }
             if let agent, agent.isAnswerable {
                 QuestionCard(agent: agent, model: model, keys: latest)
             }
@@ -885,20 +889,34 @@ private struct TaskCard: View {
                 LaunchCards(launch: launch, model: model, keys: latest && agent?.isAnswerable != true)
             }
             status
-            footer
+            let activity = messages.filter { $0.role == .tool }
+            if !activity.isEmpty {
+                DisclosureGroup(isExpanded: $showingActivity) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(ChatView.keyed(activity), id: \.key) { item in
+                            Text(item.message.text).font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(Theme.muted).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("Activity · \(activity.count) step\(activity.count == 1 ? "" : "s")")
+                        .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                }
+                .tint(Theme.muted)
+            }
             Color.clear.frame(height: 1).id(latest ? "task-bottom" : "task-\(link.prompt.hashValue)")
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.18)))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Theme.hairline))
+        .padding(.vertical, 4)
         .onChange(of: agent?.id, initial: true) { _, _ in assistant.track(link, agent: agent, messages: []) }
         .onChange(of: model.watchedMessages) { _, now in
             if latest, let agent, agent.id == model.watchedAgentId { assistant.track(link, agent: agent, messages: now) }
         }
     }
 
-    /// Which agent and Open agent, small, under the conversation; the folder is in the tooltip.
-    private var footer: some View {
+    /// One quiet source row; the folder stays in the tooltip.
+    private var agentHeader: some View {
         HStack(spacing: 5) {
             if let img = Assets.harness(kind) {
                 Image(nsImage: img).resizable().aspectRatio(contentMode: .fit).frame(width: 12, height: 12)
@@ -983,12 +1001,12 @@ private struct TurnView: View {
     private var long: Bool { turn.question.count > 180 || turn.question.split(separator: "\n").count > 3 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 0) {
                 Spacer(minLength: 28)
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("You").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.amber)
-                    Text(turn.question).font(.system(size: 12.5)).foregroundStyle(Theme.ink)
+                    Text(turn.question).font(.system(size: 13)).foregroundStyle(Theme.ink)
+                        .accessibilityHint("Your message")
                         .textSelection(.enabled)
                         .lineLimit(long && !expanded ? 4 : nil)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1013,14 +1031,10 @@ private struct TurnView: View {
                         }
                     }
                 }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Theme.amber.opacity(0.22)))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Theme.amber.opacity(0.3)))
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white.opacity(0.07)))
             }
-            HStack(spacing: 4) {
-                Text("Lantern").font(.system(size: 10.5, weight: .medium)).foregroundStyle(Theme.muted)
-                if let via = turn.via { ViaLabel(provider: via) }
-            }
+            if let via = turn.via { ViaLabel(provider: via) }
             if turn.answer.isEmpty {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)
@@ -1028,7 +1042,8 @@ private struct TurnView: View {
                 }
             } else {
                 Text((try? AttributedString(markdown: turn.answer, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(turn.answer))
-                    .font(.system(size: 12.5)).lineSpacing(2)
+                    .font(.system(size: 13)).lineSpacing(3)
+                    .accessibilityHint("Lantern's reply")
                     .foregroundStyle(turn.fix != nil ? Theme.amber : turn.failed ? Theme.red : Theme.ink.opacity(0.92))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1207,35 +1222,18 @@ struct AskBox: View {
                         .padding(.top, 4).padding(.trailing, 4)
                     }
                 }
-                HStack(alignment: .bottom, spacing: 6) {
+                VStack(alignment: .leading, spacing: 10) {
                     TextField(placeholder, text: $assistant.text, axis: .vertical)
                         .textFieldStyle(.plain).font(.system(size: large ? 15 : 13)).lineLimit(large ? 2...6 : 1...6)
                         .focused($focused)
                         .onSubmit { assistant.submit() }
-                    Button { assistant.pickImages() } label: {
-                        Image(systemName: "paperclip").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.muted)
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain).help("Add images (you can also paste or drop them here)")
-                    Button {
-                        if dictation.isActive { dictation.stop() } else { dictation.start(prefix: assistant.text, owner: "assistant") }
-                    } label: {
-                        Image(systemName: dictation.isRecording ? "mic.fill" : "mic").font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(dictation.isRecording ? Theme.red : Theme.muted).frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain).help(dictation.isRecording ? "Stop listening" : "Speak")
-                    Button { assistant.submit() } label: {
-                        Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
-                            .frame(width: 22, height: 22)
-                            .background(Circle().fill(canSubmit ? Theme.amber : Theme.amber.opacity(0.35)))
-                    }
-                    .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
+                    toolbar
                 }
                 }
                 .padding(.leading, large ? 14 : 11).padding(.trailing, 8).padding(.vertical, large ? 11 : 7)
-                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.3)))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(
-                    dropping ? Theme.amber : focused ? Theme.amber.opacity(0.5) : Theme.stroke, lineWidth: dropping ? 2 : 1))
+                .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Theme.faint))
+                .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(
+                    dropping ? Theme.amber : focused ? Theme.amber.opacity(0.5) : Theme.hairline, lineWidth: dropping ? 2 : 1))
                 .onDrop(of: [.fileURL, .image], isTargeted: $dropping) { providers in drop(providers) }
                 .onChange(of: focused, initial: true) { _, now in assistant.boxFocused = now }
                 .onDisappear { assistant.boxFocused = false }
@@ -1267,6 +1265,30 @@ struct AskBox: View {
         }
         .padding(.horizontal, 12).padding(.bottom, 12).padding(.top, 4)
         .onChange(of: model.composeFocusToken) { focused = true }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 6) {
+            Button { assistant.pickImages() } label: {
+                Image(systemName: "paperclip").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.muted).frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain).help("Add images (you can also paste or drop them here)")
+            Button {
+                if dictation.isActive { dictation.stop() } else { dictation.start(prefix: assistant.text, owner: "assistant") }
+            } label: {
+                Image(systemName: dictation.isRecording ? "mic.fill" : "mic").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(dictation.isRecording ? Theme.red : Theme.muted).frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain).help(dictation.isRecording ? "Stop listening" : "Speak")
+            Spacer(minLength: 8)
+            Button { assistant.submit() } label: {
+                Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(canSubmit ? Theme.amber : Theme.amber.opacity(0.35)))
+            }
+            .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
+        }
     }
 
     private var replying: Bool { assistant.activeAgent != nil && !assistant.askLanternInstead }

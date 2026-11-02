@@ -2,6 +2,10 @@
 
 This describes the source branch, rather than an installer release. Remote devices, SSH, cloud execution, remote routines and task moves are outside these local features.
 
+## Ask Lantern conversations
+
+Messages use a quiet, right-aligned user bubble and open reply text, with one source row for a task's agent. Tool logs are available under **Activity · N steps**, collapsed initially; answers, questions, task cards, errors and recovery actions remain visible. Activity expansion is local to that task and never sends an agent command. The composer gives text the full width, with image, voice and send controls underneath. Message selection/copy, image attachments, provider attribution and reply routing are preserved in both clients.
+
 ## Cards
 
 October, Claude Code and Codex started by Lantern receive the `lantern` MCP server. They can ask a question, show progress and steps, request a hand-off, suggest a routine, request guidance, and report a result with files. Both native clients render these cards. Cards and launch receipts survive an engine restart and remain after the terminal session ends.
