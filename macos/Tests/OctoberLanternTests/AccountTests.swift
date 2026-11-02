@@ -29,6 +29,33 @@ private final class Gate {
 
 @MainActor
 final class AccountTests: XCTestCase {
+    func testSignupUsesLanternAndTheExistingAppOwnedPKCECallback() throws {
+        let url = OctoberAccount.browserURL(for: .signUp, challenge: "synthetic-challenge")
+        let parts = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        let query = Dictionary(uniqueKeysWithValues: (parts.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(parts.scheme, "https")
+        XCTAssertEqual(parts.host, "lantern.october.dev")
+        XCTAssertEqual(parts.path, "/signup")
+        XCTAssertEqual(query["redirect_to"], "http://localhost:54547/callback")
+        XCTAssertEqual(query["code_challenge"], "synthetic-challenge")
+        XCTAssertEqual(query["code_challenge_method"], "s256")
+        XCTAssertEqual(Set(query.keys), ["redirect_to", "code_challenge", "code_challenge_method"])
+        XCTAssertEqual(OctoberAccount.passwordResetURL.absoluteString, "https://lantern.october.dev/forgot-password")
+    }
+
+    func testProviderLoginKeepsItsSupabasePKCEFlow() throws {
+        for provider in OctoberAccount.Provider.allCases {
+            let url = OctoberAccount.browserURL(for: .provider(provider), challenge: "synthetic-challenge")
+            let parts = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+            let query = Dictionary(uniqueKeysWithValues: (parts.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+            XCTAssertEqual(parts.host, "auth.october.dev")
+            XCTAssertEqual(parts.path, "/auth/v1/authorize")
+            XCTAssertEqual(query["provider"], provider.rawValue)
+            XCTAssertEqual(query["redirect_to"], "http://localhost:54547/callback")
+            XCTAssertEqual(query["code_challenge_method"], "s256")
+        }
+    }
+
     private func session() -> OctoberAccount.Session {
         .init(accessToken: "a", refreshToken: "r", expiresAt: Date().addingTimeInterval(3600), userId: "u", email: nil)
     }

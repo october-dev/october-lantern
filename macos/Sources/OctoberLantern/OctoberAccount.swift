@@ -31,6 +31,36 @@ final class OctoberAccount: ObservableObject {
         }
     }
 
+    enum BrowserFlow {
+        case provider(Provider)
+        case signUp
+    }
+
+    static let passwordResetURL = URL(string: "https://lantern.october.dev/forgot-password")!
+
+    /// The verifier stays in Lantern. The website receives only its SHA-256 challenge and
+    /// forwards it to Supabase; only this waiting app can exchange the returned auth code.
+    static func browserURL(for flow: BrowserFlow, challenge: String) -> URL {
+        let base: URL
+        var items: [URLQueryItem] = []
+        switch flow {
+        case .provider(let provider):
+            base = supabaseURL.appendingPathComponent("auth/v1/authorize")
+            items.append(URLQueryItem(name: "provider", value: provider.rawValue))
+            if provider == .google { items.append(URLQueryItem(name: "prompt", value: "select_account")) }
+        case .signUp:
+            base = URL(string: "https://lantern.october.dev/signup")!
+        }
+        items += [
+            URLQueryItem(name: "redirect_to", value: "http://localhost:\(callbackPort)/callback"),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "s256"),
+        ]
+        var parts = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        parts.queryItems = items
+        return parts.url!
+    }
+
     struct Session: Codable, Sendable {
         var accessToken: String
         var refreshToken: String
@@ -160,6 +190,14 @@ final class OctoberAccount: ObservableObject {
     // MARK: Sign in
 
     func signIn(with provider: Provider) {
+        signIn(using: .provider(provider))
+    }
+
+    func createAccount() {
+        signIn(using: .signUp)
+    }
+
+    private func signIn(using flow: BrowserFlow) {
         guard !signingIn else { return }
         generation += 1
         restoring?.cancel(); restoring = nil
@@ -168,14 +206,7 @@ final class OctoberAccount: ObservableObject {
         let attempt = attempts.begin()
         let verifier = Self.randomVerifier()
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64URL
-        var parts = URLComponents(url: Self.supabaseURL.appendingPathComponent("auth/v1/authorize"), resolvingAgainstBaseURL: false)!
-        parts.queryItems = [
-            URLQueryItem(name: "provider", value: provider.rawValue),
-            URLQueryItem(name: "redirect_to", value: "http://localhost:\(Self.callbackPort)/callback"),
-            URLQueryItem(name: "code_challenge", value: challenge),
-            URLQueryItem(name: "code_challenge_method", value: "s256"),
-        ]
-        if provider == .google { parts.queryItems?.append(URLQueryItem(name: "prompt", value: "select_account")) }
+        let url = Self.browserURL(for: flow, challenge: challenge)
 
         let listener = CallbackListener(port: Self.callbackPort)
         callback = listener
@@ -192,11 +223,11 @@ final class OctoberAccount: ObservableObject {
             Task { @MainActor in
                 guard let self, self.attempts.isCurrent(attempt) else { return }
                 if ok {
-                    NSWorkspace.shared.open(parts.url!)
+                    NSWorkspace.shared.open(url)
                 } else {
                     self.callback?.stop()
                     self.callback = nil
-                    self.finish(attempt, error: "Another app is signing in to October right now. Try again in a moment.")
+                    self.finish(attempt, error: "Another app is signing in right now. Try again in a moment.")
                 }
             }
         }
@@ -545,7 +576,7 @@ final class CallbackListener: @unchecked Sendable {
             }
             self.done = true
             if let code = value("code") {
-                self.reply(conn, status: "200 OK", body: Self.page("You're signed in to October Lantern", "Lantern is ready. You can close this tab."))
+                self.reply(conn, status: "200 OK", body: Self.page("Finishing sign-in in Lantern", "Go back to Lantern to see whether sign-in completed. You can close this tab."))
                 completion(.success(code))
             } else {
                 let message = value("error_description") ?? value("error") ?? "Sign-in was cancelled."

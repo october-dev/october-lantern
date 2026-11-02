@@ -186,7 +186,7 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 egui::Frame::new().inner_margin(Margin::symmetric(0, 4)).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 14.0;
+                    ui.spacing_mut().item_spacing.y = 22.0;
                     let model = cx.model;
                     for turn in &model.assistant.turns {
                         ui.push_id(turn.id, |ui| render_turn(ui, cx, turn));
@@ -204,16 +204,14 @@ fn thread(ui: &mut Ui, cx: &mut Ctx, max_height: f32) {
 
 fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
     ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.spacing_mut().item_spacing.y = 14.0;
         egui::Frame::new()
             .outer_margin(Margin { left: 28, ..Default::default() })
-            .inner_margin(Margin::same(10))
+            .inner_margin(Margin::same(12))
             .corner_radius(14)
-            .fill(t::opacity(t::AMBER, 0.22))
-            .stroke(Stroke::new(1.0, t::opacity(t::AMBER, 0.3)))
+            .fill(t::white(0.07))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                c::label(ui, "You", 10.5, Weight::Medium, t::AMBER);
                 question(ui, turn);
                 if !turn.images.is_empty() {
                     ui.horizontal(|ui| {
@@ -226,13 +224,9 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
                     });
                 }
             });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            c::label(ui, "Lantern", 10.5, Weight::Medium, t::MUTED);
-            if let Some(provider) = &turn.via {
-                via(ui, provider);
-            }
-        });
+        if let Some(provider) = &turn.via {
+            via(ui, provider);
+        }
         if turn.answer.is_empty() {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -243,7 +237,7 @@ fn render_turn(ui: &mut Ui, cx: &mut Ctx, turn: &AssistantTurn) {
             let (response, link) = c::markdown_linked(
                 ui,
                 &turn.answer,
-                MarkdownStyle { size: 12.5, color: answer_color(turn.failed, turn.fix.is_some()), ..Default::default() },
+                MarkdownStyle { size: 13.0, color: answer_color(turn.failed, turn.fix.is_some()), ..Default::default() },
                 2.0,
             );
             response.context_menu(|ui| {
@@ -315,7 +309,7 @@ pub(super) fn fix_buttons(ui: &mut Ui, cx: &mut Ctx, fix: &Fix, from: &'static s
         Fix::Upgrade => offer_buttons(ui, cx, from),
         Fix::EditKey | Fix::OpenSettings => {
             let title = if *fix == Fix::EditKey { "Edit key" } else { "Open Settings" };
-            if c::secondary_button(ui, title).on_hover_text("Your own AI key, in Settings › October").clicked() {
+            if c::secondary_button(ui, title).on_hover_text("Your own AI key, in Settings › Connections").clicked() {
                 cx.emit(UiAction::OpenOwnKeySettings);
             }
         }
@@ -338,7 +332,7 @@ fn question(ui: &mut Ui, turn: &AssistantTurn) {
     let expanded = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
     let mut job = egui::text::LayoutJob::single_section(
         turn.question.clone(),
-        egui::TextFormat { font_id: t::font(12.5, Weight::Regular), color: t::INK, ..Default::default() },
+        egui::TextFormat { font_id: t::font(13.0, Weight::Regular), color: t::INK, ..Default::default() },
     );
     job.wrap.max_width = ui.available_width();
     if long && !expanded {
@@ -406,72 +400,88 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
         .filter(|watched| latest && agent.is_some_and(|agent| agent.id == watched.agent_id) && !watched.messages.is_empty())
         .map(|watched| watched.messages.as_slice());
     let messages = task_messages(link, live);
-    egui::Frame::new().fill(t::black(0.18)).stroke(Stroke::new(1.0, t::HAIRLINE)).corner_radius(12).inner_margin(Margin::same(10)).show(
-        ui,
-        |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 8.0;
-            for (key, message) in chat::keyed(messages) {
-                chat::bubble(ui, cx, message, &format!("task-{turn}-{key}"));
+    ui.vertical(|ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 10.0;
+        agent_header(ui, cx, link, agent);
+        for (key, message) in chat::keyed(messages) {
+            if message.role != Role::Tool {
+                chat::bubble(ui, cx, message, &format!("task-{turn}-{key}"), true);
             }
-            if let Some(agent) = agent.filter(|agent| agent.is_answerable()) {
-                super::question::question_card(ui, cx, agent, latest);
+        }
+        if let Some(agent) = agent.filter(|agent| agent.is_answerable()) {
+            super::question::question_card(ui, cx, agent, latest);
+        }
+        // Kept after the agent exits: its questions, progress and result.
+        if let Some(launch) = agent.map(|a| a.id.as_str()).or(link.agent_id.as_deref()).and_then(|id| model.launch_for(id)) {
+            super::task_cards::launch_cards(ui, cx, launch, latest && !agent.is_some_and(|a| a.is_answerable()));
+        }
+        if let Some(error) = &link.error {
+            let what = if link.sent { "Couldn't send it" } else { "Couldn't start it" };
+            c::label(ui, format!("{what}: {error}"), 11.5, Weight::Regular, t::RED);
+            if latest && c::plain_button(ui, "Try again", 11.0, Weight::Semibold, t::INK).clicked() {
+                cx.emit(UiAction::RetryAssistantTask { turn });
             }
-            // Kept after the agent exits: its questions, progress and result.
-            if let Some(launch) = agent.map(|a| a.id.as_str()).or(link.agent_id.as_deref()).and_then(|id| model.launch_for(id)) {
-                super::task_cards::launch_cards(ui, cx, launch, latest && !agent.is_some_and(|a| a.is_answerable()));
-            }
-            if let Some(error) = &link.error {
-                let what = if link.sent { "Couldn't send it" } else { "Couldn't start it" };
-                c::label(ui, format!("{what}: {error}"), 11.5, Weight::Regular, t::RED);
-                if latest && c::plain_button(ui, "Try again", 11.0, Weight::Semibold, t::INK).clicked() {
-                    cx.emit(UiAction::RetryAssistantTask { turn });
+        } else if link.sign_in && agent.is_none_or(|agent| agent.state != AgentState::Working) {
+            let text = format!(
+                "{} needs you to sign in first. It's open in a terminal window: sign in there and it starts on this.",
+                link.kind.display_name()
+            );
+            c::label(ui, text, 11.0, Weight::Regular, t::AMBER);
+        } else if let Some(agent) = agent {
+            // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
+            // was done, so nothing here claims it.
+            let quiet = |ui: &mut Ui, text: &str| c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
+            match agent.state {
+                AgentState::Working => busy(ui, cx.env, "Working on it…"),
+                AgentState::NeedsInput if !agent.is_answerable() => {
+                    c::label(ui, "Needs your answer. Reply below.", 11.0, Weight::Regular, t::AMBER);
                 }
-            } else if link.sign_in && agent.is_none_or(|agent| agent.state != AgentState::Working) {
-                let text = format!(
-                    "{} needs you to sign in first. It's open in a terminal window: sign in there and it starts on this.",
-                    link.kind.display_name()
-                );
-                c::label(ui, text, 11.0, Weight::Regular, t::AMBER);
-            } else if let Some(agent) = agent {
-                // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
-                // was done, so nothing here claims it.
-                let quiet = |ui: &mut Ui, text: &str| c::label(ui, text, 11.0, Weight::Regular, t::MUTED);
-                match agent.state {
-                    AgentState::Working => busy(ui, cx.env, "Working on it…"),
-                    AgentState::NeedsInput if !agent.is_answerable() => {
-                        c::label(ui, "Needs your answer. Reply below.", 11.0, Weight::Regular, t::AMBER);
-                    }
-                    AgentState::NeedsInput => {}
-                    AgentState::Waiting => {
-                        quiet(ui, "Finished its turn. Reply below if there's more.");
-                    }
-                    AgentState::Idle => {
-                        quiet(ui, "Open, but not working on anything.");
-                    }
-                    AgentState::Unknown => {
-                        quiet(ui, "Running.");
-                    }
+                AgentState::NeedsInput => {}
+                AgentState::Waiting => {
+                    quiet(ui, "Finished its turn. Reply below if there's more.");
                 }
-            } else if link.in_terminal {
-                c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
-            } else if link.agent_id.is_some() || !link.transcript.is_empty() {
-                c::label(ui, "Closed. It isn't running anymore.", 11.0, Weight::Regular, t::MUTED);
-            } else if latest
-                && link.kind.as_str() == AgentKind::OCTOBER
-                && model.harness.as_ref().is_some_and(|h| h.status == HarnessState::Installing)
-            {
-                busy(ui, cx.env, "Setting up October. The first time takes a few minutes…");
-            } else if latest {
-                busy(ui, cx.env, "Getting started…");
+                AgentState::Idle => {
+                    quiet(ui, "Open, but not working on anything.");
+                }
+                AgentState::Unknown => {
+                    quiet(ui, "Running.");
+                }
             }
-            footer(ui, cx, link, agent);
-        },
-    );
+        } else if link.in_terminal {
+            c::label(ui, "Running in a Terminal window.", 11.0, Weight::Regular, t::MUTED);
+        } else if link.agent_id.is_some() || !link.transcript.is_empty() {
+            c::label(ui, "Closed. It isn't running anymore.", 11.0, Weight::Regular, t::MUTED);
+        } else if latest
+            && link.kind.as_str() == AgentKind::OCTOBER
+            && model.harness.as_ref().is_some_and(|h| h.status == HarnessState::Installing)
+        {
+            busy(ui, cx.env, "Setting up October. The first time takes a few minutes…");
+        } else if latest {
+            busy(ui, cx.env, "Getting started…");
+        }
+        let activity: Vec<_> = messages.iter().filter(|message| message.role == Role::Tool).collect();
+        if !activity.is_empty() {
+            let title = format!("Activity · {} step{}", activity.len(), if activity.len() == 1 { "" } else { "s" });
+            egui::CollapsingHeader::new(c::text(title, 11.0, Weight::Regular, t::MUTED))
+                .id_salt(("task-activity", turn))
+                .default_open(false)
+                .show(ui, |ui| {
+                    for message in activity {
+                        c::label(ui, &message.text, 11.5, Weight::Mono, t::MUTED).context_menu(|ui| {
+                            if ui.button("Copy message").clicked() {
+                                ui.ctx().copy_text(message.text.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+        }
+    });
 }
 
-/// Which agent and Open agent, small, under the conversation; the folder is in the tooltip.
-fn footer(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate::model::Agent>) {
+/// One quiet source row; the folder stays in the tooltip.
+fn agent_header(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate::model::Agent>) {
     let folder = chat::folder_name(&link.folder, &cx.env.home);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 5.0;
@@ -584,12 +594,12 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
         let stroke = if dropping {
             Stroke::new(2.0, t::AMBER)
         } else {
-            Stroke::new(1.0, if focused { t::opacity(t::AMBER, 0.5) } else { t::STROKE })
+            Stroke::new(1.0, if focused { t::opacity(t::AMBER, 0.5) } else { t::HAIRLINE })
         };
         egui::Frame::new()
-            .fill(t::black(0.3))
+            .fill(t::FAINT)
             .stroke(stroke)
-            .corner_radius(12)
+            .corner_radius(16)
             .inner_margin(Margin { left: 13, right: 7, top: 10, bottom: 10 })
             .show(ui, |ui| {
                 if !cx.model.assistant.attachments.is_empty() {
@@ -609,12 +619,9 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                     });
                     ui.add_space(8.0);
                 }
-                ui.horizontal(|ui| {
+                ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    if cx.model.prefs.show_me && replying.is_none() && super::components::show_me_button(ui, "Show me").clicked() {
-                        cx.emit(UiAction::StartShow(cx.inputs.assistant.clone()));
-                    }
-                    let width = ui.available_width() - 84.0;
+                    let width = ui.available_width();
                     let placeholder = if cx.model.dictating {
                         "Listening…".to_string()
                     } else if let Some(agent) = replying {
@@ -655,45 +662,49 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                         cx.emit(UiAction::PasteAssistantImages);
                     }
                     cx.view.paste_held = pasting;
-                    ui.allocate_ui_with_layout(egui::vec2(78.0, edit.rect.height()), Layout::bottom_up(Align::Min), |ui| {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 6.0;
-                            if c::icon_button(ui, "assistant-images", Icon::Paperclip, 22.0, t::MUTED, false)
-                                .on_hover_text("Add images (you can also paste or drop them here)")
-                                .clicked()
-                            {
-                                cx.emit(UiAction::PickAssistantImages);
-                            }
-                            if c::icon_button(
-                                ui,
-                                "assistant-mic",
-                                if cx.model.dictating { Icon::MicFill } else { Icon::Mic },
-                                22.0,
-                                if cx.model.dictating { t::RED } else { t::MUTED },
-                                false,
-                            )
-                            .on_hover_text(if cx.model.dictating { "Stop listening" } else { "Speak" })
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        if c::icon_button(ui, "assistant-images", Icon::Paperclip, 28.0, t::MUTED, false)
+                            .on_hover_text("Add images (you can also paste or drop them here)")
                             .clicked()
-                            {
-                                cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
-                            }
-                            // A reply can go while Lantern is still answering.
-                            let enabled = (!cx.inputs.assistant.trim().is_empty() || !cx.model.assistant.attachments.is_empty())
-                                && (replying.is_some() || !cx.model.assistant.asking);
-                            let response = ui
-                                .add_enabled_ui(enabled, |ui| {
-                                    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(22.0), Sense::click());
-                                    ui.painter().circle_filled(rect.center(), 11.0, t::opacity(t::AMBER, if enabled { 1.0 } else { 0.35 }));
-                                    c::paint_icon(ui.painter(), rect.shrink(5.5), Icon::ArrowUp, t::black(0.85));
-                                    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Ask"));
-                                    response
-                                })
-                                .inner
-                                .on_hover_text("Ask (Return)");
-                            if enabled && (submit || response.clicked()) {
-                                cx.emit(UiAction::SubmitAssistant);
-                            }
-                        });
+                        {
+                            cx.emit(UiAction::PickAssistantImages);
+                        }
+                        if c::icon_button(
+                            ui,
+                            "assistant-mic",
+                            if cx.model.dictating { Icon::MicFill } else { Icon::Mic },
+                            28.0,
+                            if cx.model.dictating { t::RED } else { t::MUTED },
+                            false,
+                        )
+                        .on_hover_text(if cx.model.dictating { "Stop listening" } else { "Speak" })
+                        .clicked()
+                        {
+                            cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
+                        }
+                        if cx.model.prefs.show_me && replying.is_none() && super::components::show_me_button(ui, "Show me").clicked() {
+                            cx.emit(UiAction::StartShow(cx.inputs.assistant.clone()));
+                        }
+                        let spacer = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
+                        ui.add_space(spacer);
+                        // A reply can go while Lantern is still answering.
+                        let enabled = (!cx.inputs.assistant.trim().is_empty() || !cx.model.assistant.attachments.is_empty())
+                            && (replying.is_some() || !cx.model.assistant.asking);
+                        let response = ui
+                            .add_enabled_ui(enabled, |ui| {
+                                let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(28.0), Sense::click());
+                                ui.painter().circle_filled(rect.center(), 14.0, t::opacity(t::AMBER, if enabled { 1.0 } else { 0.35 }));
+                                c::paint_icon(ui.painter(), rect.shrink(5.5), Icon::ArrowUp, t::black(0.85));
+                                response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, "Ask"));
+                                response
+                            })
+                            .inner
+                            .on_hover_text("Ask (Return)");
+                        if enabled && (submit || response.clicked()) {
+                            cx.emit(UiAction::SubmitAssistant);
+                        }
                     });
                 });
             });
@@ -881,6 +892,24 @@ mod tests {
     }
 
     #[test]
+    fn activity_is_collapsed_without_hiding_the_answer_or_launch_errors() {
+        let (ctx, assets, mut fixture) = setup("task");
+        let mut view = UiState::default();
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(texts.iter().any(|(text, _)| text == "Activity · 1 step"));
+        assert!(texts.iter().any(|(text, _)| text.contains("Thesis-final.pdf")));
+        assert!(!texts.iter().any(|(text, _)| text.contains("bash · find")));
+        assert!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Activity · 1 step").is_empty());
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(texts.iter().any(|(text, _)| text.contains("bash · find")), "activity remains available on demand");
+        fixture.model.assistant.turns[0].task.as_mut().unwrap().error = Some("Could not reach the agent".into());
+        let mut view = UiState::default();
+        let (_, _, texts) = frame(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, Vec::new());
+        assert!(texts.iter().any(|(text, _)| text.contains("Couldn't start it: Could not reach the agent")));
+        assert!(texts.iter().any(|(text, _)| text == "Try again"));
+    }
+
+    #[test]
     fn a_task_card_says_only_what_lantern_can_see() {
         let (ctx, assets, mut fixture) = setup("task");
         let cases = [
@@ -1026,7 +1055,7 @@ mod tests {
         assert!(has("Sign in to ask Lantern"));
         assert!(has("Ask anything about your agents, or tell Lantern what to do."));
         assert!(!texts.iter().any(|(text, _)| text.contains("questions a day")), "no number before the plan is known");
-        assert!(!has("Connect to October"), "the card's own header stays in the October panel");
+        assert!(!has("Sign in to Lantern"), "the card's own header stays in Connections");
         assert!(!has("Sign in to October to ask Lantern anything"));
         for (title, provider) in [("Google", Provider::Google), ("GitHub", Provider::GitHub), ("Apple", Provider::Apple)] {
             let actions = click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, title);
@@ -1034,6 +1063,14 @@ mod tests {
         }
         assert!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Use email and password").is_empty());
         assert!(view.account_use_email, "the email form opens in place");
+        assert_eq!(
+            click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Forgot password?"),
+            vec![UiAction::OpenUrl(crate::account::PASSWORD_RESET_URL.into())]
+        );
+        view.account_password = "discard-this-draft".into();
+        assert_eq!(click(&ctx, &assets, &fixture.model, &mut fixture.inputs, &mut view, "Create account"), vec![UiAction::CreateAccount]);
+        assert!(view.account_password.is_empty());
+        assert!(!view.account_use_email, "browser signup replaces the email form");
     }
 
     /// Clicks the control named `label` (by its accessibility name: icon buttons have no text).

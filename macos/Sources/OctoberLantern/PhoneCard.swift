@@ -91,7 +91,7 @@ final class PhoneModel: ObservableObject {
     }
 }
 
-/// October panel → Phone → Pair. The same section owns installation, scanning, comparison,
+/// Connections → Phone → Pair. The same section owns installation, scanning, comparison,
 /// completion and device management; a pending request never opens a different dialog.
 struct PhoneCard: View {
     @ObservedObject var model = PhoneModel.shared
@@ -106,10 +106,10 @@ struct PhoneCard: View {
                 Label("Phone", systemImage: "iphone").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
                 Spacer()
                 if model.state?.pairing == nil && model.state?.outcome != "denied" {
-                    Button("Pair") { model.pair() }.buttonStyle(SecondaryButtonStyle()).disabled(model.busy)
+                    Button("Pair") { model.pair() }.buttonStyle(AmberButtonStyle()).disabled(model.busy)
                 }
             }
-            Text("See waiting agents and reply from your phone.").font(.system(size: 12)).foregroundStyle(Theme.muted)
+            Text("See waiting agents and reply in the October iPhone app.").font(.system(size: 12)).foregroundStyle(Theme.muted)
             if model.state?.status == "plan-required" || account.plan?.features?.mobile?.enabled == false {
                 Text("Your plan does not currently include mobile access.").foregroundStyle(Theme.amber)
                 Button("Upgrade") { NSWorkspace.shared.open(URL(string: "https://www.october.dev/pricing")!) }
@@ -121,6 +121,15 @@ struct PhoneCard: View {
                 Label("iPhone connected", systemImage: "checkmark.circle.fill").foregroundStyle(Theme.green)
                 Text("You'll get agent alerts and can reply from your phone. Allow notifications in October on your iPhone.")
                     .foregroundStyle(Theme.muted)
+            } else if !model.setup && !model.busy && model.state?.devices.isEmpty != false &&
+                model.state?.errorCode == nil && model.state?.outcome == nil && model.localError == nil {
+                VStack(spacing: 2) {
+                    Text("Your agents, in your pocket.")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded)).foregroundStyle(Theme.ink)
+                    OctoberPhoneArtwork()
+                    Text("October app preview").font(.system(size: 10)).foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity)
             }
             if model.busy {
                 HStack(spacing: 6) {
@@ -146,8 +155,13 @@ struct PhoneCard: View {
         .font(.system(size: 11.5))
         .fixedSize(horizontal: false, vertical: true)
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.faint))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.hairline))
+        .background {
+            RoundedRectangle(cornerRadius: 16).fill(Theme.faint)
+            RoundedRectangle(cornerRadius: 16).fill(
+                LinearGradient(colors: [Theme.amber.opacity(0.09), .clear], startPoint: .topLeading, endPoint: .bottomTrailing)
+            )
+        }
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.amber.opacity(0.22)))
         .onChange(of: account.loadingPlan) { old, loading in
             if old && !loading && account.mobileAllowed && model.state?.status == "plan-required" { model.retry() }
         }

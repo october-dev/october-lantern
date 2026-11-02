@@ -5,14 +5,13 @@ import SwiftUI
 /// agents go through October's safe delivery and "Open" shows them on the canvas.
 struct DesktopCard: View {
     @ObservedObject var model: AppModel
-    /// One plain row (the October panel); the full card with artwork lives in Settings › October.
-    var compact = false
+    // Optional integration, shown in Settings → Connections.
 
     var body: some View {
         let link = model.octoberLink
         let paired = link?.paired == true
         VStack(alignment: .leading, spacing: 10) {
-            if !compact { DesktopArtwork(connected: paired, pairing: link?.status == "pairing") }
+            DesktopArtwork(connected: paired, pairing: link?.status == "pairing")
             // Title with its status under it, the action on the right; the explanation below, full width.
             HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -23,11 +22,9 @@ struct DesktopCard: View {
                 action(link).fixedSize()
             }
             // What this is, for someone seeing it for the first time; then the next step.
-            if !compact {
             Text("October Desktop is October's app for running teams of agents on a shared canvas. Connect it and the agents on your canvas show up in Lantern with their names and questions, and your replies reach them through October.")
                 .font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.8))
                 .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            }
             Text(detail(link)).font(.system(size: 11.5)).foregroundStyle(Theme.muted)
                 .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             if let code = link?.pairingCode {

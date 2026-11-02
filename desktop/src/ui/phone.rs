@@ -1,10 +1,10 @@
-//! October panel → Phone → Pair. Installation, QR and code comparison share one section.
+//! Connections → Phone → Pair. Installation, QR and code comparison share one section.
 use super::{
     Ctx, UiAction, components as c,
     theme::{self as t, Weight},
 };
 use crate::model::phone::{Action, Pairing, recovery};
-use eframe::egui::{self, Margin, Stroke, Ui};
+use eframe::egui::{self, Align, Layout, Margin, Rect, Sense, Stroke, Ui};
 
 fn action(cx: &mut Ctx, action: Action) {
     cx.emit(UiAction::Phone(action));
@@ -16,26 +16,31 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
     }
     let model = cx.model;
     let Some(account) = &model.account.signed_in else {
-        c::label(ui, "Your phone uses the same October account. Sign in above to connect it.", 11.5, Weight::Regular, t::MUTED);
+        c::label(ui, "Sign in to Lantern to connect your phone. Use the same account in the October app.", 11.5, Weight::Regular, t::MUTED);
         return;
     };
     let email = if account.email.is_empty() { "the same October account as this computer" } else { &account.email };
     let phone = model.phone.as_ref();
     let busy = cx.view.phone_sending || phone.is_some_and(|s| s.busy);
-    egui::Frame::new().fill(t::FAINT).stroke(Stroke::new(1.0, t::HAIRLINE)).corner_radius(14).inner_margin(Margin::same(12)).show(
-        ui,
-        |ui| {
+    egui::Frame::new()
+        .fill(t::FAINT)
+        .stroke(Stroke::new(1.0, t::AMBER.gamma_multiply(0.22)))
+        .corner_radius(16)
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 10.0;
             ui.horizontal(|ui| {
                 c::label(ui, "Phone", 14.0, Weight::Semibold, t::INK);
-                if phone.is_none_or(|s| s.pairing.is_none() && s.outcome.as_deref() != Some("denied"))
-                    && ui.add_enabled_ui(!busy, |ui| c::secondary_button(ui, "Pair")).inner.clicked()
-                {
-                    action(cx, Action::Pair);
-                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if phone.is_none_or(|s| s.pairing.is_none() && s.outcome.as_deref() != Some("denied"))
+                        && ui.add_enabled_ui(!busy, |ui| c::amber_button(ui, "Pair")).inner.clicked()
+                    {
+                        action(cx, Action::Pair);
+                    }
+                });
             });
-            c::label(ui, "See waiting agents and reply from your phone.", 12.0, Weight::Regular, t::MUTED);
+            c::label(ui, "See waiting agents and reply in the October iPhone app.", 12.0, Weight::Regular, t::MUTED);
             let plan_required = account.mobile_allowed == Some(false) || phone.is_some_and(|s| s.status == "plan-required");
             if plan_required {
                 c::label(ui, "Your plan does not currently include mobile access.", 11.5, Weight::Regular, t::AMBER);
@@ -60,6 +65,16 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
                     Weight::Regular,
                     t::MUTED,
                 );
+            } else if !busy
+                && cx.view.phone_error.is_none()
+                && phone.is_none_or(|s| s.devices.is_empty() && s.error_code.is_none() && s.outcome.is_none())
+            {
+                ui.with_layout(Layout::top_down(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    c::label(ui, "Your agents, in your pocket.", 17.0, Weight::Semibold, t::INK);
+                    artwork(ui, cx);
+                    c::label(ui, "October app preview", 10.0, Weight::Regular, t::MUTED);
+                });
             }
             if busy {
                 c::label(ui, "Working…", 11.5, Weight::Regular, t::MUTED);
@@ -135,8 +150,20 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
             }
             c::label(ui, "End-to-end encrypted. Only phones you approve can connect.", 11.0, Weight::Regular, t::MUTED);
             c::label(ui, "Keep this computer awake with Lantern open for phone access and agent alerts.", 11.0, Weight::Regular, t::MUTED);
-        },
-    );
+        });
+}
+
+/// Bundled app screenshots, never live phone data or pairing secrets.
+fn artwork(ui: &mut Ui, cx: &Ctx) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 180.0), Sense::hover());
+    let center = rect.center();
+    ui.painter().circle_filled(center, 74.0, t::AMBER.gamma_multiply(0.04));
+    for (index, width, offset) in [(0, 64.0, egui::vec2(-65.0, 10.0)), (2, 64.0, egui::vec2(65.0, 10.0)), (1, 76.0, egui::Vec2::ZERO)] {
+        let screen = Rect::from_center_size(center + offset, egui::vec2(width, width * 520.0 / 240.0));
+        ui.painter().rect_filled(screen.translate(egui::vec2(0.0, 4.0)).expand(2.0), 12.0, t::black(0.25));
+        egui::Image::new(&cx.assets.phone_screens[index]).corner_radius(11).paint_at(ui, screen);
+        ui.painter().rect_stroke(screen, 11.0, Stroke::new(1.0, t::white(0.2)), egui::StrokeKind::Inside);
+    }
 }
 
 fn scan(ui: &mut Ui, cx: &mut Ctx, p: &Pairing, email: &str, busy: bool) {

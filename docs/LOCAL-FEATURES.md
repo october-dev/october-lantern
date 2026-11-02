@@ -2,6 +2,10 @@
 
 This describes the source branch, rather than an installer release. Remote devices, SSH, cloud execution, remote routines and task moves are outside these local features.
 
+## Ask Lantern conversations
+
+Messages use a quiet, right-aligned user bubble and open reply text, with one source row for a task's agent. Tool logs are available under **Activity · N steps**, collapsed initially; answers, questions, task cards, errors and recovery actions remain visible. Activity expansion is local to that task and never sends an agent command. The composer gives text the full width, with image, voice and send controls underneath. Message selection/copy, image attachments, provider attribution and reply routing are preserved in both clients.
+
 ## Cards
 
 October, Claude Code and Codex started by Lantern receive the `lantern` MCP server. They can ask a question, show progress and steps, request a hand-off, suggest a routine, request guidance, and report a result with files. Both native clients render these cards. Cards and launch receipts survive an engine restart and remain after the terminal session ends.
@@ -62,7 +66,9 @@ On Mac/Linux, `python3 scripts/smoke-driver-recovery.py path/to/debug/lantern-en
 
 ## Connect your phone
 
-Both apps expose **October panel → Phone → Pair**. The **Connections** button (computer and phone) at the bottom of the expanded pill opens the October panel, with account, phone and October Desktop setup. On Mac, **October…** is also available in both the menu bar icon and the pill’s right-click menu. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in and “Your phone uses the same October account” first. The phone section appears after sign-in.
+Both apps expose **Connections → Phone → Pair**. The **Connections** button (computer and phone) at the bottom of the expanded pill opens account and phone setup. On Mac, **Connections…** is also available in the menu bar icon and the pill’s right-click menu. **Connect your phone** in an empty Waiting or Agents list opens the same flow; signed-out users see sign-in first. The phone section appears after sign-in.
+
+The panel leads with “Keep your agents close.” **Sign in to Lantern** offers the existing providers and email/password, plus **Create account** and **Forgot password?**. One explanation introduces the shared October identity. After sign-in, **Your account** uses the full card width, with Refresh and Sign Out below. Signup reuses the native PKCE listener and memory-only verifier; recovery finishes on the website before email sign-in in Lantern. Website implementation and release prerequisites are in the [backend handoff](LANTERN-ACCOUNT-HANDOFF.md). Before pairing, Phone shows the bundled October app screenshots, labeled “October app preview,” and an amber **Pair** button. The preview gives way to the QR, confirmation, completion or recovery controls during setup. The optional October Desktop integration and own AI key live in **Settings → Connections**; Desktop is absent from the main Connections page.
 
 1. **Pair:** creates the pairing QR immediately; the signed-in **Connect your phone** shortcut does the same. Reopening a live pairing preserves its code. There is no installation gate or install QR.
 2. **Scan to pair:** “Open your iPhone Camera and point it here.” The large QR contains October's HTTPS universal link. The October scanner and **Copy pairing link** are alternatives. **Get the October app** sits alongside the QR, using the single TestFlight destination in `protocol/phone-app.json`. New users install, sign in with the displayed email, and scan. Expiry counts down; **New code** replaces it in one click if installation took longer.

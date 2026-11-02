@@ -156,19 +156,41 @@ pub fn password(email: String, password: String) -> Result<Session> {
 pub fn refresh(token: String) -> Result<Session> {
     exchange("refresh_token", json!({"refresh_token": token}))
 }
-pub fn oauth(provider: &str, generation: u64, current: Arc<AtomicU64>) -> Result<Session> {
+pub enum BrowserFlow {
+    Provider(&'static str),
+    SignUp,
+}
+
+pub const PASSWORD_RESET_URL: &str = "https://lantern.october.dev/forgot-password";
+
+fn browser_url(flow: &BrowserFlow, challenge: &str) -> Result<url::Url> {
+    let mut url = match flow {
+        BrowserFlow::Provider(provider) => {
+            let mut url = url::Url::parse(&format!("{AUTH}/authorize"))?;
+            url.query_pairs_mut().append_pair("provider", provider);
+            url
+        }
+        BrowserFlow::SignUp => url::Url::parse("https://lantern.october.dev/signup")?,
+    };
+    url.query_pairs_mut()
+        .append_pair("redirect_to", "http://localhost:54547/callback")
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "s256");
+    Ok(url)
+}
+
+pub fn browser_sign_in(flow: BrowserFlow, generation: u64, current: Arc<AtomicU64>) -> Result<Session> {
     let listener = TcpListener::bind("127.0.0.1:54547").context("Sign-in callback port 54547 is already in use")?;
     listener.set_nonblocking(true)?;
     let verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
-    let mut url = url::Url::parse(&format!("{AUTH}/authorize"))?;
-    url.query_pairs_mut()
-        .append_pair("provider", provider)
-        .append_pair("redirect_to", "http://localhost:54547/callback")
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "s256");
+    let url = browser_url(&flow, &challenge)?;
     crate::os::open(url.as_str())?;
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let timeout = match flow {
+        BrowserFlow::SignUp => 300,
+        BrowserFlow::Provider(_) => 180,
+    };
+    let deadline = Instant::now() + Duration::from_secs(timeout);
     while Instant::now() < deadline && current.load(Ordering::SeqCst) == generation {
         match listener.accept() {
             Ok((mut stream, _)) => {
@@ -227,7 +249,10 @@ fn callback_error(target: &str) -> Option<String> {
 /// what happened, and what to do now. `refused`: why it didn't finish.
 pub(crate) fn callback_page(refused: Option<&str>) -> String {
     let (title, text) = match refused {
-        None => ("You're signed in to October Lantern".to_string(), "Lantern is ready. You can close this tab.".to_string()),
+        None => (
+            "Finishing sign-in in Lantern".to_string(),
+            "Go back to Lantern to see whether sign-in completed. You can close this tab.".to_string(),
+        ),
         Some(message) => ("Sign-in didn't finish".to_string(), format!("{} Go back to Lantern and try again.", message.trim())),
     };
     let logo = logo_data_url()
@@ -390,8 +415,8 @@ mod tests {
     #[test]
     fn callback_page_says_where_you_are_and_escapes_the_message() {
         let done = callback_page(None);
-        assert!(done.contains("<h1 style=\"font-size:22px;margin:18px 0 8px\">You&#39;re signed in to October Lantern</h1>"));
-        assert!(done.contains("Lantern is ready. You can close this tab."));
+        assert!(done.contains("<h1 style=\"font-size:22px;margin:18px 0 8px\">Finishing sign-in in Lantern</h1>"));
+        assert!(done.contains("Go back to Lantern to see whether sign-in completed. You can close this tab."));
         assert!(done.contains("background:#141414;color:#f3efe6") && done.contains("color:#a8a29a") && done.contains("'Segoe UI'"));
         assert!(done.contains("<img src=\"data:image/png;base64,") && done.contains("width=\"88\""), "the lantern");
         assert!(done.contains("drop-shadow(0 0 24px rgba(240,180,80,.45))"));
@@ -406,6 +431,27 @@ mod tests {
         assert_eq!(callback_error("/callback?error=access_denied").as_deref(), Some("access_denied"));
         assert_eq!(callback_error("/callback?code=x"), None);
         assert_eq!(callback_error("/favicon.ico?error=x"), None);
+    }
+
+    #[test]
+    fn signup_uses_lantern_and_only_the_app_owned_pkce_parameters() {
+        let url = browser_url(&BrowserFlow::SignUp, "synthetic-challenge").unwrap();
+        let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(url.scheme(), "https");
+        assert_eq!(url.host_str(), Some("lantern.october.dev"));
+        assert_eq!(url.path(), "/signup");
+        assert_eq!(query.len(), 3);
+        assert_eq!(query["redirect_to"], "http://localhost:54547/callback");
+        assert_eq!(query["code_challenge"], "synthetic-challenge");
+        assert_eq!(query["code_challenge_method"], "s256");
+        for provider in ["google", "github", "apple"] {
+            let url = browser_url(&BrowserFlow::Provider(provider), "synthetic-challenge").unwrap();
+            let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+            assert_eq!(url.host_str(), Some("auth.october.dev"));
+            assert_eq!(url.path(), "/auth/v1/authorize");
+            assert_eq!(query["provider"], provider);
+            assert_eq!(query["code_challenge_method"], "s256");
+        }
     }
 
     #[test]

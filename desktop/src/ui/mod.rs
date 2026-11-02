@@ -304,6 +304,7 @@ pub enum UiAction {
     },
     // Account and October Desktop
     SignInProvider(Provider),
+    CreateAccount,
     SignInEmail {
         email: String,
         password: String,

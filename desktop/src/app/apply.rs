@@ -111,7 +111,14 @@ impl Lantern {
                     crate::ui::Provider::GitHub => "github",
                     crate::ui::Provider::Apple => "apple",
                 };
-                self.sign_in(move |generation, current| crate::account::oauth(provider, generation, current));
+                self.sign_in(move |generation, current| {
+                    crate::account::browser_sign_in(crate::account::BrowserFlow::Provider(provider), generation, current)
+                });
+            }
+            UiAction::CreateAccount => {
+                self.sign_in(move |generation, current| {
+                    crate::account::browser_sign_in(crate::account::BrowserFlow::SignUp, generation, current)
+                });
             }
             UiAction::SignInEmail { email, password } => {
                 self.sign_in(move |_, _| crate::account::password(email.trim().to_string(), password));
