@@ -43,6 +43,18 @@ The owner explicitly removed protected sign-in/isolation from this beta on 27 Oc
 
 QA logs, screenshots and fixture data are private under `/private/tmp/lantern-qa` and `/private/tmp/lantern-*.log`. They are not committed. The original `cards` checkout and existing `show-me` worktree were preserved.
 
+## Cua Driver pin qualification — 1 November 2026
+
+The update branch `chore/cua-driver-update`, based on main `ef282f7`, changes `engine/cua.json` from 0.36.0 to [Cua Driver 0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0). This is a regular Driver release; upstream explicitly uses GitHub's “Pre-release” label to avoid moving the monorepo's shared Latest pointer. Nightlies and Cua Spaces releases were excluded. The release includes input-targeting, retry-outcome and capture fixes, plus the eMudhra certificate-trust correction. This updates the next build's download pin; it does not update an installed driver or publish an installer by itself.
+
+- Downloaded all five pinned binary archives: universal macOS, Windows x86_64/arm64 and Linux x86_64/arm64. Every SHA-256 matched both the release's `checksums.txt` and its asset digest. Archive layouts retain the program/helper names Lantern installs.
+- The verified macOS binary reports `cua-driver 0.38.0`. Its serve/MCP embedded flags, private socket/PID paths, existing-profile grant, session revocation and stop command remain compatible with Lantern's invocation.
+- A private metadata-only daemon passed MCP initialization/tool listing, Show me's tool names and argument schemas, explicit session creation/query/end, session revocation, expected-PID stop, actual process exit and socket release. No second Lantern engine, desktop capture, input or model was started. The fixture skipped the permissions gate only on its isolated endpoint; this does not qualify desktop permissions.
+- `scripts/check.sh`: **159 engine tests passed, 1 ignored; 60 Mac tests passed**, with formatting/lints, build and script checks passing. Reusing another worktree's Swift module cache initially failed because of its absolute PCH path; cleaning that build cache and rerunning passed.
+- `scripts/check-windows-types.sh`: **passed**. It does not execute the Windows binary. Physical Windows/Linux behavior and a fresh native UI/model journey on 0.38.0 remain unqualified by these checks. Earlier 0.36.0 journey evidence above is historical and has not been relabeled as 0.38.0 evidence.
+
+No Lantern installer release or production configuration change was performed for this pin update.
+
 ## Open execution/release gates
 
 1. **Packaged journeys:** paid October/Kimi routing and a genuine scheduled question → native answer → receipt → hand-off → result passed. Complete native model-picker interaction, multi-image/history, Point & Ask and dictation. Keep the underlying selected model; do not silently switch models or billing providers. The CLI's saved direct OpenRouter key was expired; the verified explicit October route uses the same Kimi K2.6 through the person's authorized paid account.
