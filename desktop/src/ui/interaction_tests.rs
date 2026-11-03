@@ -247,8 +247,10 @@ fn claudes_question_is_answered_by_its_option_or_number_key_but_not_while_typing
     f.model.answer_delivery.insert("t-fixture-1".into(), crate::model::AnswerDelivery::Sent);
     let (output, _) = render(&ctx, &assets, &mut f, Vec::new());
     text_rect(&output, "Sent");
-    let three = text_rect(&output, "Three tiers").center();
-    assert!(click(&ctx, &assets, &mut f, three).is_empty());
+    // Folded to the pick: the other options are gone, and the pick takes no second answer.
+    assert!(find_text(&output, "Three tiers").is_none());
+    let one_plan = text_rect(&output, "One plan").center();
+    assert!(click(&ctx, &assets, &mut f, one_plan).is_empty());
 }
 
 #[test]
