@@ -108,6 +108,7 @@ fn header(ui: &mut Ui, cx: &mut Ctx) {
                 PanelMode::Inbox,
             );
             tab(ui, cx, "AGENTS", cx.model.agents.len(), cx.model.panel == Some(PanelMode::Agents), PanelMode::Agents);
+            tab(ui, cx, "ROUTINES", 0, false, PanelMode::Routines);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if c::icon_button(ui, "close-feed", Icon::Close, 22.0, t::MUTED, false).on_hover_text("Close").clicked() {
                     cx.emit(UiAction::SetPanel(None));

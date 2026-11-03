@@ -73,7 +73,8 @@ final class WindowController {
             onMenu: { [weak self] in
                 guard let self else { return }
                 self.onMenu?(self.pillHost)
-            }
+            },
+            onHide: { [weak self] in self?.hidePill() }
         ))
         pill.contentView = GlassContainer(content: pillHost, cornerRadius: nil, tint: 0.45)
         panelHost = FirstClickHostingView(rootView: PanelView(model: model, dictation: model.dictation))

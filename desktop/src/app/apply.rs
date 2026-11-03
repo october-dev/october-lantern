@@ -227,13 +227,13 @@ impl Lantern {
                 }
             }
             UiAction::GetOctober => self.open_url("https://www.october.dev"),
-            UiAction::ReportProblem => {
-                let url = problem_report(&self.model.agents);
-                if crate::os::open(&url).is_err() {
-                    self.show(format!("Write to {SUPPORT_EMAIL} about the problem."));
-                }
+            // Sends the logs, then opens the email with their code (`logs_sent`).
+            UiAction::ReportProblem => self.send_logs(),
+            UiAction::HidePill => {
+                self.set_panel(None);
+                self.windows.show_pill(false);
+                self.publish_tray_menu();
             }
-            UiAction::SendLogs => self.send_logs(),
             UiAction::Copy(text) => self.windows.copy(text),
             UiAction::Quit => self.windows.quit(),
         }
@@ -358,11 +358,12 @@ fn save_images(files: &[std::path::PathBuf], dir: &std::path::Path) -> anyhow::R
 }
 
 /// Where problem reports go (Swift `Support.email`).
-const SUPPORT_EMAIL: &str = "hey@october.dev";
+pub(super) const SUPPORT_EMAIL: &str = "hey@october.dev";
 
 /// Report a Problem (Swift `Support.reportProblem`): an email to the October team with the version,
 /// the system and a summary of the agents and terminals, never their conversations, folders or code.
-fn problem_report(agents: &[crate::model::Agent]) -> String {
+/// The email to the October team, with the logs' code (or why they couldn't be sent) when there is one.
+pub(super) fn problem_report(agents: &[crate::model::Agent], logs: Option<&str>) -> String {
     let count = |labels: Vec<String>| {
         let mut counts = std::collections::BTreeMap::<String, usize>::new();
         for label in labels {
@@ -385,7 +386,8 @@ fn problem_report(agents: &[crate::model::Agent]) -> String {
     );
     let system = format!("{} {}", crate::updates::system_name(), std::env::consts::ARCH);
     let body = format!(
-        "What happened, and what did you expect?\n\n\n---\nOctober Lantern {version}\n{system}\nAgents: {kinds}\nTerminals: {terminals}\n"
+        "What happened, and what did you expect?\n\n\n---\n{}October Lantern {version}\n{system}\nAgents: {kinds}\nTerminals: {terminals}\n",
+        logs.map(|logs| format!("{logs}\n")).unwrap_or_default()
     );
     // Strict percent-encoding: mail apps read `+` in a mailto body literally.
     let encode = |text: &str| {
@@ -443,8 +445,10 @@ mod report_tests {
             route: Some(Route { via: via.into(), ..Default::default() }),
             ..Default::default()
         };
-        let url =
-            super::problem_report(&[agent("claude", "Ptyxis", "tmux"), agent("claude", "Ptyxis", "tmux"), agent("codex", "Code", "pty")]);
+        let url = super::problem_report(
+            &[agent("claude", "Ptyxis", "tmux"), agent("claude", "Ptyxis", "tmux"), agent("codex", "Code", "pty")],
+            Some("Logs: LAN-1234"),
+        );
         assert!(url.starts_with("mailto:hey@october.dev?subject=October%20Lantern%20"));
         assert!(!url.contains('+') && !url.contains(' '));
         let body = url.split("&body=").nth(1).unwrap();
@@ -461,6 +465,7 @@ mod report_tests {
             }
         }
         let decoded = String::from_utf8(raw).unwrap();
+        assert!(decoded.contains("---\nLogs: LAN-1234\nOctober Lantern"), "{decoded}");
         assert!(decoded.contains("Agents: Claude Code ×2, Codex ×1"), "{decoded}");
         assert!(decoded.contains("Terminals: Code via pty ×1, Ptyxis via tmux ×2"), "{decoded}");
         assert!(!decoded.contains("secret-project") && !decoded.contains("private words"));

@@ -28,27 +28,24 @@ impl Lantern {
     pub(super) fn publish_tray_menu(&self) {
         let item = |label: String, id: &str| Some((label, id.to_string()));
         let shortcut = |keys: &str| if keys == "none" { String::new() } else { format!("    {}", hotkey_label(keys)) };
-        let mut menu = vec![
-            item(format!("Waiting ({})", self.model.inbox.new.len() + self.model.inbox.earlier.len()), "inbox"),
-            item(format!("Agents ({})", self.model.agents.len()), "agents"),
-            item("New Session or Task…".into(), "new"),
+        // Only the ways in: agents, routines and connections are on the pill, and help is in Settings.
+        let waiting = self.model.inbox.new.len() + self.model.inbox.earlier.len();
+        let mut menu = Vec::new();
+        if waiting > 0 {
+            menu.push(item(format!("{waiting} waiting on you"), "inbox"));
+        }
+        menu.extend([
+            item(format!("Ask Lantern…{}", shortcut(&self.model.prefs.message_hotkey)), "compose"),
             item(format!("Point & Ask…{}", shortcut(&self.model.prefs.point_ask_hotkey)), "capture"),
-            item(format!("Message an Agent…{}", shortcut(&self.model.prefs.message_hotkey)), "compose"),
             None,
             item(if self.windows.pill_hidden() { "Show Lantern".into() } else { "Hide Lantern".into() }, "toggle-pill"),
             item("Settings…".into(), "settings"),
-        ];
+        ]);
+        // The Mac's updater asks by itself; here a newer version shows up in the menu.
         if self.model.system.update.as_ref().is_some_and(|update| update.newer) {
             menu.push(item("Check for Updates…".into(), "updates"));
         }
-        menu.extend([
-            None,
-            item("Report a Problem…".into(), "report"),
-            item("Send Logs…".into(), "logs"),
-            item("Welcome Guide".into(), "welcome"),
-            None,
-            item("Quit October Lantern".into(), "quit"),
-        ]);
+        menu.extend([None, item("Quit October Lantern".into(), "quit")]);
         crate::os::set_tray_menu(menu);
     }
 
@@ -89,7 +86,7 @@ impl Lantern {
             "settings" => UiAction::ShowSettings,
             "updates" => UiAction::CheckUpdates,
             "report" => UiAction::ReportProblem,
-            "logs" => UiAction::SendLogs,
+            "logs" => UiAction::ReportProblem,
             "welcome" => UiAction::ShowWelcome,
             "quit" => UiAction::Quit,
             agent if self.model.agent(agent).is_some() => UiAction::OpenChat { agent_id: agent.into() },
@@ -121,22 +118,7 @@ mod tests {
         let labels: Vec<String> = crate::os::tray_menu().into_iter().map(|item| item.map_or("—".into(), |(label, _)| label)).collect();
         assert_eq!(
             labels,
-            [
-                "Waiting (0)",
-                "Agents (0)",
-                "New Session or Task…",
-                "Point & Ask…    Ctrl+Alt+P",
-                "Message an Agent…    Ctrl+Alt+Space",
-                "—",
-                "Hide Lantern",
-                "Settings…",
-                "—",
-                "Report a Problem…",
-                "Send Logs…",
-                "Welcome Guide",
-                "—",
-                "Quit October Lantern",
-            ]
+            ["Ask Lantern…    Ctrl+Alt+Space", "Point & Ask…    Ctrl+Alt+P", "—", "Hide Lantern", "Settings…", "—", "Quit October Lantern",]
         );
     }
 

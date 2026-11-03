@@ -49,24 +49,21 @@ enum Support {
         if !attachments.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(attachments) }
     }
 
-    static func reportProblem(agents: [Agent]) {
-        compose(
-            subject: "October Lantern \(version): a problem",
-            body: "What happened, and what did you expect?\n\n\n---\n\(diagnostics(agents: agents))\n",
-            attachments: recentCrashReports(since: Date().addingTimeInterval(-7 * 86400))
-        )
-    }
-
-    /// Send Logs: the engine sends a report with Lantern's logs (secrets taken out) to the October
-    /// team and gives a code to quote; if it can't be sent, it's saved to the Desktop instead.
-    static func sendLogs(model: AppModel) {
+    /// Report a Problem: with their OK, the engine sends Lantern's logs (secrets taken out) to the
+    /// October team and gives a code, then an email opens with that code for them to say what
+    /// happened. Logs that can't be sent are saved to the Desktop and attached instead.
+    static func reportProblem(model: AppModel) {
         let alert = NSAlert()
-        alert.messageText = "Send Lantern's logs to the October team?"
-        alert.informativeText = "They help us see what went wrong. They include Lantern's version, your Mac's version and Lantern's own logs, with passwords and keys taken out. Never your code or your agents' conversations."
-        alert.addButton(withTitle: "Send Logs")
+        alert.messageText = "Report a problem"
+        alert.informativeText = "Lantern sends its logs to the October team, then opens an email for you to say what happened. The logs have Lantern's version, your Mac's version and Lantern's own logs, with passwords and keys taken out. Never your code or your agents' conversations."
+        alert.addButton(withTitle: "Send Logs and Write")
+        alert.addButton(withTitle: "Just Write")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate()
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let choice = alert.runModal()
+        let crashes = recentCrashReports(since: Date().addingTimeInterval(-7 * 86400))
+        if choice == .alertSecondButtonReturn { emailProblem(agents: model.agents, logs: nil, attachments: crashes) }
+        guard choice == .alertFirstButtonReturn else { return }
         var details = diagnostics(agents: model.agents)
         details += "\nEngine: \(model.engineHealth)"
         details += "\nComputer use: \(model.computer?.status ?? "off")"
@@ -77,11 +74,28 @@ enum Support {
             "- \(a.id) \(a.state) via \(a.route?.via ?? "none")\(a.tmux.map { " pane \($0.socket.map { "-L \($0) " } ?? "")\($0.target)" } ?? "")\(a.host.map { " in \($0.app)" } ?? "")"
         }.joined(separator: "\n")
         let token = OctoberAccount.shared.session?.accessToken
+        let agents = model.agents
         model.show("Sending logs…")
         Task {
             let result = await runReport(details: details, token: token, version: version)
-            showReportResult(result)
+            let error = result["error"] as? String ?? "something went wrong"
+            if result["sent"] as? Bool == true, let code = result["code"] as? String {
+                emailProblem(agents: agents, logs: "Logs: \(code)", attachments: crashes)
+            } else if let saved = result["saved"] as? String {
+                emailProblem(agents: agents, logs: "Logs couldn't be sent (\(error)), so they're attached.",
+                             attachments: crashes + [URL(fileURLWithPath: saved)])
+            } else {
+                emailProblem(agents: agents, logs: "Logs couldn't be sent: \(error)", attachments: crashes)
+            }
         }
+    }
+
+    private static func emailProblem(agents: [Agent], logs: String?, attachments: [URL]) {
+        compose(
+            subject: "October Lantern \(version): a problem",
+            body: "What happened, and what did you expect?\n\n\n---\n\(logs.map { "\($0)\n" } ?? "")\(diagnostics(agents: agents))\n",
+            attachments: attachments
+        )
     }
 
     private nonisolated static func runReport(details: String, token: String?, version: String) async -> [String: Any] {
@@ -105,32 +119,6 @@ enum Support {
             let line = String(data: data, encoding: .utf8)?.split(separator: "\n").last.map(String.init) ?? ""
             return (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any] ?? ["error": "The engine didn't say how it went"]
         }.value
-    }
-
-    private static func showReportResult(_ result: [String: Any]) {
-        let alert = NSAlert()
-        let code = result["code"] as? String
-        if result["sent"] as? Bool == true, let code {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(code, forType: .string)
-            alert.messageText = "Logs sent: \(code)"
-            alert.informativeText = "Quote \(code) to the October team (\(email)) so they can find your report. It's copied."
-            alert.addButton(withTitle: "OK")
-        } else if let saved = result["saved"] as? String {
-            alert.messageText = "Couldn't send the logs"
-            alert.informativeText = "They're saved on your Desktop as \((saved as NSString).lastPathComponent). Email that file to \(email).\n\n\(result["error"] as? String ?? "")"
-            alert.addButton(withTitle: "Show in Finder")
-            alert.addButton(withTitle: "OK")
-            NSApp.activate()
-            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: saved)]) }
-            return
-        } else {
-            alert.messageText = "Couldn't send the logs"
-            alert.informativeText = result["error"] as? String ?? "Something went wrong."
-            alert.addButton(withTitle: "OK")
-        }
-        NSApp.activate()
-        alert.runModal()
     }
 
     static func recentCrashReports(since: Date) -> [URL] {

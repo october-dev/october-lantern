@@ -2,7 +2,7 @@
 //! popup window here (the 50pt pill window would clip an in-window menu), drawn like a dark menu.
 use super::Lantern;
 use crate::model::PanelMode;
-use crate::ui::{DictationOwner, UiAction, theme};
+use crate::ui::{UiAction, theme};
 use eframe::egui::{self, Align2, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, ViewportBuilder, ViewportId, pos2, vec2};
 
 const MENU_TITLE: &str = "October Lantern menu";
@@ -36,17 +36,12 @@ impl State {
 
 impl Lantern {
     fn menu_entries(&self) -> Vec<Entry> {
-        let dictate = if self.model.dictating { "Stop Dictating" } else { "Dictate a Reply" };
-        let owner = self.inputs.drafts.recipient().map_or(DictationOwner::Assistant, |id| DictationOwner::Reply(id.to_string()));
+        // The rest is on the pill's own buttons.
         vec![
             Entry::Item("Ask Lantern".into(), UiAction::SetPanel(Some(PanelMode::Assistant))),
             Entry::Item("Point & Ask".into(), UiAction::StartPointAsk),
-            Entry::Item("Start New Agent…".into(), UiAction::StartNewSession),
-            Entry::Item("Your Agents".into(), UiAction::SetPanel(Some(PanelMode::Inbox))),
-            Entry::Item(dictate.into(), UiAction::ToggleDictation { owner }),
             Entry::Separator,
-            Entry::Item("Routines…".into(), UiAction::SetPanel(Some(PanelMode::Routines))),
-            Entry::Item("Connections…".into(), UiAction::SetPanel(Some(PanelMode::October))),
+            Entry::Item("Hide Lantern".into(), UiAction::HidePill),
             Entry::Item("Settings…".into(), UiAction::ShowSettings),
             // Also in the tray menu, which Windows can tuck away behind the overflow arrow.
             Entry::Separator,
@@ -155,26 +150,9 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_matches_the_macs_and_dictation_toggles_its_title() {
+    fn the_menu_matches_the_macs() {
         let (engine, _) = crate::sidecar::test_sender();
-        let mut lantern = Lantern::new(engine, None);
-        assert_eq!(
-            titles(&lantern),
-            [
-                "Ask Lantern",
-                "Point & Ask",
-                "Start New Agent…",
-                "Your Agents",
-                "Dictate a Reply",
-                "—",
-                "Routines…",
-                "Connections…",
-                "Settings…",
-                "—",
-                "Quit October Lantern"
-            ]
-        );
-        lantern.model.dictating = true;
-        assert_eq!(titles(&lantern)[4], "Stop Dictating");
+        let lantern = Lantern::new(engine, None);
+        assert_eq!(titles(&lantern), ["Ask Lantern", "Point & Ask", "—", "Hide Lantern", "Settings…", "—", "Quit October Lantern"]);
     }
 }

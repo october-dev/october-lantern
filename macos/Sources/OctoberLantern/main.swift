@@ -315,31 +315,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             menu.addItem(i)
             return i
         }
-        item("Waiting (\(model.inbox.count))") { [weak self] in self?.show(.inbox) }
-        item("Agents (\(model.agents.count))") { [weak self] in self?.show(.agents) }
-        item("New Session or Task…") { [weak self] in
-            AppContext.shared.capture()
-            self?.show(.newSession)
+        // Only the ways in: agents, routines and connections are on the pill, and updates and help
+        // are in Settings.
+        if !model.inbox.isEmpty {
+            item("\(model.inbox.count) waiting on you") { [weak self] in self?.show(.inbox) }
         }
+        let ask = item("Ask Lantern…") { [weak self] in
+            self?.show(.assistant)
+            self?.model.compose(to: nil)
+        }
+        if Preferences.shared.hotkey != .none { ask.title += "  \(Preferences.shared.hotkey.label)" }
         let point = item("Point & Ask…") { PointAsk.shared.start(fromPill: true) }
         if Preferences.shared.pointAsk != .none { point.title += "  \(Preferences.shared.pointAsk.label)" }
-        let compose = item("Message an Agent…") { [weak self] in self?.model.compose(to: nil) }
-        if Preferences.shared.hotkey != .none { compose.title += "  \(Preferences.shared.hotkey.label)" }
         menu.addItem(.separator())
         item(windows.pillVisible ? "Hide Lantern" : "Show Lantern") { [weak self] in
             guard let self else { return }
             if self.windows.pillVisible { self.windows.hidePill() } else { self.windows.showPill() }
         }
-        item("Routines") { [weak self] in self?.show(.routines) }
-        item("Connections…") { [weak self] in self?.show(.october) }
         item("Settings…", ",") { [weak self] in self?.showSettings() }
-        if Updater.shared.available {
-            item("Check for Updates…") { Updater.shared.checkForUpdates() }
-        }
-        menu.addItem(.separator())
-        item("Report a Problem…") { [weak self] in Support.reportProblem(agents: self?.model.agents ?? []) }
-        item("Send Logs…") { [weak self] in if let model = self?.model { Support.sendLogs(model: model) } }
-        item("Welcome Guide") { [weak self] in self?.showWelcome() }
         menu.addItem(.separator())
         item("Quit October Lantern", "q") { NSApp.terminate(nil) }
     }

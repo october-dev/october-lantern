@@ -221,8 +221,7 @@ struct SettingsView: View {
                 }
             }
             Section("Help") {
-                Button("Report a Problem…") { Support.reportProblem(agents: model.agents) }
-                Button("Send Logs…") { Support.sendLogs(model: model) }
+                Button("Report a Problem…") { Support.reportProblem(model: model) }
                 Button("Show Welcome Guide") { onShowWelcome() }
                 Link("lantern.october.dev", destination: Support.website)
                 Link(Support.email, destination: URL(string: "mailto:\(Support.email)")!)

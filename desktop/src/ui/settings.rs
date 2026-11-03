@@ -160,6 +160,7 @@ fn caption(ui: &mut Ui, text: &str) {
 }
 
 /// What "Share usage counts" sends (Swift SettingsView).
+const REPORT_DETAIL: &str = "Sends Lantern's logs to the October team, with passwords and keys taken out (never your code or your agents' conversations), then opens an email for you to say what happened.";
 pub(super) const USAGE_DETAIL: &str = "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your October account and email.";
 
 fn toggle(ui: &mut Ui, cx: &mut Ctx, title: &str, current: bool, change: impl FnOnce(bool) -> SettingChange) {
@@ -604,11 +605,9 @@ fn about(ui: &mut Ui, cx: &mut Ctx) {
         if button_row(ui, "Report a Problem…") {
             cx.emit(UiAction::ReportProblem);
         }
-        if button_row(ui, "Send Logs…") {
-            cx.emit(UiAction::SendLogs);
-        }
-        if let Some(logs) = &cx.model.system.logs {
-            caption(ui, &logs.summary());
+        match &cx.model.system.logs {
+            Some(logs) => caption(ui, &logs.summary()),
+            None => caption(ui, REPORT_DETAIL),
         }
         if button_row(ui, "Show Welcome Guide") {
             cx.emit(UiAction::ShowWelcome);

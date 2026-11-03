@@ -72,6 +72,7 @@ struct PanelView: View {
         HStack(spacing: 14) {
             TabLabel(title: "Waiting", count: model.inbox.count, selected: model.panel != .agents) { model.panel = .inbox }
             TabLabel(title: "Agents", count: model.agents.count, selected: model.panel == .agents) { model.panel = .agents }
+            TabLabel(title: "Routines", count: 0, selected: false) { model.panel = .routines }
             Spacer()
             Button { model.panel = nil } label: {
                 Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted)

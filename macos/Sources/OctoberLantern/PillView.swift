@@ -8,6 +8,7 @@ struct PillView: View {
     var onDrag: () -> Void
     var onDragEnd: () -> Void
     var onMenu: () -> Void
+    var onHide: () -> Void
 
     private var expanded: Bool { model.pillExpanded || model.panel != nil || dictation.isActive }
 
@@ -27,14 +28,11 @@ struct PillView: View {
                 model.toggle(.assistant)
             }, onDrag: onDrag, onDragEnd: onDragEnd)
             .contextMenu {
+                // The rest is on the pill's own buttons.
                 Button("Ask Lantern") { model.panel = .assistant }
                 Button("Point & Ask") { PointAsk.shared.start(fromPill: true) }
-                Button("Start New Agent…") { model.startNew() }
-                Button("Your Agents") { model.panel = .inbox }
-                Button(dictation.isActive ? "Stop Dictating" : "Dictate a Reply") { model.toggleDictation() }
                 Divider()
-                Button("Routines…") { model.panel = .routines }
-                Button("Connections…") { model.panel = .october }
+                Button("Hide Lantern") { onHide() }
                 Button("Settings…") { onMenu() }
                 Divider()
                 // Also in the menu bar icon's menu, which a full menu bar can hide.
