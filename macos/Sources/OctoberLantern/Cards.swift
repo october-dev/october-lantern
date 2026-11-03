@@ -185,8 +185,9 @@ struct AskCard: View {
                     Spacer(minLength: 4)
                     CardStateLabel(card: card, sending: model.cardSending.contains(card.id))
                 }
-                if let details = card.details { RequestDetail(detail: details) }
-                ForEach(Array((card.options ?? []).enumerated()), id: \.offset) { i, option in
+                // Closed, it folds to the question, where it stands and the option you picked.
+                if card.isWaiting, let details = card.details { RequestDetail(detail: details) }
+                ForEach(Array((card.options ?? []).enumerated()).filter { card.isWaiting || card.answer?.choice == $0.element }, id: \.offset) { i, option in
                     OptionRow(number: i + 1, label: option, detail: nil, chosen: card.answer?.choice == option, faded: !open) {
                         model.answerCard(card, CardAnswer(choice: option))
                     }

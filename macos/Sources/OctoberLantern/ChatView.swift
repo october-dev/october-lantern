@@ -15,13 +15,14 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            if agent.isAnswerable {
-                QuestionCard(agent: agent, model: model, keys: true)
-                    .padding(.horizontal, 12).padding(.bottom, 10)
-            }
+            // In the order things happened: the task's steps and earlier questions, then what it asks now.
             if let launch = model.launch(forAgent: agent.id) {
                 ScrollView { LaunchCards(launch: launch, model: model, keys: !agent.isAnswerable) }
                     .frame(maxHeight: 320).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+            }
+            if agent.isAnswerable {
+                QuestionCard(agent: agent, model: model, keys: true)
                     .padding(.horizontal, 12).padding(.bottom, 10)
             }
             Rectangle().fill(Theme.hairline).frame(height: 1)
@@ -137,9 +138,14 @@ struct Bubble: View {
     /// The message's full height, measured, to offer More only when something is cut off.
     @State private var fullHeight: CGFloat = 0
 
-    /// Your first message without what Lantern added for the agent (October Bus, the folder and
-    /// full-path note, the screenshot path, the toolkit list): the agent still gets all of it.
+    /// Your first message without what Lantern added for the agent (the recipe line, October Bus,
+    /// the folder and full-path note, the screenshot path, the toolkit list): the agent still gets
+    /// all of it.
     static func withoutLanternNotes(_ text: String) -> String {
+        var text = text
+        if text.hasPrefix(Assistant.recipeLead), let end = text.range(of: "\n\n") {
+            text = String(text[end.upperBound...])
+        }
         let markers = ["\n\nYou're connected to October Bus", "\n\n(Started from October Lantern",
                        "\n\nFor context, a screenshot of my screen", "\n\nWhat this Mac already has",
                        "\n\nWhat this computer already has"]

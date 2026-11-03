@@ -114,6 +114,11 @@ final class AskTaskPromptTests: XCTestCase {
                        "Fix the Wi-Fi on this Mac")
     }
 
+    func testYourMessageHidesTheRecipeLine() {
+        let sent = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:\n\nmake me an ad\n\nYou're connected to October Bus as x"
+        XCTAssertEqual(Bubble.withoutLanternNotes(sent), "make me an ad")
+    }
+
     @MainActor func testARecipeStaysInFrontOfYourWords() {
         let recipe = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:"
         XCTAssertEqual(Assistant.taskPrompt(question: "make me an ad for Bean Cafe", suggested: recipe + "\n\nMake a video ad for Bean Cafe", followUp: false),

@@ -290,6 +290,10 @@ struct InboxCard: View {
                 Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.ink.opacity(0.75)).lineLimit(1)
             }
 
+            if let launch = model.launch(forAgent: agent.id) {
+                LaunchCards(launch: launch, model: model, keys: selected && !agent.isAnswerable)
+            }
+
             if agent.isAnswerable {
                 QuestionCard(agent: agent, model: model, keys: selected)
             } else if let question = agent.question {
@@ -305,10 +309,6 @@ struct InboxCard: View {
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
-            }
-
-            if let launch = model.launch(forAgent: agent.id) {
-                LaunchCards(launch: launch, model: model, keys: selected && !agent.isAnswerable)
             }
 
             if let message = agent.lastMessage, !message.isEmpty {

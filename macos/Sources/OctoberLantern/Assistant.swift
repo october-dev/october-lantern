@@ -889,12 +889,12 @@ private struct TaskCard: View {
             ForEach(ChatView.keyed(messages.filter { $0.role != .tool }), id: \.key) { item in
                 Bubble(message: item.message, inAssistant: true)
             }
-            if let agent, agent.isAnswerable {
-                QuestionCard(agent: agent, model: model, keys: latest)
-            }
             // Kept after the agent exits: its questions, progress and result.
             if let launch = model.launch(forAgent: agent?.id ?? link.agentId) {
                 LaunchCards(launch: launch, model: model, keys: latest && agent?.isAnswerable != true)
+            }
+            if let agent, agent.isAnswerable {
+                QuestionCard(agent: agent, model: model, keys: latest)
             }
             status
             let activity = messages.filter { $0.role == .tool }

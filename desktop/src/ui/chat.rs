@@ -36,16 +36,17 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx, agent: &Agent, max_height: f32) {
             }
         });
     });
-    if agent.is_answerable() {
-        egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 10 }).show(ui, |ui| {
-            super::question::question_card(ui, cx, agent, true);
-        });
-    }
+    // In the order things happened: the task's steps and earlier questions, then what it asks now.
     if let Some(launch) = cx.model.launch_for(&agent.id) {
         egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 10 }).show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt(("chat-cards", &agent.id)).max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
                 super::task_cards::launch_cards(ui, cx, launch, !agent.is_answerable());
             });
+        });
+    }
+    if agent.is_answerable() {
+        egui::Frame::new().inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 10 }).show(ui, |ui| {
+            super::question::question_card(ui, cx, agent, true);
         });
     }
     divider(ui);
@@ -236,6 +237,11 @@ fn note(ui: &mut Ui, body: &str) {
 }
 
 pub fn without_lantern_notes(source: &str) -> &str {
+    // The recipe line October put in front of your words (see `app::assistant::task_prompt`).
+    let source = match source.split_once("\n\n") {
+        Some((recipe, rest)) if recipe.starts_with("Follow the recipe at https://lantern.october.dev/recipes/") => rest,
+        _ => source,
+    };
     const MARKERS: [&str; 5] = [
         "\n\nYou're connected to October Bus",
         "\n\n(Started from October Lantern",
@@ -279,6 +285,8 @@ mod tests {
         assert_eq!(without_lantern_notes(original), "Find it.");
         assert!(original.contains("/tmp/a"));
         assert_eq!(without_lantern_notes("A normal message"), "A normal message");
+        let recipe = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:\n\nmake me an ad\n\nYou're connected to October Bus";
+        assert_eq!(without_lantern_notes(recipe), "make me an ad");
     }
     #[test]
     fn repeated_message_keys_are_unique_and_survive_window_trimming() {

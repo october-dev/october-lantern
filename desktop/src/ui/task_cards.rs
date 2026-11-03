@@ -119,12 +119,18 @@ fn ask_card(ui: &mut Ui, cx: &mut Ctx, card: &Card, keys: bool) {
     let pressed = if focused { question::number_pressed(ui) } else { None };
     boxed(ui, card.is_waiting(), |ui| {
         ui.add(egui::Label::new(c::text(card.question.clone().unwrap_or_default(), 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
-        if let Some(details) = &card.details {
+        // Closed, it folds to the question, where it stands and the option you picked.
+        if card.is_waiting()
+            && let Some(details) = &card.details
+        {
             ui.add(egui::Label::new(c::text(details, 11.5, Weight::Regular, t::white(0.8))).wrap().selectable(true));
         }
         let mut chosen = pressed.and_then(|i| options.get(i)).cloned();
         for (i, option) in options.iter().enumerate() {
             let picked = card.answer.as_ref().and_then(|a| a.choice.as_deref()) == Some(option.as_str());
+            if !card.is_waiting() && !picked {
+                continue;
+            }
             let id = ui.id().with(("card-option", &card.id, i));
             if question::option_row(ui, id, i + 1, option, None, picked, !open, false).clicked() && open {
                 chosen = Some(option.clone());
