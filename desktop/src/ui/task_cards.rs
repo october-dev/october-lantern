@@ -282,17 +282,30 @@ fn show_card(ui: &mut Ui, cx: &mut Ctx, card: &Card) {
     });
 }
 
-/// A draft to read (a script, a plan), as written, scrolling when it's long (Swift `DraftBox`).
+/// A draft to read (a script, a plan), scrolling when it's long (Swift `DraftBox`). A laid-out
+/// draft (columns, a drawing) keeps its lines and scrolls sideways; prose wraps.
 pub(super) fn draft_box(ui: &mut Ui, text: &str) {
     egui::Frame::new().fill(t::white(0.05)).stroke(Stroke::new(1.0, t::HAIRLINE)).corner_radius(8).inner_margin(8).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        egui::ScrollArea::vertical().id_salt(("draft", text.len(), text.get(..40))).max_height(260.0).auto_shrink([false, true]).show(
-            ui,
-            |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(text).monospace().size(11.5).color(t::white(0.9))).wrap().selectable(true));
-            },
-        );
+        let id = ("draft", text.len(), text.get(..40));
+        if is_layout(text) {
+            egui::ScrollArea::both().id_salt(id).max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).monospace().size(11.0).color(t::white(0.9))).extend().selectable(true));
+            });
+        } else {
+            egui::ScrollArea::vertical().id_salt(id).max_height(240.0).auto_shrink([false, true]).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).size(12.0).color(t::white(0.9))).wrap().selectable(true));
+            });
+        }
     });
+}
+
+/// Lined up by spaces or tabs after the words start, or drawn with box characters.
+pub(super) fn is_layout(text: &str) -> bool {
+    text.lines().any(|line| {
+        let body = line.trim_start_matches(' ');
+        body.contains("  ") || body.contains('\t') || body.chars().any(|c| ('\u{2500}'..='\u{259F}').contains(&c))
+    })
 }
 
 /// Pictures a card can show inline.
@@ -361,4 +374,16 @@ fn runnable(path: &str) -> bool {
     }
     #[cfg(not(unix))]
     listed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_layout;
+
+    #[test]
+    fn drafts_lined_up_keep_their_lines_and_prose_wraps() {
+        assert!(is_layout("0–3s    a hook\n        windows pile up"));
+        assert!(is_layout("┌──┐\n│  │"));
+        assert!(!is_layout("A 15s reel about October.\n  Ends on the logo, then the URL."));
+    }
 }

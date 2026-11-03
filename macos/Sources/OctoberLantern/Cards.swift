@@ -375,20 +375,39 @@ struct ShowCard: View {
     }
 }
 
-/// A draft to read (a script, a plan), as written, scrolling when it's long.
+/// A draft to read (a script, a plan), scrolling when it's long. A laid-out draft (columns,
+/// a drawing) keeps its lines and scrolls sideways; prose wraps.
 struct DraftBox: View {
     let text: String
 
     var body: some View {
-        ScrollView {
-            Text(text).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.9))
-                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+        Group {
+            if Self.isLayout(text) {
+                ScrollView([.vertical, .horizontal]) {
+                    Text(text).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.9))
+                        .textSelection(.enabled).fixedSize().frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                ScrollView {
+                    Text(text).font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.9))
+                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
-        .frame(maxHeight: 260).fixedSize(horizontal: false, vertical: true)
+        .frame(maxHeight: 240).fixedSize(horizontal: false, vertical: true)
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.faint))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+    }
+
+    /// Lined up by spaces or tabs after the words start, or drawn with box characters.
+    static func isLayout(_ text: String) -> Bool {
+        text.split(separator: "\n").contains { line in
+            let body = line.drop { $0 == " " }
+            return body.contains("  ") || body.contains("\t")
+                || body.unicodeScalars.contains { (0x2500...0x259F).contains($0.value) }
+        }
     }
 }
 

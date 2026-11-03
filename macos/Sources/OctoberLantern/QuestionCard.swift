@@ -104,13 +104,18 @@ struct QuestionCard: View {
                         }
                     }
                     heading(q.question, first: qi == 0)
-                    // The agent's drafts (a script, a layout) that the terminal shows beside its options, each once.
-                    ForEach(Self.previews(q), id: \.self) { preview in DraftBox(text: preview) }
+                    // The agent's drafts (a script, a layout) that the terminal shows beside its options,
+                    // each once, while it waits. Answered, only the picks stay.
+                    if sent == nil {
+                        ForEach(Self.previews(q), id: \.self) { preview in DraftBox(text: preview) }
+                    }
                     ForEach(Array(q.options.enumerated()), id: \.offset) { oi, option in
-                        OptionRow(
-                            number: oi + 1, label: option.label, detail: option.description,
-                            chosen: chosen(qi).contains(oi), faded: sent != nil, tick: q.multiSelect
-                        ) { pick(qi, oi) }
+                        if sent == nil || chosen(qi).isEmpty || chosen(qi).contains(oi) {
+                            OptionRow(
+                                number: oi + 1, label: option.label, detail: option.description,
+                                chosen: chosen(qi).contains(oi), faded: sent != nil, tick: q.multiSelect
+                            ) { pick(qi, oi) }
+                        }
                     }
                 }
             }
