@@ -866,6 +866,8 @@ pub enum Answer {
 /// a permission's options are 1 (yes), 2 (don't ask again, when offered) and Escape; a plan's 1
 /// and Escape. Claude's questions take an option's number; one single-choice question is answered
 /// by it, otherwise each pick-many question is ticked and left with Tab, and 1 submits them all.
+/// A single-choice question showing a draft beside its options takes the number as a move to that
+/// option, and Enter picks it.
 pub(crate) fn answer_keys(agent: &Agent, answer: &Answer) -> Result<Vec<deliver::Key>, Outcome> {
     use deliver::Key;
     let bad = |m: &str| Outcome::failed("bad_request", m.to_string());
@@ -890,6 +892,9 @@ pub(crate) fn answer_keys(agent: &Agent, answer: &Answer) -> Result<Vec<deliver:
                 }
                 for i in &picked {
                     keys.push(digit(*i)?);
+                }
+                if !q.multi_select && q.options.iter().any(|o| o.preview.is_some()) {
+                    keys.push(Key::Enter);
                 }
                 if q.multi_select {
                     keys.push(Key::Tab);

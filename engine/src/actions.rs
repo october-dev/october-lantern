@@ -15,7 +15,7 @@ use std::sync::mpsc::{Receiver, SendError, Sender, channel};
 use std::time::{Duration, Instant};
 
 use crate::deliver::{self, Key, Uncertain};
-use crate::model::{Agent, Route};
+use crate::model::{Agent, QuestionKind, Route};
 use crate::october_link::Link;
 
 pub enum Op {
@@ -197,7 +197,7 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
             }
             _ => deliver::send_text(agent, &text).map_err(classify),
         },
-        Op::Keys { keys, .. } => {
+        Op::Keys { keys, prompt } => {
             let mut result = Ok(());
             for (i, key) in keys.into_iter().enumerate() {
                 if i > 0 {
@@ -207,6 +207,15 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
                     result = Err(if i > 0 { Outcome::Uncertain(format!("only some keys went in ({e:#})")) } else { classify(e) });
                     break;
                 }
+            }
+            // Typed isn't answered: Claude's question closes as soon as it takes the answer (a
+            // permission stays open while its command runs, so it isn't checked).
+            if result.is_ok()
+                && agent.question_kind == Some(QuestionKind::Choice)
+                && let Some(prompt) = prompt
+                && still_open(agent, &prompt)
+            {
+                result = Err(Outcome::Uncertain("the keys went in, but the question is still open".into()));
             }
             result
         }
@@ -249,6 +258,20 @@ pub fn perform(agent: &Agent, op: Op, deadline: Instant, ticket: &Ticket, link: 
         },
     };
     result.err().unwrap_or(Outcome::Done)
+}
+
+/// The question is still open a few seconds after its answer was typed.
+fn still_open(agent: &Agent, prompt: &str) -> bool {
+    let until = Instant::now() + Duration::from_secs(3);
+    loop {
+        std::thread::sleep(Duration::from_millis(250));
+        if !still_asking(agent, prompt) {
+            return false;
+        }
+        if Instant::now() >= until {
+            return true;
+        }
+    }
 }
 
 /// The prompt is still the agent's open question, right before Lantern presses keys for it: by its

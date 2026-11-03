@@ -24,7 +24,12 @@ struct Server {
 
 impl Server {
     /// One request to the engine, retried while it can't be reached.
-    async fn call(&self, mut op: Value) -> Result<Value> {
+    async fn call(&self, op: Value) -> Result<Value> {
+        self.call_for(op, RECONNECT_FOR).await
+    }
+
+    /// `call`, retried for up to `reconnect` while the engine can't be reached.
+    async fn call_for(&self, mut op: Value, reconnect: Duration) -> Result<Value> {
         op["operationId"] = json!(uuid::Uuid::new_v4().to_string());
         op["launch"] = json!(self.launch);
         op["key"] = json!(self.key);
@@ -34,17 +39,18 @@ impl Server {
             match tokio::task::spawn_blocking(move || super::ipc::request(&request)).await? {
                 Ok(reply) if reply["ok"] == true => return Ok(reply),
                 Ok(reply) => bail!("{}", reply["message"].as_str().unwrap_or("Lantern refused")),
-                Err(e) if started.elapsed() >= RECONNECT_FOR => return Err(e),
+                Err(e) if started.elapsed() >= reconnect => return Err(e),
                 Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
             }
         }
     }
 
     /// Waits for the person to answer `card`, or for it to close; the agent cancelling the call
-    /// closes it.
+    /// closes it. The card outlives a restart of Lantern (an update, a quit and reopen), so the
+    /// wait keeps trying for as long as the card could still be answered.
     async fn wait(&self, card: &str, context: &RequestContext<RoleServer>) -> Result<(String, Value)> {
         loop {
-            let poll = self.call(json!({"op": "wait", "card": card}));
+            let poll = self.call_for(json!({"op": "wait", "card": card}), super::WAIT_LIMIT);
             let reply = tokio::select! {
                 reply = poll => reply?,
                 _ = context.ct.cancelled() => {

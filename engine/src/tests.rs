@@ -1317,6 +1317,15 @@ fn answers_become_the_terminals_keys() {
     a.choices = Some(crate::model::Choices { questions: questions[1..].to_vec(), always: None });
     assert_eq!(keys(&a, picks(&[&[1]])), Some(vec![Char('2'), Tab, Char('1')]));
 
+    // As tested against Claude Code 2.1.317: a question showing a draft takes the number as a
+    // move, so Enter picks; a plain question after it still picks by number, and 1 submits.
+    let mut drafted = questions[..1].to_vec();
+    for option in &mut drafted[0].options {
+        option.preview = Some("0–3s  hook".into());
+    }
+    a.choices = Some(crate::model::Choices { questions: [drafted.clone(), drafted].concat(), always: None });
+    assert_eq!(keys(&a, picks(&[&[1], &[0]])), Some(vec![Char('2'), Key::Enter, Char('1'), Key::Enter, Char('1')]));
+
     // Not a question Lantern answers: nothing is pressed.
     a.question_kind = Some(QuestionKind::Other);
     assert_eq!(keys(&a, Answer::No), None);

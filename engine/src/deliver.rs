@@ -40,6 +40,8 @@ pub enum Key {
     Escape,
     /// Moves on in Claude's questions (from a pick-many question to the next one, or to Submit).
     Tab,
+    /// Picks the option under the cursor (a question showing a draft takes its number as a move).
+    Enter,
 }
 
 impl Key {
@@ -47,6 +49,7 @@ impl Key {
         match s {
             "Escape" | "escape" | "esc" => Some(Key::Escape),
             "Tab" | "tab" => Some(Key::Tab),
+            "Enter" | "enter" => Some(Key::Enter),
             s if s.chars().count() == 1 => s.chars().next().map(Key::Char),
             _ => None,
         }
@@ -201,23 +204,28 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
             let name = match key {
                 Key::Escape => "Escape".to_string(),
                 Key::Tab => "Tab".to_string(),
+                Key::Enter => "Enter".to_string(),
                 Key::Char(c) => c.to_string(),
             };
             tmux::send_key(p, &name)
         }
         (Route::Cmux { workspace, surface }, Key::Escape) => cmux(&["send-key", "--workspace", workspace, "--surface", surface, "escape"]),
         (Route::Cmux { workspace, surface }, Key::Tab) => cmux(&["send-key", "--workspace", workspace, "--surface", surface, "tab"]),
+        (Route::Cmux { workspace, surface }, Key::Enter) => cmux(&["send-key", "--workspace", workspace, "--surface", surface, "enter"]),
         (Route::Cmux { workspace, surface }, Key::Char(c)) => {
             cmux(&["send", "--workspace", workspace, "--surface", surface, "--", &c.to_string()])
         }
         (Route::Iterm { tty }, Key::Escape) => osascript(ITERM_SEND, &[tty, "\u{1b}", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Tab) => osascript(ITERM_SEND, &[tty, "\t", "no"], SEND_LIMIT, true).map(|_| ()),
+        (Route::Iterm { tty }, Key::Enter) => osascript(ITERM_SEND, &[tty, "\r", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Char(c)) => osascript(ITERM_SEND, &[tty, &c.to_string(), "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Pty { session }, Key::Escape) => crate::pty::send_bytes(session, "\u{1b}"),
         (Route::Pty { session }, Key::Tab) => crate::pty::send_bytes(session, "\t"),
+        (Route::Pty { session }, Key::Enter) => crate::pty::send_bytes(session, "\r"),
         (Route::Pty { session }, Key::Char(c)) => crate::pty::send_bytes(session, &c.to_string()),
         (Route::Console { .. }, Key::Escape) => crate::console::send(agent, "key", "escape"),
         (Route::Console { .. }, Key::Tab) => crate::console::send(agent, "key", "tab"),
+        (Route::Console { .. }, Key::Enter) => crate::console::send(agent, "key", "enter"),
         (Route::Console { .. }, Key::Char(c)) => crate::console::send(agent, "key", &c.to_string()),
         (Route::October { .. }, _) => bail!("single keys aren't supported for October's agents yet"),
         // Terminal's `do script` always adds Enter, which could confirm the wrong thing.
