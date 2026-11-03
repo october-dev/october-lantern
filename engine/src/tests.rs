@@ -1375,3 +1375,16 @@ fn an_agents_bus_id_comes_from_its_bus_connection() {
     assert_eq!(table.bus_id(31).as_deref(), Some("lantern-october-0011aa22"));
     assert_eq!(table.bus_id(40), None);
 }
+
+#[test]
+fn a_question_keeps_the_drafts_its_options_preview() {
+    let input = serde_json::json!({"questions": [{"question": "OK to build?", "options": [
+        {"label": "Looks good", "preview": "0–1.5s  HOOK\n1.5–4s  chaos\n"},
+        {"label": "Change something"},
+    ]}]});
+    let questions = hooks::choice_questions(&input).unwrap();
+    assert_eq!(questions[0].options[0].preview.as_deref(), Some("0–1.5s  HOOK\n1.5–4s  chaos"));
+    assert_eq!(questions[0].options[1].preview, None);
+    let sent = serde_json::to_value(&questions[0].options).unwrap();
+    assert_eq!(sent[1], serde_json::json!({"label": "Change something"}));
+}

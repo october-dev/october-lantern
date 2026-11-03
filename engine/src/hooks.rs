@@ -267,7 +267,13 @@ pub(crate) fn choice_questions(input: &Value) -> Option<Vec<ChoiceQuestion>> {
                 options: q["options"]
                     .as_array()?
                     .iter()
-                    .map(|o| Some(ChoiceOption { label: text(&o["label"])?, description: text(&o["description"]) }))
+                    .map(|o| {
+                        Some(ChoiceOption {
+                            label: text(&o["label"])?,
+                            description: text(&o["description"]),
+                            preview: text(&o["preview"]).map(|p| p.chars().take(4000).collect()),
+                        })
+                    })
                     .collect::<Option<Vec<_>>>()?,
             })
         })

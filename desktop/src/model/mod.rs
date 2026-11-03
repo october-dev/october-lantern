@@ -189,6 +189,8 @@ pub struct ChoiceQuestion {
 pub struct ChoiceOption {
     pub label: String,
     pub description: Option<String>,
+    /// What the option would look like (a draft, a script), as the terminal shows beside it.
+    pub preview: Option<String>,
 }
 
 /// What the person chose for an agent's question; serialized as the engine's `Answer`.

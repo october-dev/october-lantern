@@ -96,6 +96,8 @@ struct Choices: Codable, Hashable {
     struct Option: Codable, Hashable {
         let label: String
         let description: String?
+        /// What the option would look like (a draft, a script), as the terminal shows beside it.
+        var preview: String? = nil
     }
     var questions: [Question] = []
     /// A permission prompt's "don't ask again" option, as the terminal words it.

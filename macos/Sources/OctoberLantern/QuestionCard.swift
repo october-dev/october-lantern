@@ -104,6 +104,14 @@ struct QuestionCard: View {
                         }
                     }
                     heading(q.question, first: qi == 0)
+                    // The agent's drafts (a script, a layout) that the terminal shows beside its options, each once.
+                    ForEach(Self.previews(q), id: \.self) { preview in
+                        Text(preview).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.85))
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.faint))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+                    }
                     ForEach(Array(q.options.enumerated()), id: \.offset) { oi, option in
                         OptionRow(
                             number: oi + 1, label: option.label, detail: option.description,
@@ -125,6 +133,13 @@ struct QuestionCard: View {
                     .help("Close the question in the terminal; @\(agent.handle) is told you didn't answer")
             }
         }
+    }
+
+    /// A question's option previews, each once, in order.
+    static func previews(_ q: Choices.Question) -> [String] {
+        var seen: [String] = []
+        for p in q.options.compactMap(\.preview) where !seen.contains(p) { seen.append(p) }
+        return seen
     }
 
     private func heading(_ text: String, first: Bool = true) -> some View {

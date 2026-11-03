@@ -141,6 +141,19 @@ fn choice_questions(
             });
         }
         heading(ui, &q.question, qi == 0 && sent.is_some());
+        // The agent's drafts (a script, a layout) that the terminal shows beside its options, each once.
+        let mut previews: Vec<&str> = Vec::new();
+        for preview in q.options.iter().filter_map(|o| o.preview.as_deref()) {
+            if !previews.contains(&preview) {
+                previews.push(preview);
+            }
+        }
+        for preview in previews {
+            egui::Frame::new().fill(t::white(0.05)).stroke(Stroke::new(1.0, t::HAIRLINE)).corner_radius(8).inner_margin(8).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(egui::RichText::new(preview).monospace().size(11.0).color(t::white(0.85))).wrap().selectable(true));
+            });
+        }
         let picked: Vec<usize> = match &sent_picks {
             Some(picks) => picks.get(qi).cloned().unwrap_or_default(),
             None => cx.view.question_picks.get(prompt_id).and_then(|p| p.get(&qi)).map(|s| s.iter().copied().collect()).unwrap_or_default(),

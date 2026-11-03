@@ -258,7 +258,7 @@ fn several_questions_are_sent_together_once_each_has_an_answer() {
     theme::install(&ctx);
     let assets = Assets::load(&ctx);
     let mut f = fixture("question");
-    let option = |label: &str| ChoiceOption { label: label.into(), description: None };
+    let option = |label: &str| ChoiceOption { label: label.into(), description: None, preview: None };
     let choices = f.model.agents[0].choices.as_mut().unwrap();
     choices.questions.push(ChoiceQuestion {
         question: "Which checks?".into(),
