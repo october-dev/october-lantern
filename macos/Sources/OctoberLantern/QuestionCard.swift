@@ -105,13 +105,7 @@ struct QuestionCard: View {
                     }
                     heading(q.question, first: qi == 0)
                     // The agent's drafts (a script, a layout) that the terminal shows beside its options, each once.
-                    ForEach(Self.previews(q), id: \.self) { preview in
-                        Text(preview).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.85))
-                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.faint))
-                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
-                    }
+                    ForEach(Self.previews(q), id: \.self) { preview in DraftBox(text: preview) }
                     ForEach(Array(q.options.enumerated()), id: \.offset) { oi, option in
                         OptionRow(
                             number: oi + 1, label: option.label, detail: option.description,

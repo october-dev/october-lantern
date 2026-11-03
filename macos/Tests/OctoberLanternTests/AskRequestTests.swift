@@ -114,6 +114,16 @@ final class AskTaskPromptTests: XCTestCase {
                        "Fix the Wi-Fi on this Mac")
     }
 
+    func testAMessageOffersTheLinksAndExistingFilesItNames() {
+        let text = "Rendered `~/Movies/Lantern Ads/october/out.mp4`. Preview at http://localhost:3000/, frames in /tmp/frames. Also /no/such/file and (https://october.dev). Not a path: a/b, http://"
+        let exists = { (p: String) in ["/home/me/Movies/Lantern Ads/october/out.mp4", "/tmp/frames"].contains(p) }
+        XCTAssertEqual(Bubble.targets(in: text, home: "/home/me", exists: exists), [
+            .file("/home/me/Movies/Lantern Ads/october/out.mp4"), .link("http://localhost:3000/"), .file("/tmp/frames"),
+            .link("https://october.dev"),
+        ])
+        XCTAssertEqual(Bubble.targets(in: "nothing here", exists: { _ in true }), [])
+    }
+
     func testYourMessageHidesTheRecipeLine() {
         let sent = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:\n\nmake me an ad\n\nYou're connected to October Bus as x"
         XCTAssertEqual(Bubble.withoutLanternNotes(sent), "make me an ad")

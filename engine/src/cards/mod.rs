@@ -132,6 +132,21 @@ pub enum Op {
         details: Option<String>,
         #[serde(default)]
         options: Vec<String>,
+        /// What the question is about: files (full paths) and links to look at before answering.
+        #[serde(default)]
+        files: Vec<String>,
+        #[serde(default)]
+        links: Vec<String>,
+    },
+    /// Something to look at now (a draft, a preview, a local page), without waiting for an answer.
+    Show {
+        operation_id: String,
+        title: String,
+        text: Option<String>,
+        #[serde(default)]
+        files: Vec<String>,
+        #[serde(default)]
+        links: Vec<String>,
     },
     HandOff {
         operation_id: String,
@@ -270,6 +285,20 @@ pub fn checked_url(raw: &str, https_only: bool) -> Result<String> {
         bail!("url is too long");
     }
     Ok(url.into())
+}
+
+/// A card's files and links, checked: at most 10 files that exist and 5 web addresses (http
+/// too, for pages on this computer such as localhost).
+fn attachments(files: &[String], links: &[String]) -> Result<(Vec<Value>, Vec<String>)> {
+    if files.len() > 10 {
+        bail!("at most 10 files");
+    }
+    if links.len() > 5 {
+        bail!("at most 5 links");
+    }
+    let files = files.iter().map(|f| checked_file(f)).collect::<Result<_>>()?;
+    let links = links.iter().map(|l| checked_url(l, false)).collect::<Result<_>>()?;
+    Ok((files, links))
 }
 
 /// A file or folder a result names: a full path to something that exists, as it really is
@@ -529,7 +558,7 @@ impl Cards {
                 self.db.lock().unwrap().execute("UPDATE launches SET tools = 1 WHERE id = ?1", [launch])?;
                 json!({})
             }
-            Op::Ask { operation_id, question, details, options } => {
+            Op::Ask { operation_id, question, details, options, files, links } => {
                 let question = required("question", &question, 500)?;
                 let details = details.map(|d| bounded("details", &d, 4000)).transpose()?.filter(|d| !d.is_empty());
                 if options.len() > 6 {
@@ -543,8 +572,32 @@ impl Cards {
                     }
                     seen.push(o);
                 }
-                let card =
-                    self.add(launch, &operation_id, "ask", json!({"question": question, "details": details, "options": seen}), true)?;
+                let (files, links) = attachments(&files, &links)?;
+                let mut body = json!({"question": question, "details": details, "options": seen});
+                // Only when there are some, so a question without them is stored as before.
+                if !files.is_empty() {
+                    body["files"] = json!(files);
+                }
+                if !links.is_empty() {
+                    body["links"] = json!(links);
+                }
+                let card = self.add(launch, &operation_id, "ask", body, true)?;
+                json!({"card": card})
+            }
+            Op::Show { operation_id, title, text, files, links } => {
+                let title = required("title", &title, 200)?;
+                let text = text.map(|t| bounded("text", &t, 8000)).transpose()?.filter(|t| !t.is_empty());
+                let (files, links) = attachments(&files, &links)?;
+                if text.is_none() && files.is_empty() && links.is_empty() {
+                    bail!("show_person needs text, files or links to show");
+                }
+                let card = self.add(
+                    launch,
+                    &operation_id,
+                    "show",
+                    json!({"title": title, "details": text, "files": files, "links": links}),
+                    false,
+                )?;
                 json!({"card": card})
             }
             Op::HandOff { operation_id, reason, step, why, instructions, url } => {
@@ -960,7 +1013,8 @@ pub fn launched(registered: Option<Registered>, result: Result<crate::launch::La
 pub fn note() -> &'static str {
     "You have Lantern's tools (lantern): when you need the person to decide something, use ask_person instead of asking \
      in your reply; when a step needs them (signing in, a code, a payment, anything physical), use hand_off or \
-     need_sign_in; keep them posted with set_status and set_steps; and finish with show_result."
+     need_sign_in; keep them posted with set_status and set_steps; whenever you have something for them to look at (a \
+     draft, a preview, a file, a page on localhost), use show_person; and finish with show_result."
 }
 
 #[cfg(test)]
@@ -1014,6 +1068,8 @@ mod tests {
             question: question.into(),
             details: None,
             options: vec!["Yes".into(), "No".into()],
+            files: vec![],
+            links: vec![],
         };
         let first = cards.handle(&launch, &key, request("Approve this exact thing?")).unwrap();
         let retry = cards.handle(&launch, &key, request("Approve this exact thing?")).unwrap();
@@ -1021,6 +1077,52 @@ mod tests {
         assert!(cards.handle(&launch, &key, request("Approve something else?")).is_err());
         let count: i64 = cards.db.lock().unwrap().query_row("SELECT COUNT(*) FROM cards WHERE launch=?1", [launch], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn show_cards_carry_a_draft_files_and_links_without_waiting() {
+        let (cards, launch, key) = cards();
+        let dir = std::env::temp_dir().join(format!("lantern-show-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let frame = dir.join("frame.png");
+        std::fs::write(&frame, b"png").unwrap();
+        let show = |text: Option<&str>, files: Vec<String>, links: Vec<&str>| Op::Show {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            title: "Preview frames".into(),
+            text: text.map(str::to_string),
+            files,
+            links: links.into_iter().map(str::to_string).collect(),
+        };
+        let path = frame.to_string_lossy().to_string();
+        let reply = cards.handle(&launch, &key, show(Some("0-1.5s HOOK"), vec![path.clone()], vec!["http://localhost:3000/"])).unwrap();
+        let id = reply["card"].as_str().unwrap();
+        let snapshot = cards.snapshot();
+        let card = snapshot[0]["cards"].as_array().unwrap().iter().find(|c| c["id"] == id).unwrap().clone();
+        assert_eq!((card["kind"].as_str(), card["state"].as_str()), (Some("show"), Some("shown")));
+        assert_eq!(card["title"], "Preview frames");
+        assert_eq!(card["details"], "0-1.5s HOOK");
+        assert_eq!(card["files"][0]["name"], "frame.png");
+        assert_eq!(card["links"][0], "http://localhost:3000/");
+        // Nothing to show, a missing file, a relative path or a non-web link is refused.
+        assert!(cards.handle(&launch, &key, show(None, vec![], vec![])).is_err());
+        assert!(cards.handle(&launch, &key, show(None, vec!["/no/such/file.png".into()], vec![])).is_err());
+        assert!(cards.handle(&launch, &key, show(None, vec!["frame.png".into()], vec![])).is_err());
+        assert!(cards.handle(&launch, &key, show(None, vec![], vec!["file:///etc/passwd"])).is_err());
+        // A question can carry them too.
+        let ask = Op::Ask {
+            operation_id: uuid::Uuid::new_v4().to_string(),
+            question: "OK to build?".into(),
+            details: Some("the script".into()),
+            options: vec!["Build it".into()],
+            files: vec![path],
+            links: vec![],
+        };
+        let id = cards.handle(&launch, &key, ask).unwrap()["card"].as_str().unwrap().to_string();
+        let snapshot = cards.snapshot();
+        let card = snapshot[0]["cards"].as_array().unwrap().iter().find(|c| c["id"] == id.as_str()).unwrap().clone();
+        assert_eq!(card["files"][0]["name"], "frame.png");
+        assert!(card.get("links").is_none_or(Value::is_null));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn cards() -> (Cards, String, String) {
@@ -1036,6 +1138,8 @@ mod tests {
             question: "Which one?".into(),
             details: None,
             options: options.iter().map(|o| o.to_string()).collect(),
+            files: vec![],
+            links: vec![],
         };
         cards.handle(launch, key, op).unwrap()["card"].as_str().unwrap().to_string()
     }
@@ -1179,7 +1283,11 @@ mod tests {
     fn agent_text_is_bounded() {
         let (cards, launch, key) = cards();
         let ask = |question: String, options: Vec<String>| {
-            cards.handle(&launch, &key, Op::Ask { operation_id: uuid::Uuid::new_v4().to_string(), question, details: None, options })
+            cards.handle(
+                &launch,
+                &key,
+                Op::Ask { operation_id: uuid::Uuid::new_v4().to_string(), question, details: None, options, files: vec![], links: vec![] },
+            )
         };
         assert!(ask("x".repeat(501), vec![]).is_err());
         assert!(ask("ok?\u{1b}[2J".into(), vec![]).is_err());

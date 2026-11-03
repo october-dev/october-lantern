@@ -528,14 +528,15 @@ impl std::fmt::Debug for Thumbnails {
 }
 
 impl Thumbnails {
-    fn get(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+    /// The picture at `path`, at most `max` pixels on its longer side (kept per path and size).
+    pub(super) fn get(&mut self, ctx: &egui::Context, path: &str, max: u32) -> Option<egui::TextureHandle> {
         self.0
-            .entry(path.to_string())
+            .entry(format!("{max}:{path}"))
             .or_insert_with(|| {
-                let image = image::open(path).ok()?.thumbnail(160, 160).to_rgba8();
+                let image = image::open(path).ok()?.thumbnail(max, max).to_rgba8();
                 let size = [image.width() as usize, image.height() as usize];
                 Some(ctx.load_texture(
-                    format!("thumbnail-{path}"),
+                    format!("thumbnail-{max}-{path}"),
                     egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw()),
                     egui::TextureOptions::LINEAR,
                 ))
@@ -548,7 +549,7 @@ impl Thumbnails {
 fn thumbnail(ui: &mut Ui, cx: &mut Ctx, path: &str, size: f32) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(size), Sense::click());
     ui.painter().rect_filled(rect, 7.0, t::FAINT);
-    match cx.view.thumbnails.get(ui.ctx(), path) {
+    match cx.view.thumbnails.get(ui.ctx(), path, 160) {
         Some(texture) => {
             // Fill the square, cropped to its middle.
             let [w, h] = texture.size().map(|v| v as f32);

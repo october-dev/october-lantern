@@ -31,7 +31,7 @@ struct CardLaunch: Decodable, Identifiable, Hashable {
 /// A question, a step handed to you, or a result (engine `cards::Op`).
 struct Card: Decodable, Identifiable, Hashable {
     let id: String
-    /// ask | handOff | result
+    /// ask | handOff | result | show | routine
     let kind: String
     /// waiting | answered | delivered | unconfirmed | expired | stopped | cancelled | shown
     let state: String
@@ -55,6 +55,9 @@ struct Card: Decodable, Identifiable, Hashable {
     let summary: String?
     let outcome: String?
     let files: [File]?
+    // show (and ask, for what a question is about)
+    var title: String? = nil
+    var links: [String]? = nil
 
     struct File: Decodable, Hashable {
         let path: String
@@ -87,10 +90,10 @@ struct LaunchCards: View {
     /// Number keys pick an option of the waiting question.
     var keys = false
 
-    /// Waiting cards, then the latest result, then the last couple of closed questions.
+    /// The last few closed questions and things shown, then waiting cards, then the latest result.
     private var shown: [Card] {
         let result = launch.cards.last { $0.kind == "result" }
-        let closed = launch.cards.filter { $0.kind != "result" && !$0.isWaiting }.suffix(2)
+        let closed = launch.cards.filter { $0.kind != "result" && !$0.isWaiting }.suffix(3)
         return Array(closed) + launch.waiting + (result.map { [$0] } ?? [])
     }
 
@@ -102,6 +105,7 @@ struct LaunchCards: View {
                 ForEach(shown) { card in
                     switch card.kind {
                     case "result": ResultCard(card: card)
+                    case "show": ShowCard(card: card)
                     case "handOff": HandOffCard(card: card, model: model)
                 case "routine": RoutineSuggestion(card: card, model: model)
                     default: AskCard(card: card, model: model, keys: keys && card.id == launch.waiting.first?.id)
@@ -186,7 +190,10 @@ struct AskCard: View {
                     CardStateLabel(card: card, sending: model.cardSending.contains(card.id))
                 }
                 // Closed, it folds to the question, where it stands and the option you picked.
-                if card.isWaiting, let details = card.details { RequestDetail(detail: details) }
+                if card.isWaiting {
+                    if let details = card.details { DraftBox(text: details) }
+                    CardAttachments(card: card)
+                }
                 ForEach(Array((card.options ?? []).enumerated()).filter { card.isWaiting || card.answer?.choice == $0.element }, id: \.offset) { i, option in
                     OptionRow(number: i + 1, label: option, detail: nil, chosen: card.answer?.choice == option, faded: !open) {
                         model.answerCard(card, CardAnswer(choice: option))
@@ -335,9 +342,91 @@ struct ResultCard: View {
                 Text(markdown(card.summary ?? ""))
                     .font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.9))
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                ForEach(card.files ?? [], id: \.path) { file in FileRow(file: file) }
+                CardAttachments(card: card)
             }, waiting: false
         )
+    }
+}
+
+/// Something the agent shows you while it works: a draft, files (pictures shown) and links.
+struct ShowCard: View {
+    let card: Card
+
+    var body: some View {
+        cardBox(
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "eye").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    Text(card.title ?? "").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    if let details = card.details {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(details, forType: .string)
+                        } label: { Image(systemName: "doc.on.doc") }
+                            .buttonStyle(.plain).foregroundStyle(Theme.muted).help("Copy")
+                    }
+                }
+                if let details = card.details { DraftBox(text: details) }
+                CardAttachments(card: card)
+            }, waiting: false
+        )
+    }
+}
+
+/// A draft to read (a script, a plan), as written, scrolling when it's long.
+struct DraftBox: View {
+    let text: String
+
+    var body: some View {
+        ScrollView {
+            Text(text).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.9))
+                .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxHeight: 260).fixedSize(horizontal: false, vertical: true)
+        .padding(8)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Theme.faint))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+    }
+}
+
+/// A card's files (pictures shown) and links.
+struct CardAttachments: View {
+    let card: Card
+    static let pictures: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
+
+    var body: some View {
+        ForEach(card.files ?? [], id: \.path) { file in
+            if !file.folder, Self.pictures.contains(URL(fileURLWithPath: file.path).pathExtension.lowercased()),
+               let image = NSImage(contentsOfFile: file.path) {
+                Button { NSWorkspace.shared.open(URL(fileURLWithPath: file.path)) } label: {
+                    Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain).help("Open \(file.name)")
+            }
+            FileRow(file: file)
+        }
+        ForEach(card.links ?? [], id: \.self) { link in LinkRow(link: link) }
+    }
+}
+
+/// A web page from a card (localhost too), opened in the browser.
+struct LinkRow: View {
+    let link: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "link").foregroundStyle(Theme.muted)
+            Text(link).font(.system(size: 12)).foregroundStyle(Theme.ink).lineLimit(1).truncationMode(.middle).help(link)
+            Spacer()
+            if let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                Button("Open") { NSWorkspace.shared.open(url) }.buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+            }
+        }
     }
 }
 

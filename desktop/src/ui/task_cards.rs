@@ -45,10 +45,10 @@ pub fn launch_cards(ui: &mut Ui, cx: &mut Ctx, launch: &CardLaunch, keys: bool) 
         let (mark, color) = if step.done { ("✓", t::GREEN) } else { ("○", t::MUTED) };
         c::label(ui, format!("{mark} {}", step.title), 12.0, Weight::Regular, color);
     }
-    // The last couple of closed questions, what's waiting, then the latest result.
+    // The last few closed questions and things shown, what's waiting, then the latest result.
     let closed: Vec<&Card> = launch.cards.iter().filter(|card| card.kind != "result" && !card.is_waiting()).collect();
     let first_waiting = launch.waiting().next().map(|card| card.id.clone());
-    let shown = closed[closed.len().saturating_sub(2)..]
+    let shown = closed[closed.len().saturating_sub(3)..]
         .iter()
         .copied()
         .chain(launch.waiting())
@@ -65,6 +65,7 @@ pub fn launch_cards(ui: &mut Ui, cx: &mut Ctx, launch: &CardLaunch, keys: bool) 
                 }
             }
             "result" => result_card(ui, cx, card),
+            "show" => show_card(ui, cx, card),
             "handOff" => hand_off_card(ui, cx, card),
             _ => ask_card(ui, cx, card, keys && first_waiting.as_deref() == Some(card.id.as_str())),
         }
@@ -120,10 +121,11 @@ fn ask_card(ui: &mut Ui, cx: &mut Ctx, card: &Card, keys: bool) {
     boxed(ui, card.is_waiting(), |ui| {
         ui.add(egui::Label::new(c::text(card.question.clone().unwrap_or_default(), 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
         // Closed, it folds to the question, where it stands and the option you picked.
-        if card.is_waiting()
-            && let Some(details) = &card.details
-        {
-            ui.add(egui::Label::new(c::text(details, 11.5, Weight::Regular, t::white(0.8))).wrap().selectable(true));
+        if card.is_waiting() {
+            if let Some(details) = &card.details {
+                draft_box(ui, details);
+            }
+            attachments(ui, cx, card);
         }
         let mut chosen = pressed.and_then(|i| options.get(i)).cloned();
         for (i, option) in options.iter().enumerate() {
@@ -255,25 +257,93 @@ fn result_card(ui: &mut Ui, cx: &mut Ctx, card: &Card) {
         if let Some(link) = c::markdown_linked(ui, card.summary.as_deref().unwrap_or_default(), MarkdownStyle::default(), 0.0).1 {
             cx.emit(UiAction::OpenUrl(link));
         }
-        for file in card.files.iter().flatten() {
-            ui.horizontal(|ui| {
-                c::label(ui, if file.folder { "📁" } else { "📄" }, 12.0, Weight::Regular, t::MUTED);
-                ui.add(egui::Label::new(c::text(&file.name, 12.0, Weight::Regular, t::INK)).truncate()).on_hover_text(&file.path);
+        attachments(ui, cx, card);
+    });
+}
+
+/// Something the agent shows you while it works: a draft, files (pictures shown) and links
+/// (Swift `ShowCard`).
+fn show_card(ui: &mut Ui, cx: &mut Ctx, card: &Card) {
+    boxed(ui, false, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(c::text(card.title.clone().unwrap_or_default(), 13.0, Weight::Medium, t::INK)).wrap().selectable(true));
+            if let Some(details) = &card.details {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if !std::path::Path::new(&file.path).exists() {
-                        c::label(ui, "Moved or deleted", 11.0, Weight::Regular, t::MUTED);
-                        return;
-                    }
-                    if c::text_button(ui, "Show", 11.0, Weight::Medium, t::AMBER).clicked() {
-                        cx.emit(UiAction::RevealFile(file.path.clone()));
-                    }
-                    if !file.folder && !runnable(&file.path) && c::text_button(ui, "Open", 11.0, Weight::Medium, t::AMBER).clicked() {
-                        cx.emit(UiAction::OpenUrl(file.path.clone()));
+                    if c::small_button(ui, "Copy", Icon::Copy).clicked() {
+                        cx.emit(UiAction::Copy(details.clone()));
                     }
                 });
-            });
+            }
+        });
+        if let Some(details) = &card.details {
+            draft_box(ui, details);
         }
+        attachments(ui, cx, card);
     });
+}
+
+/// A draft to read (a script, a plan), as written, scrolling when it's long (Swift `DraftBox`).
+pub(super) fn draft_box(ui: &mut Ui, text: &str) {
+    egui::Frame::new().fill(t::white(0.05)).stroke(Stroke::new(1.0, t::HAIRLINE)).corner_radius(8).inner_margin(8).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        egui::ScrollArea::vertical().id_salt(("draft", text.len(), text.get(..40))).max_height(260.0).auto_shrink([false, true]).show(
+            ui,
+            |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).monospace().size(11.5).color(t::white(0.9))).wrap().selectable(true));
+            },
+        );
+    });
+}
+
+/// Pictures a card can show inline.
+const PICTURES: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+
+/// A card's files (pictures shown) and links (Swift `CardAttachments`).
+fn attachments(ui: &mut Ui, cx: &mut Ctx, card: &Card) {
+    for file in card.files.iter().flatten() {
+        let ext = std::path::Path::new(&file.path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if !file.folder
+            && PICTURES.contains(&ext.as_str())
+            && let Some(texture) = cx.view.thumbnails.get(ui.ctx(), &file.path, 640)
+        {
+            let [w, h] = texture.size().map(|v| v as f32);
+            let scale = (ui.available_width() / w).min(220.0 / h).min(1.0);
+            let response = ui.add(
+                egui::Image::new(&texture).fit_to_exact_size(egui::vec2(w * scale, h * scale)).corner_radius(8).sense(egui::Sense::click()),
+            );
+            if response.on_hover_text(format!("Open {}", file.name)).clicked() {
+                cx.emit(UiAction::OpenUrl(file.path.clone()));
+            }
+        }
+        ui.horizontal(|ui| {
+            c::label(ui, if file.folder { "📁" } else { "📄" }, 12.0, Weight::Regular, t::MUTED);
+            ui.add(egui::Label::new(c::text(&file.name, 12.0, Weight::Regular, t::INK)).truncate()).on_hover_text(&file.path);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !std::path::Path::new(&file.path).exists() {
+                    c::label(ui, "Moved or deleted", 11.0, Weight::Regular, t::MUTED);
+                    return;
+                }
+                if c::text_button(ui, "Show", 11.0, Weight::Medium, t::AMBER).clicked() {
+                    cx.emit(UiAction::RevealFile(file.path.clone()));
+                }
+                if !file.folder && !runnable(&file.path) && c::text_button(ui, "Open", 11.0, Weight::Medium, t::AMBER).clicked() {
+                    cx.emit(UiAction::OpenUrl(file.path.clone()));
+                }
+            });
+        });
+    }
+    for link in card.links.iter().flatten() {
+        ui.horizontal(|ui| {
+            c::label(ui, "🔗", 12.0, Weight::Regular, t::MUTED);
+            ui.add(egui::Label::new(c::text(link, 12.0, Weight::Regular, t::INK)).truncate()).on_hover_text(link);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let web = link.starts_with("http://") || link.starts_with("https://");
+                if web && c::text_button(ui, "Open", 11.0, Weight::Medium, t::AMBER).clicked() {
+                    cx.emit(UiAction::OpenUrl(link.clone()));
+                }
+            });
+        });
+    }
 }
 
 /// Programs and scripts, which are shown rather than run.

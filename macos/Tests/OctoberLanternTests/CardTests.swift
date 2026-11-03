@@ -13,7 +13,10 @@ final class CardTests: XCTestCase {
         {"id":"c-2","kind":"handOff","state":"delivered","revision":2,"createdAt":2,"resolvedAt":3,"answer":{"done":false,"text":"Not home"},
         "reason":"signIn","step":"Sign in to bank.example","why":null,"instructions":[],"url":"https://bank.example/login"},
         {"id":"c-3","kind":"result","state":"shown","revision":1,"createdAt":4,"resolvedAt":null,"answer":null,
-        "summary":"Booked","outcome":"partial","files":[{"path":"/tmp/x.pdf","name":"x.pdf","folder":false}]}]}]}
+        "summary":"Booked","outcome":"partial","files":[{"path":"/tmp/x.pdf","name":"x.pdf","folder":false}]},
+        {"id":"c-4","kind":"show","state":"shown","revision":1,"createdAt":5,"resolvedAt":null,"answer":null,
+        "title":"Preview frames","details":"0-1.5s HOOK","files":[{"path":"/tmp/f.png","name":"f.png","folder":false}],
+        "links":["http://localhost:3000/"]}]}]}
         """#
         guard case .cards(let launches) = try JSONDecoder().decode(EngineMessage.self, from: Data(line.utf8)) else {
             return XCTFail("not a cards message")
@@ -24,6 +27,10 @@ final class CardTests: XCTestCase {
         XCTAssertEqual(launch.cards[1].answer, CardAnswer(text: "Not home", done: false))
         XCTAssertEqual(launch.cards[2].files?.first?.name, "x.pdf")
         XCTAssertEqual(launch.steps.first?.done, true)
+        XCTAssertEqual(launch.cards[3].title, "Preview frames")
+        XCTAssertEqual(launch.cards[3].details, "0-1.5s HOOK")
+        XCTAssertEqual(launch.cards[3].links, ["http://localhost:3000/"])
+        XCTAssertNil(launch.cards[0].links)
     }
 
     func testAnswersAreSentAsTheEngineTakesThem() throws {

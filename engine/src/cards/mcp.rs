@@ -86,7 +86,8 @@ impl Server {
             }
             "ask_person" => {
                 let reply = self
-                    .call(json!({"op": "ask", "question": text("question"), "details": text("details"), "options": list("options")}))
+                    .call(json!({"op": "ask", "question": text("question"), "details": text("details"), "options": list("options"),
+                        "files": list("files"), "links": list("links")}))
                     .await?;
                 let (state, answer) = self.wait(reply["card"].as_str().unwrap_or_default(), context).await?;
                 Ok(match (answer["choice"].as_str(), answer["text"].as_str()) {
@@ -115,6 +116,12 @@ impl Server {
                     ),
                     None => closed(&state),
                 })
+            }
+            "show_person" => {
+                self.call(json!({"op": "show", "title": text("title"), "text": text("text"), "files": list("files"),
+                    "links": list("links")}))
+                    .await?;
+                Ok("Shown to the person. Carry on; they'll tell you if they want changes.".into())
             }
             "set_status" => {
                 self.call(json!({"op": "status", "text": text("text")})).await?;
@@ -157,6 +164,10 @@ fn schema(v: Value) -> Arc<JsonObject> {
 
 fn tools() -> Vec<Tool> {
     let string = |description: &str| json!({"type": "string", "description": description});
+    let files = json!({"type": "array", "maxItems": 10, "items": {"type": "string"},
+        "description": "Full paths of files or folders to look at (images show as pictures)."});
+    let links = json!({"type": "array", "maxItems": 5, "items": {"type": "string"},
+        "description": "Web addresses to open, http or https (localhost too)."});
     vec![
         Tool::new(
             "show_me",
@@ -180,7 +191,22 @@ fn tools() -> Vec<Tool> {
                 "question": string("The question, in one or two plain sentences."),
                 "details": string("What they need to know to decide: the exact command, amount, recipient or file."),
                 "options": {"type": "array", "maxItems": 6, "items": {"type": "string", "maxLength": 80},
-                    "description": "Short choices, if there are any."}
+                    "description": "Short choices, if there are any."},
+                "files": files.clone(),
+                "links": links.clone()
+            }})),
+        ),
+        Tool::new(
+            "show_person",
+            "Show the person something to look at now, without waiting for an answer: a draft (a script, a plan, a message), \
+             files you made (images show as pictures), or a page (including one on localhost). Use it whenever you'd otherwise \
+             paste a long draft, a path or a link into your reply. To get their OK on it, use ask_person with the same details, \
+             files and links instead.",
+            schema(json!({"type": "object", "required": ["title"], "properties": {
+                "title": string("What it is, in a few words."),
+                "text": string("The draft or details to read, if any (plain text, up to 8000 characters)."),
+                "files": files,
+                "links": links
             }})),
         ),
         Tool::new(

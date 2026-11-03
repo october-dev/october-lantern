@@ -54,6 +54,9 @@ pub struct Card {
     pub summary: Option<String>,
     pub outcome: Option<String>,
     pub files: Option<Vec<CardFile>>,
+    /// show (and ask, for what a question is about)
+    pub title: Option<String>,
+    pub links: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -84,5 +87,25 @@ impl Card {
 impl CardLaunch {
     pub fn waiting(&self) -> impl Iterator<Item = &Card> {
         self.cards.iter().filter(|card| card.is_waiting())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_show_card_decodes_its_draft_files_and_links() {
+        let card: Card = serde_json::from_str(
+            r#"{"id":"c-4","kind":"show","state":"shown","revision":1,"createdAt":5,"resolvedAt":null,"answer":null,
+            "title":"Preview frames","details":"0-1.5s HOOK","files":[{"path":"/tmp/f.png","name":"f.png","folder":false}],
+            "links":["http://localhost:3000/"]}"#,
+        )
+        .unwrap();
+        assert_eq!(card.title.as_deref(), Some("Preview frames"));
+        assert_eq!(card.details.as_deref(), Some("0-1.5s HOOK"));
+        assert_eq!(card.files.as_ref().unwrap()[0].name, "f.png");
+        assert_eq!(card.links, Some(vec!["http://localhost:3000/".to_string()]));
+        assert!(!card.is_waiting());
     }
 }

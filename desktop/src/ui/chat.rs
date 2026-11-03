@@ -220,8 +220,85 @@ pub fn bubble(ui: &mut Ui, cx: &mut Ctx, message: &ChatMessage, key: &str, in_as
                 {
                     cx.view.expanded_bubbles.insert(key.into());
                 }
+                if !user {
+                    let home = crate::settings::home().to_string_lossy().into_owned();
+                    let found = targets(source, &home, |path| std::path::Path::new(path).exists());
+                    if !found.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 10.0;
+                            for target in found {
+                                target_chip(ui, cx, &target);
+                            }
+                        });
+                    }
+                }
             });
     });
+}
+
+/// A file or web page an agent's message names, offered as a chip under it.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Target {
+    File(String),
+    Link(String),
+}
+
+/// The links (http, https) and existing files (full or ~/ paths, also in `backticks`) a message
+/// names, in order, at most four (Swift `Bubble.targets`).
+pub fn targets(text: &str, home: &str, exists: impl Fn(&str) -> bool) -> Vec<Target> {
+    let mut candidates: Vec<&str> = text.split('`').skip(1).step_by(2).map(str::trim).collect();
+    candidates.extend(text.split(|ch: char| ch.is_whitespace() || "`()<>[]\"'".contains(ch)));
+    let mut found = Vec::new();
+    for raw in candidates {
+        let word = raw.trim_end_matches(['.', ',', ';', ':', '!', '?', '*']);
+        let target = if word.starts_with("http://") || word.starts_with("https://") {
+            (word.len() > 8).then(|| Target::Link(word.to_string()))
+        } else {
+            let path = match word.strip_prefix("~/") {
+                Some(rest) => format!("{}/{rest}", home.trim_end_matches(['/', '\\'])),
+                None => word.to_string(),
+            };
+            let bytes = path.as_bytes();
+            let absolute = (path.starts_with('/') && path.len() > 1)
+                || (bytes.len() > 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'\\' | b'/'));
+            (absolute && !path.contains('\n') && exists(&path)).then_some(Target::File(path))
+        };
+        if let Some(target) = target
+            && !found.contains(&target)
+        {
+            found.push(target);
+            if found.len() == 4 {
+                break;
+            }
+        }
+    }
+    found
+}
+
+fn target_chip(ui: &mut Ui, cx: &mut Ctx, target: &Target) {
+    match target {
+        Target::Link(link) => {
+            let label = link.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
+            if c::text_button(ui, &format!("↗ {}", truncate(label, 48)), 11.0, Weight::Medium, t::AMBER).on_hover_text(link).clicked() {
+                cx.emit(UiAction::OpenUrl(link.clone()));
+            }
+        }
+        Target::File(path) => {
+            let name = path.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().unwrap_or(path);
+            let folder = std::path::Path::new(path).is_dir();
+            let icon = if folder { "📁" } else { "📄" };
+            if c::text_button(ui, &format!("{icon} {}", truncate(name, 40)), 11.0, Weight::Medium, t::AMBER)
+                .on_hover_text(format!("Show {path}"))
+                .clicked()
+            {
+                cx.emit(UiAction::RevealFile(path.clone()));
+            }
+        }
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max { text.to_string() } else { format!("{}…", text.chars().take(max - 1).collect::<String>()) }
 }
 
 fn divider(ui: &mut Ui) {
@@ -287,6 +364,26 @@ mod tests {
         assert_eq!(without_lantern_notes("A normal message"), "A normal message");
         let recipe = "Follow the recipe at https://lantern.october.dev/recipes/video-ad.md. Read it first (curl -fsSL https://lantern.october.dev/recipes/video-ad.md), then do this:\n\nmake me an ad\n\nYou're connected to October Bus";
         assert_eq!(without_lantern_notes(recipe), "make me an ad");
+    }
+    #[test]
+    fn a_message_offers_the_links_and_existing_files_it_names() {
+        let text = "Rendered `~/Movies/Lantern Ads/october/out.mp4`. Preview at http://localhost:3000/, \
+                    frames in /tmp/frames. Also /no/such/file and (https://october.dev). Not a path: a/b, http://";
+        let exists = |p: &str| ["/home/me/Movies/Lantern Ads/october/out.mp4", "/tmp/frames"].contains(&p);
+        assert_eq!(
+            targets(text, "/home/me", exists),
+            vec![
+                Target::File("/home/me/Movies/Lantern Ads/october/out.mp4".into()),
+                Target::Link("http://localhost:3000/".into()),
+                Target::File("/tmp/frames".into()),
+                Target::Link("https://october.dev".into()),
+            ]
+        );
+        assert_eq!(
+            targets("C:\\Users\\me\\ad.mp4 is ready", "C:\\Users\\me", |p| p == "C:\\Users\\me\\ad.mp4"),
+            vec![Target::File("C:\\Users\\me\\ad.mp4".into())]
+        );
+        assert!(targets("nothing here", "/home/me", |_| true).is_empty());
     }
     #[test]
     fn repeated_message_keys_are_unique_and_survive_window_trimming() {

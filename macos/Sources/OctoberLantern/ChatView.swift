@@ -153,6 +153,37 @@ struct Bubble: View {
         return cut.map { String(text[..<$0]) } ?? text
     }
 
+    /// A file or web page an agent's message names, offered as a chip under it.
+    enum Target: Hashable {
+        case file(String)
+        case link(String)
+    }
+
+    /// The links (http, https) and existing files (full or ~/ paths, also in `backticks`) a
+    /// message names, in order, at most four (Rust `chat::targets`).
+    static func targets(in text: String, home: String = NSHomeDirectory(), exists: (String) -> Bool) -> [Target] {
+        let spans = text.components(separatedBy: "`").enumerated().filter { $0.offset % 2 == 1 }
+            .map { $0.element.trimmingCharacters(in: .whitespaces) }
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "`()<>[]\"'"))
+        var found: [Target] = []
+        for raw in spans + text.components(separatedBy: separators) {
+            var word = Substring(raw)
+            while let last = word.last, ".,;:!?*".contains(last) { word = word.dropLast() }
+            let target: Target?
+            if word.hasPrefix("http://") || word.hasPrefix("https://") {
+                target = word.count > 8 ? .link(String(word)) : nil
+            } else {
+                let path = word.hasPrefix("~/") ? home + "/" + word.dropFirst(2) : String(word)
+                target = path.hasPrefix("/") && path.count > 1 && !path.contains("\n") && exists(path) ? .file(path) : nil
+            }
+            if let target, !found.contains(target) {
+                found.append(target)
+                if found.count == 4 { break }
+            }
+        }
+        return found
+    }
+
     private var collapsedHeight: CGFloat { message.role == .user ? 200 : 280 }
     private var clipped: Bool { fullHeight > collapsedHeight + 1 }
 
@@ -173,6 +204,12 @@ struct Bubble: View {
             VStack(alignment: .leading, spacing: 4) {
                 collapsible.frame(maxWidth: .infinity, alignment: .leading)
                 moreButton
+                let found = Self.targets(in: message.text) { FileManager.default.fileExists(atPath: $0) }
+                if !found.isEmpty {
+                    HStack(spacing: 10) {
+                        ForEach(found, id: \.self) { TargetChip(target: $0) }
+                    }
+                }
             }
             .padding(.horizontal, inAssistant ? 0 : 11).padding(.vertical, inAssistant ? 2 : 8)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(inAssistant ? .clear : Theme.faint))
@@ -302,5 +339,28 @@ struct StartingChatView: View {
             .padding(.horizontal, 12).padding(.vertical, 9)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Theme.faint))
             .padding(.horizontal, 12).padding(.bottom, 12)
+    }
+}
+
+/// A link or file from an agent's message: links open; files and folders are shown in Finder.
+struct TargetChip: View {
+    let target: Bubble.Target
+
+    var body: some View {
+        switch target {
+        case .link(let link):
+            Button("↗ " + link.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "")) {
+                if let url = URL(string: link) { NSWorkspace.shared.open(url) }
+            }
+            .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+            .lineLimit(1).truncationMode(.middle).help(link)
+        case .file(let path):
+            let url = URL(fileURLWithPath: path)
+            Button((url.hasDirectoryPath ? "📁 " : "📄 ") + url.lastPathComponent) {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+            .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.amber)
+            .lineLimit(1).truncationMode(.middle).help("Show \(path) in Finder")
+        }
     }
 }
