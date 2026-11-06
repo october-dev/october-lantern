@@ -126,6 +126,7 @@ struct AccountCard: View {
         if lantern.dailyQuestions > 0 {
             lines.append("Up to \(lantern.dailyQuestions) question\(lantern.dailyQuestions == 1 ? "" : "s") a day on October's AI")
         }
+        lines.append(lantern.byok ? OctoberTier.pro.accountLine : OctoberTier.lite.accountLine)
         return lines
     }
 

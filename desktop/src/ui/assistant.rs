@@ -491,6 +491,12 @@ fn agent_header(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate
             None => link.kind.display_name().to_string(),
         };
         c::label(ui, name, 10.5, Weight::Regular, t::MUTED).on_hover_text(format!("{} in {folder}", link.kind.display_name()));
+        if link.kind.as_str() == crate::model::AgentKind::OCTOBER && !link.sent {
+            let rights = cx.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
+            let tier = crate::model::OctoberTier::of(rights);
+            c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
+            c::label(ui, tier.label(), 10.5, Weight::Regular, t::MUTED).on_hover_text(tier.explanation());
+        }
         if link.sent {
             c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
             c::label(ui, link.delivery.as_deref().unwrap_or("Sending…"), 10.5, Weight::Regular, t::MUTED);

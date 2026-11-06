@@ -1,6 +1,6 @@
 {
   "package": "@october-dev/october",
-  "version": "0.87.1-october.5",
+  "version": "1.5.0-october.1",
   "node": {
     "version": "24.21.0",
     "minimum": "22.19.0",

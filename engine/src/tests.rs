@@ -1397,3 +1397,15 @@ fn a_question_keeps_the_drafts_its_options_preview() {
     let sent = serde_json::to_value(&questions[0].options).unwrap();
     assert_eq!(sent[1], serde_json::json!({"label": "Change something"}));
 }
+
+#[test]
+fn october_runs_on_pro_for_a_paid_lantern_and_lite_otherwise() {
+    crate::harness::set_pro(false);
+    assert_eq!(crate::harness::default_model(), "october/claude/lite");
+    crate::harness::set_pro(true);
+    assert_eq!(crate::harness::default_model(), "october/claude/pro");
+    crate::harness::set_pro(false);
+    assert!(crate::models::valid(crate::harness::PRO_MODEL) && crate::models::valid(crate::harness::LITE_MODEL));
+    let plan: serde_json::Value = serde_json::from_str(r#"{"type":"october.plan","pro":true}"#).unwrap();
+    assert_eq!(plan["pro"], true);
+}

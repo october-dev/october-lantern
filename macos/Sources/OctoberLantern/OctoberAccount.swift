@@ -619,3 +619,27 @@ final class CallbackListener: @unchecked Sendable {
         return "data:image/png;base64," + png.base64EncodedString()
     }()
 }
+
+/// Which AI October Harness runs on, in the words people see: Pro, the smartest, for a paid Lantern
+/// (Lifetime, a trial or an October plan), or Lite, free for everyone. Model names stay out of the app.
+enum OctoberTier: Equatable {
+    case pro, lite
+
+    init(plan: OctoberAccount.Plan?) {
+        self = plan?.lantern?.byok == true ? .pro : .lite
+    }
+
+    var label: String { self == .pro ? "Pro" : "Lite" }
+
+    var explanation: String {
+        switch self {
+        case .pro: "Pro AI: our smartest, included with your plan."
+        case .lite: "Lite AI: fast, and free with your October account. Lantern Lifetime or a trial gets you Pro AI, our smartest."
+        }
+    }
+
+    /// The account card's line.
+    var accountLine: String {
+        self == .pro ? "Agents use Pro AI, our smartest" : "Agents use Lite AI, free with your account"
+    }
+}

@@ -19,6 +19,10 @@
 //! Sign-in: the app hands the engine the October access token (`october.session`); it's kept in
 //! memory only and given to October launches as `OCTOBER_SUPABASE_*`, as October Desktop does.
 //! The refresh token never leaves the app.
+//!
+//! Model: October launches run on Claude through October's gateway. A paid Lantern account
+//! (`october.plan`: Lantern Lifetime, a trial or an October plan) gets October Pro, everyone else
+//! October Lite, unless a model was picked for the launch.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -451,6 +455,21 @@ fn prune_other_platforms(node_modules: &Path, depth: usize, target: Target) {
 
 /// The latest October access token from the app and when it expires (unix seconds). Memory only.
 static SESSION: Mutex<Option<(String, u64)>> = Mutex::new(None);
+static PRO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The gateway's models, as the harness takes them (`october/` is its provider).
+pub const PRO_MODEL: &str = "october/claude/pro";
+pub const LITE_MODEL: &str = "october/claude/lite";
+
+/// The app's `october.plan`: whether this account's Lantern is paid.
+pub fn set_pro(pro: bool) {
+    PRO.store(pro, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The model an October launch gets when none was picked.
+pub fn default_model() -> &'static str {
+    if PRO.load(std::sync::atomic::Ordering::SeqCst) { PRO_MODEL } else { LITE_MODEL }
+}
 
 /// The app's `october.session`: a token, or `None` when signed out.
 pub fn set_session(session: Option<(String, u64)>) {

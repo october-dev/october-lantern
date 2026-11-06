@@ -22,6 +22,7 @@ impl Lantern {
                 if self.connected {
                     self.give_engine_sign_in();
                     self.invalidate_october_models();
+                    self.publish_october_plan();
                 }
                 // Agents can use this computer's apps: get Cua Driver ready (downloaded on first use).
                 if self.connected && self.model.prefs.computer_use {

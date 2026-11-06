@@ -931,6 +931,11 @@ private struct TaskCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 2.6, style: .continuous))
             }
             Text(link.sent == true ? agent.map { "@\($0.handle)" } ?? kind.displayName : kind.displayName)
+            if kind == .october, link.sent != true {
+                let tier = OctoberTier(plan: OctoberAccount.shared.plan)
+                Text("·")
+                Text(tier.label).help(tier.explanation)
+            }
             if link.sent == true {
                 Text("·")
                 Text(link.delivery ?? "Sending…")

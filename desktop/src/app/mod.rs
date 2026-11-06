@@ -268,6 +268,7 @@ impl Lantern {
                     }
                 }
                 self.invalidate_october_models();
+                self.publish_october_plan();
             }
             Event::Plan { generation, result } if generation == self.auth.load(std::sync::atomic::Ordering::SeqCst) => {
                 self.model.account.refreshing = false;
@@ -284,6 +285,7 @@ impl Lantern {
                     (Err(error), Some(_)) => self.show(format!("Couldn't refresh your plan: {error}")),
                     _ => {}
                 }
+                self.publish_october_plan();
             }
             Event::OwnKey(result) => self.own_key_result(result),
             _ => {}
@@ -413,7 +415,16 @@ impl Lantern {
         self.view.phone_sending = false;
         self.model.account = Default::default();
         self.invalidate_october_models();
+        self.publish_october_plan();
         self.clear_assistant();
+    }
+
+    /// Tells the engine whether this account's Lantern is paid, so October runs on Pro AI rather
+    /// than Lite AI (`october.plan`).
+    pub(super) fn publish_october_plan(&mut self) {
+        let rights = self.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
+        let pro = crate::model::OctoberTier::of(rights) == crate::model::OctoberTier::Pro;
+        self.request(serde_json::json!({"type": "october.plan", "pro": pro}));
     }
 
     /// The engine stopped: Lantern starts it again (up to three times in five minutes), except
