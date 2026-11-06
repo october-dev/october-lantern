@@ -257,7 +257,9 @@ struct MarkdownBlocks: View {
                 .selectable()
                 .fixedSize(horizontal: false, vertical: true)
             if !code.isEmpty {
-                HStack(spacing: 12) {
+                // Wraps onto more lines rather than running past a narrow panel: every block
+                // keeps its own Copy.
+                FlowRow(spacing: 12, lineSpacing: 4) {
                     ForEach(Array(code.enumerated()), id: \.offset) { i, c in
                         CopyButton(text: c, title: code.count == 1 ? "Copy code" : "Copy code \(i + 1)")
                     }
@@ -267,7 +269,8 @@ struct MarkdownBlocks: View {
     }
 
     /// The blocks as one string: list items on their own lines, other blocks a blank line apart
-    /// (as written), so copied text keeps its shape. Code keeps its indentation.
+    /// (close to how it was written; the whole-reply Copy gives the Markdown itself). Code keeps
+    /// its indentation.
     static func attributed(_ blocks: [Block]) -> AttributedString {
         var out = AttributedString()
         var previous: Block?
@@ -366,6 +369,42 @@ struct CopyButton: View {
         }
         .buttonStyle(.plain)
         .help(title)
+    }
+}
+
+/// Its views in a row, onto the next line when the row is full.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = Self.frames(subviews.map { $0.sizeThatFits(.unspecified) }, width: proposal.width ?? .infinity,
+                                 spacing: spacing, lineSpacing: lineSpacing)
+        return CGSize(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        for (view, frame) in zip(subviews, Self.frames(sizes, width: bounds.width, spacing: spacing, lineSpacing: lineSpacing)) {
+            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    /// Where each size goes: left to right, a new line when the next one doesn't fit `width`.
+    static func frames(_ sizes: [CGSize], width: CGFloat, spacing: CGFloat, lineSpacing: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0
+        for size in sizes {
+            if x > 0, x + size.width > width {
+                x = 0
+                y += line + lineSpacing
+                line = 0
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: size))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
+        return frames
     }
 }
 

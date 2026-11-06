@@ -57,17 +57,29 @@ final class ChatLayoutTests: XCTestCase {
         XCTAssertEqual(text.runs.compactMap(\.link), [URL(string: "https://github.com/october-dev")!])
     }
 
+    /// What waits for you is bounded, and with it at its most the conversation, header and
+    /// composer still fit the panel (issue #10).
     func testTheConversationFitsThePanelWithRoomForTheRest() {
-        for panel: CGFloat in [500, 700, 900, 1400] {
-            for asking in [false, true] {
-                let height = ChatView.scrollHeight(panel: panel, asking: asking)
+        for panel: CGFloat in [500, 600, 700, 900, 1400] {
+            let limit = ChatView.pinnedLimit(panel: panel)
+            XCTAssertGreaterThanOrEqual(limit, 100)
+            XCTAssertLessThanOrEqual(limit, 320)
+            for pinned: CGFloat in [0, limit / 2, limit] {
+                let height = ChatView.scrollHeight(panel: panel, pinned: pinned)
                 XCTAssertGreaterThanOrEqual(height, 160)
                 XCTAssertLessThanOrEqual(height, 800)
-                if panel >= 700 {
-                    XCTAssertLessThanOrEqual(height + (asking ? 450 : 230), panel, "header, question and composer must still fit")
-                }
+                XCTAssertLessThanOrEqual(ChatView.reserved + pinned + height, panel, "header, question and composer must still fit")
             }
         }
-        XCTAssertLessThan(ChatView.scrollHeight(panel: 900, asking: true), ChatView.scrollHeight(panel: 900, asking: false))
+        XCTAssertLessThan(ChatView.scrollHeight(panel: 900, pinned: 200), ChatView.scrollHeight(panel: 900, pinned: 0))
+    }
+
+    /// Every code block keeps its Copy: past the row's width they go onto the next line.
+    func testCopyButtonsWrapRatherThanOverflow() {
+        let sizes = Array(repeating: CGSize(width: 100, height: 16), count: 5)
+        let frames = FlowRow.frames(sizes, width: 330, spacing: 12, lineSpacing: 4)
+        XCTAssertEqual(frames.map(\.minY), [0, 0, 0, 20, 20])
+        XCTAssertLessThanOrEqual(frames.map(\.maxX).max()!, 330)
+        XCTAssertEqual(FlowRow.frames([CGSize(width: 400, height: 16)], width: 330, spacing: 12, lineSpacing: 4).first?.minX, 0)
     }
 }

@@ -69,6 +69,10 @@ final class Assistant: ObservableObject {
         /// when it was first sent (what the agent said before then isn't its answer).
         var sendKey: String?
         var sentAt: Date?
+        /// For one it was sent to: the send showed up in the agent's conversation, so `transcript`
+        /// holds only what came after it, and the agent's newest messages count as this task's
+        /// even once the send itself has dropped out of the engine's window.
+        var found: Bool?
         /// When it was started, and when Lantern first saw its agent: for Send Logs.
         var startedAt: Date?
         var seenAt: Date?
@@ -247,8 +251,77 @@ final class Assistant: ObservableObject {
             let after = link.startedAt.map { " after \(Int(Date().timeIntervalSince($0))) s" } ?? ""
             AppLog.write("Ask Lantern: \(link.kind) task is agent \(agent.id)\(after)")
         }
-        if !messages.isEmpty { updated.transcript = Array(messages.suffix(60)) }
+        if !messages.isEmpty { updated = Self.keeping(messages, in: updated) }
         if updated != link { turns[i].task = updated }
+    }
+
+    /// `link` with what its agent's newest messages add to what it has kept. The engine sends
+    /// only a window of the newest messages (tool steps included), so each read is added to the
+    /// saved ones rather than replacing them: an answer stays with its task after it leaves the
+    /// window. For one it was sent to, only what came after the send counts, and nothing does
+    /// until the send has shown up (see `after`).
+    static func keeping(_ messages: [ChatMessage], in link: TaskLink) -> TaskLink {
+        var link = link
+        var saved = link.transcript
+        var new = messages
+        if link.sent == true {
+            // Kept before replies were saved on their own: the whole window, the send in it.
+            if link.found != true { saved = after(sent: link.prompt, since: link.sentAt, in: saved) }
+            guard let newer = replies(to: link, in: messages) else { return link }
+            new = newer
+            link.found = true
+        }
+        link.transcript = retained(merged(saved, new))
+        return link
+    }
+
+    /// What an agent it was sent to said after the send, in `messages` (its newest ones): after
+    /// the send itself while that's still in them; once it has been seen, everything newer than
+    /// when it was sent. Nil until it shows up.
+    static func replies(to link: TaskLink, in messages: [ChatMessage]) -> [ChatMessage]? {
+        if let i = sendIndex(link.prompt, since: link.sentAt, in: messages) { return Array(messages[(i + 1)...]) }
+        guard link.found == true else { return nil }
+        return messages.filter { fresh($0, since: link.sentAt) != false }
+    }
+
+    /// The saved messages with a newer window's added: what follows the saved ones' last few in
+    /// it, or (once the window has moved past some of those) what follows the part it still has.
+    static func merged(_ saved: [ChatMessage], _ window: [ChatMessage]) -> [ChatMessage] {
+        guard !saved.isEmpty else { return window }
+        let tail = Array(saved.suffix(8))
+        if window.count >= tail.count {
+            for end in (tail.count - 1)..<window.count where Array(window[(end - tail.count + 1)...end]) == tail {
+                return saved + window[(end + 1)...]
+            }
+        }
+        for k in stride(from: min(tail.count - 1, window.count), through: 1, by: -1)
+        where Array(window.prefix(k)) == Array(saved.suffix(k)) {
+            return saved + window.dropFirst(k)
+        }
+        return saved + window
+    }
+
+    /// The newest `limit` messages of the conversation and the newest `limit` tool steps, in
+    /// order: steps don't push the agent's answers out of what a task keeps.
+    static func retained(_ messages: [ChatMessage], limit: Int = 60) -> [ChatMessage] {
+        let talk = messages.indices.filter { messages[$0].role != .tool }.suffix(limit)
+        let steps = messages.indices.filter { messages[$0].role == .tool }.suffix(limit)
+        let keep = Set(talk).union(steps)
+        return messages.indices.filter(keep.contains).map { messages[$0] }
+    }
+
+    /// What a task card shows: what it kept, with the newest messages when it's read live.
+    /// Without your first message (it's the question above the card).
+    static func taskMessages(_ link: TaskLink, live: [ChatMessage]?) -> [ChatMessage] {
+        let kept = live.map { keeping($0, in: link) } ?? link
+        let all = kept.transcript
+        if link.sent == true {
+            // Saved before replies were kept on their own, and not seen since.
+            return kept.found == true ? all : after(sent: link.prompt, since: link.sentAt, in: all)
+        }
+        guard let first = all.first, first.role == .user,
+              Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
+        return Array(all.dropFirst())
     }
 
     private func reply(to agent: Agent) {
@@ -608,24 +681,28 @@ final class Assistant: ObservableObject {
     /// Typed in, the message arrives on one line (the engine turns line breaks into spaces so they
     /// don't press Return), so it's compared with all whitespace runs as single spaces.
     static func after(sent prompt: String, since: Date?, in messages: [ChatMessage]) -> [ChatMessage] {
-        let start = String(oneLine(prompt).prefix(60))
-        func at(_ m: ChatMessage) -> Date? {
-            guard let s = m.at else { return nil }
-            let f = ISO8601DateFormatter()
-            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
-        }
-        // A little slack for the two clocks (the agent's transcript and this app).
-        let fresh = { (m: ChatMessage) -> Bool? in
-            guard let since, let when = at(m) else { return nil }
-            return when >= since.addingTimeInterval(-2)
-        }
-        guard let i = messages.lastIndex(where: { m in
-            guard m.role == .user else { return false }
-            if !start.isEmpty, oneLine(m.text).contains(start) { return fresh(m) ?? true }
-            return m.text.contains("message on October Bus") && fresh(m) == true
-        }) else { return [] }
+        guard let i = sendIndex(prompt, since: since, in: messages) else { return [] }
         return Array(messages[(i + 1)...])
+    }
+
+    /// Where the send is in `messages` (see `after`).
+    static func sendIndex(_ prompt: String, since: Date?, in messages: [ChatMessage]) -> Int? {
+        let start = String(oneLine(prompt).prefix(60))
+        return messages.lastIndex(where: { m in
+            guard m.role == .user else { return false }
+            if !start.isEmpty, oneLine(m.text).contains(start) { return fresh(m, since: since) ?? true }
+            return m.text.contains("message on October Bus") && fresh(m, since: since) == true
+        })
+    }
+
+    /// Whether a message is from after `since`, with a little slack for the two clocks (the
+    /// agent's transcript and this app). Nil without both times.
+    static func fresh(_ m: ChatMessage, since: Date?) -> Bool? {
+        guard let since, let s = m.at else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let when = f.date(from: s) ?? ISO8601DateFormatter().date(from: s) else { return nil }
+        return when >= since.addingTimeInterval(-2)
     }
 
     /// `text` trimmed, with every run of whitespace (line breaks included) as one space.
@@ -633,8 +710,9 @@ final class Assistant: ObservableObject {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
     }
 
-    /// Questions answered by pressing keys (an approval, a plan, a choice), not with a message.
-    static func answeredInTerminal(_ kind: String?) -> Bool { ["permission", "plan", "choice"].contains(kind ?? "") }
+    /// Questions answered in the agent's own terminal (an approval, a plan, a choice, a form or
+    /// question the engine reads as `other`), not with a message typed in.
+    static func answeredInTerminal(_ kind: String?) -> Bool { ["permission", "plan", "choice", "other"].contains(kind ?? "") }
 
     /// Sends again a message that didn't reach its agent.
     private func resend(_ link: TaskLink, turn: UUID) {
@@ -892,11 +970,7 @@ private struct TaskCard: View {
     /// sent to, only what came after it.
     private var messages: [ChatMessage] {
         let live = latest && agent != nil && agent?.id == model.watchedAgentId && !model.watchedMessages.isEmpty
-        let all = live ? model.watchedMessages : link.transcript
-        if link.sent == true { return Assistant.after(sent: link.prompt, since: link.sentAt, in: all) }
-        guard let first = all.first, first.role == .user,
-              Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
-        return Array(all.dropFirst())
+        return Assistant.taskMessages(link, live: live ? model.watchedMessages : nil)
     }
 
     var body: some View {
@@ -1019,27 +1093,8 @@ private struct TaskCard: View {
         }
     }
 
-    /// A question Lantern can't answer from here: what it asks, and where to answer. An approval
-    /// or a choice is answered with keys in its own terminal (typing a reply there would answer
-    /// it wrongly), so it says Open agent rather than Reply below.
     private func needsYou(_ agent: Agent) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(agent.question ?? "\(agent.kind.displayName) is waiting for you.")
-                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
-                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            if let detail = agent.questionDetail, detail != agent.question { RequestDetail(detail: detail) }
-            if Assistant.answeredInTerminal(agent.questionKind) {
-                HStack(spacing: 8) {
-                    Text("Answer it in its terminal.").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                    SmallButton(title: "Open agent", symbol: "arrow.up.forward.app") { model.open(agent) }
-                }
-            } else {
-                note("Reply below.", color: Theme.muted)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
+        UnansweredQuestion(agent: agent, model: model, elsewhere: "Reply below.")
     }
 
     private func note(_ text: String, color: Color) -> some View {
