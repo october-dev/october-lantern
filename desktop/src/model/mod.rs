@@ -741,6 +741,40 @@ pub struct LanternRights {
     pub daily_questions: u64,
 }
 
+/// Which AI October Harness runs on, in the words people see (Swift `OctoberTier`): Pro, the
+/// smartest, for a paid Lantern (Lifetime, a trial or an October plan), or Lite, free for everyone.
+/// Model names stay out of the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OctoberTier {
+    Pro,
+    Lite,
+}
+
+impl OctoberTier {
+    pub fn of(rights: Option<&LanternRights>) -> Self {
+        if rights.is_some_and(|r| r.byok) { Self::Pro } else { Self::Lite }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pro => "Pro",
+            Self::Lite => "Lite",
+        }
+    }
+    pub fn explanation(self) -> &'static str {
+        match self {
+            Self::Pro => "Pro AI: our smartest, included with your plan.",
+            Self::Lite => "Lite AI: fast, and free with your October account. Lantern Lifetime or a trial gets you Pro AI, our smartest.",
+        }
+    }
+    /// The account card's line.
+    pub fn account_line(self) -> &'static str {
+        match self {
+            Self::Pro => "Agents use Pro AI, our smartest",
+            Self::Lite => "Agents use Lite AI, free with your account",
+        }
+    }
+}
+
 impl LanternRights {
     pub fn from_plan(plan: &serde_json::Value) -> Option<Self> {
         let lantern = plan.get("lantern").filter(|value| value.is_object())?;

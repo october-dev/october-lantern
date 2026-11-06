@@ -234,6 +234,30 @@ fn open_question(content: &Value) -> Option<OpenQuestion> {
     }
 }
 
+/// The tool call at the end of a Claude transcript that has no result yet: the one a permission
+/// prompt is asking about, when its own hook event is missing.
+pub(crate) fn pending_tool_call(path: &Path) -> Option<(String, Value)> {
+    let text = read_range(path, true, TAIL_BYTES)?;
+    let mut pending: Vec<(String, String, Value)> = Vec::new();
+    for entry in lines(&text) {
+        if entry["isSidechain"] == true {
+            continue;
+        }
+        for block in entry["message"]["content"].as_array().into_iter().flatten() {
+            match (entry["type"].as_str(), block["type"].as_str()) {
+                (Some("assistant"), Some("tool_use")) => pending.push((
+                    block["id"].as_str().unwrap_or_default().to_string(),
+                    block["name"].as_str().unwrap_or_default().to_string(),
+                    block["input"].clone(),
+                )),
+                (Some("user"), Some("tool_result")) => pending.retain(|(id, ..)| block["tool_use_id"].as_str() != Some(id)),
+                _ => {}
+            }
+        }
+    }
+    pending.pop().filter(|(_, name, _)| !name.is_empty()).map(|(_, name, input)| (name, input))
+}
+
 /// Claude Code writes one JSONL entry per content block of an API message (a `text` entry, then
 /// a `tool_use` entry, sharing `message.id`), and every entry carries the message's final
 /// `stop_reason`. So the last entry's `stop_reason` says whether the turn is over, whatever block

@@ -134,11 +134,11 @@ fn conversation_row(ui: &mut Ui, cx: &mut Ctx, conversation: &Conversation) {
     });
 }
 
-/// How long ago, as the Mac's numeric narrow relative date ("2m ago", "3h ago", "1d ago").
+/// How long ago, as the Mac shows it: "now" under a minute, then "2m ago", "3h ago", "1d ago".
 fn ago(since_ms: f64, now_ms: f64) -> String {
     let seconds = ((now_ms - since_ms) / 1000.0).max(0.0) as u64;
     let (n, unit) = match seconds {
-        0..60 => (seconds, "s"),
+        0..60 => return "now".to_string(),
         60..3600 => (seconds / 60, "m"),
         3600..86_400 => (seconds / 3600, "h"),
         86_400..604_800 => (seconds / 86_400, "d"),
@@ -491,6 +491,12 @@ fn agent_header(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate
             None => link.kind.display_name().to_string(),
         };
         c::label(ui, name, 10.5, Weight::Regular, t::MUTED).on_hover_text(format!("{} in {folder}", link.kind.display_name()));
+        if link.kind.as_str() == crate::model::AgentKind::OCTOBER && !link.sent {
+            let rights = cx.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
+            let tier = crate::model::OctoberTier::of(rights);
+            c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
+            c::label(ui, tier.label(), 10.5, Weight::Regular, t::MUTED).on_hover_text(tier.explanation());
+        }
         if link.sent {
             c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
             c::label(ui, link.delivery.as_deref().unwrap_or("Sending…"), 10.5, Weight::Regular, t::MUTED);
@@ -1036,7 +1042,8 @@ mod tests {
     #[test]
     fn relative_times_read_like_the_mac() {
         let now = 1_790_000_000_000.0;
-        assert_eq!(ago(now - 5_000.0, now), "5s ago");
+        assert_eq!(ago(now - 5_000.0, now), "now");
+        assert_eq!(ago(now + 2_000.0, now), "now", "a chat saved a moment ago, by a clock slightly ahead");
         assert_eq!(ago(now - 120_000.0, now), "2m ago");
         assert_eq!(ago(now - 3.0 * 3_600_000.0, now), "3h ago");
         assert_eq!(ago(now - 86_400_000.0 * 9.0, now), "1w ago");

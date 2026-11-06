@@ -91,6 +91,12 @@ enum Request {
         access_token: Option<String>,
         expires_at: Option<u64>,
     },
+    /// Whether the signed-in account's Lantern is paid: October launches then run on October Pro
+    /// rather than October Lite.
+    #[serde(rename = "october.plan")]
+    OctoberPlan {
+        pro: bool,
+    },
     /// Rebuild the toolkit list now (answered with `toolkit`).
     #[serde(rename = "toolkit.refresh")]
     ToolkitRefresh,
@@ -624,6 +630,7 @@ pub fn run() -> Result<()> {
                 Ok(Request::OctoberSession { access_token, expires_at }) => {
                     crate::harness::set_session(access_token.zip(expires_at));
                 }
+                Ok(Request::OctoberPlan { pro }) => crate::harness::set_pro(pro),
                 Ok(Request::InstalledRefresh) => {
                     launch::refresh();
                     std::thread::spawn(emit_installed);

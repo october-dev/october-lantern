@@ -72,6 +72,7 @@ final class AppModel: ObservableObject {
     /// A launch waiting for October Harness to finish installing.
     private var launchAfterHarness: (() -> Void)?
     private var octoberSessionWatch: AnyCancellable?
+    private var octoberPlanWatch: AnyCancellable?
     private var signInWatch: AnyCancellable?
     private var showMeWatch: AnyCancellable?
     @Published private(set) var launching = false
@@ -236,6 +237,9 @@ final class AppModel: ObservableObject {
             if self?.panel == .newSession || self?.panel == .routines { self?.loadModels(.october) }
             if session == nil { ShowMe.shared.stop() }
         }
+        octoberPlanWatch = OctoberAccount.shared.$plan.sink { [weak self] plan in
+            self?.engine.octoberPlan(pro: OctoberTier(plan: plan) == .pro)
+        }
         showMeWatch = prefs.$showMe.sink { enabled in
             if !enabled { ShowMe.shared.stop() }
         }
@@ -254,6 +258,7 @@ final class AppModel: ObservableObject {
             if let self {
                 let s = OctoberAccount.shared.session
                 self.engine.octoberSession(accessToken: s?.accessToken, expiresAt: s?.expiresAt)
+                self.engine.octoberPlan(pro: OctoberTier(plan: OctoberAccount.shared.plan) == .pro)
                 if self.panel == .routines || self.panel == .newSession { self.loadModels(.october) }
                 if self.launchAfterHarness != nil { self.engine.prepareHarness() }
                 // Agents can use this Mac's apps: get Cua Driver ready (downloaded on first use).

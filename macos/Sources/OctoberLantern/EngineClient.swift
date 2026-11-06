@@ -254,6 +254,12 @@ final class EngineClient {
         return send(request)
     }
 
+    /// Whether this account's Lantern is paid, so October launches run on October Pro rather than Lite.
+    @discardableResult
+    func octoberPlan(pro: Bool) -> Bool {
+        send(["type": "october.plan", "pro": pro])
+    }
+
     /// Looks for installed agents again (answered with `installed`).
     @discardableResult
     func refreshInstalled() -> Bool {

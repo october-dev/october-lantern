@@ -72,14 +72,30 @@ final class AskRequestTests: XCTestCase {
 
         let before = Date(timeIntervalSince1970: 1_793_000_000)
         let trial = lantern(byok: true, trialEndsAt: plan.lantern?.trialEndsAt)
-        XCTAssertEqual(AccountCard.lanternLines(trial, now: before).count, 2)
+        XCTAssertEqual(AccountCard.lanternLines(trial, now: before).count, 3)
         XCTAssertTrue(AccountCard.lanternLines(trial, now: before)[0].hasPrefix("Pro trial · ends "))
         XCTAssertEqual(AccountCard.lanternLines(trial, now: before)[1], "Up to 20 questions a day on October's AI")
-        XCTAssertEqual(AccountCard.lanternLines(trial, now: Date(timeIntervalSince1970: 1_800_000_000)), ["Up to 20 questions a day on October's AI"],
+        XCTAssertEqual(AccountCard.lanternLines(trial, now: before)[2], "Agents use Pro AI, our smartest")
+        XCTAssertEqual(AccountCard.lanternLines(trial, now: Date(timeIntervalSince1970: 1_800_000_000)),
+                       ["Up to 20 questions a day on October's AI", "Agents use Pro AI, our smartest"],
                        "an ended trial isn't shown")
         XCTAssertEqual(AccountCard.lanternLines(lantern(byok: true, lifetime: true))[0], "Lantern Lifetime")
         XCTAssertTrue(AccountCard.offersUpgrade(try JSONDecoder().decode(OctoberAccount.Plan.self, from: Data(#"{"plan":"free","lantern":{"lifetime":false,"trialEndsAt":null,"byok":false,"dailyQuestions":5}}"#.utf8))))
         XCTAssertFalse(AccountCard.offersUpgrade(plan, now: before), "not during the trial")
+        XCTAssertEqual(AccountCard.lanternLines(lantern(byok: false)).last, "Agents use Lite AI, free with your account")
+    }
+
+    func testAgentsRunOnProForAPaidLanternAndLiteOtherwise() throws {
+        let paid = try JSONDecoder().decode(OctoberAccount.Plan.self, from: Data(#"{"plan":"free","lantern":{"lifetime":true,"byok":true,"dailyQuestions":20}}"#.utf8))
+        let free = try JSONDecoder().decode(OctoberAccount.Plan.self, from: Data(#"{"plan":"free","lantern":{"lifetime":false,"byok":false,"dailyQuestions":5}}"#.utf8))
+        XCTAssertEqual(OctoberTier(plan: paid), .pro)
+        XCTAssertEqual(OctoberTier(plan: free), .lite)
+        XCTAssertEqual(OctoberTier(plan: nil), .lite, "signed out or not loaded yet")
+        XCTAssertEqual(OctoberTier.pro.label, "Pro")
+        XCTAssertEqual(OctoberTier.lite.label, "Lite")
+        for tier in [OctoberTier.pro, .lite] {
+            XCTAssertFalse(tier.explanation.contains("Claude") || tier.explanation.contains("Opus") || tier.explanation.contains("Sonnet"), "no model names")
+        }
     }
 
     func testHistoryIsTheLastFiveWholeTurns() {

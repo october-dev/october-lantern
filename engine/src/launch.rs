@@ -962,6 +962,8 @@ pub fn launch(
         eprintln!("lantern-engine: couldn't mark {} trusted for Claude Code: {error:#}", cwd.display());
     }
     let model = model.map(str::trim).filter(|m| !m.is_empty());
+    // October runs on October Pro or Lite (Claude, through October's gateway) unless one was picked.
+    let model = model.or_else(|| (kind == Kind::October).then(crate::harness::default_model));
     if let Some(m) = model {
         if crate::models::flag(kind).is_none() {
             bail!("Lantern doesn't know how to choose a model for {}; leave the model on Default", program(kind));
