@@ -472,6 +472,44 @@ fn permission_prompts_keep_the_whole_command() {
     assert!(ev.prompt_id.is_some());
 }
 
+/// Claude's prompt for a risky `rm` (2026-11-06): its PermissionRequest event wasn't the latest
+/// when the reminder came, so Lantern said "Needs your answer" with no card. The reminder now
+/// gives a card that answers it, with the command from the transcript.
+#[test]
+fn a_permission_reminder_without_its_request_still_gets_a_card() {
+    let dir = std::env::temp_dir().join(format!("lantern-perm-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let transcript = dir.join("t.jsonl");
+    let command = "cd ~; for d in BraveSoftware ms-playwright; do rm -rf \"$C/$d\"/* \"$C/$d\"/.[!.]* 2>/dev/null; done";
+    let lines = [
+        serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"AskUserQuestion","input":{}}]}}),
+        serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"Clear all the safe caches"}]}}),
+        serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":"Clearing those now."}]}}),
+        serde_json::json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":command}}]}}),
+    ];
+    std::fs::write(&transcript, lines.iter().map(|l| l.to_string() + "\n").collect::<String>()).unwrap();
+    let v = serde_json::json!({
+        "hook_event_name": "Notification", "notification_type": "permission_prompt",
+        "session_id": format!("s-{}", uuid::Uuid::new_v4()), "message": "Claude needs your permission to use Bash",
+        "transcript_path": transcript.to_string_lossy(),
+    });
+    let ev = hooks::claude_event(&v).unwrap();
+    assert_eq!((ev.state, ev.question_kind), (State::NeedsInput, Some(QuestionKind::Permission)));
+    assert!(ev.question.as_deref().unwrap().starts_with("Permission to run Bash · cd ~;"), "{:?}", ev.question);
+    assert!(ev.question_detail.unwrap().contains("rm -rf"));
+    assert!(ev.prompt_id.is_some());
+
+    // Without a readable transcript, Claude's own words, still answerable.
+    let bare = serde_json::json!({
+        "hook_event_name": "Notification", "notification_type": "permission_prompt",
+        "session_id": format!("s-{}", uuid::Uuid::new_v4()), "message": "Claude needs your permission to use Bash",
+    });
+    let ev = hooks::claude_event(&bare).unwrap();
+    assert_eq!(ev.question.as_deref(), Some("Claude needs your permission to use Bash"));
+    assert!(ev.prompt_id.is_some());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Stop, then Claude's idle reminder (twice): one finished turn, one time. A new turn after
 /// work starts again gets a new time.
 #[test]

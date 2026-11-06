@@ -193,30 +193,33 @@ pub(crate) fn claude_event(v: &Value) -> Option<HookEvent> {
                 (State::NeedsInput, Some("Its plan is ready. Start on it?".into()), Some(QuestionKind::Plan), None)
             }
             tool => {
-                let what = match v["tool_input"]["command"].as_str() {
-                    Some(c) => {
-                        detail = Some(full_text(c));
-                        format!("{tool} · {}", one_line(c))
-                    }
-                    None => {
-                        detail = serde_json::to_string_pretty(&v["tool_input"]).ok().filter(|t| t != "null").map(|t| full_text(&t));
-                        describe_tool(tool, &v["tool_input"])
-                    }
-                };
+                let (question, full) = permission_question(tool, &v["tool_input"]);
+                detail = full;
                 choices = always_option(&v["permission_suggestions"]).map(|always| Choices { questions: Vec::new(), always: Some(always) });
-                (State::NeedsInput, Some(format!("Permission to run {what}")), Some(QuestionKind::Permission), None)
+                (State::NeedsInput, Some(question), Some(QuestionKind::Permission), None)
             }
         },
         "Notification" => match v["notification_type"].as_str().unwrap_or("") {
             // Fires only after the prompt has waited ~6 s; PermissionRequest already covered it,
             // unless this is a prompt PermissionRequest doesn't fire for (a sandboxed network request).
+            // Also when the request's own event was never recorded or a later event replaced it
+            // (another tool call finishing): the prompt is still on screen, so it gets a card.
             "permission_prompt" => {
                 let already = read_event(&event_path("claude", session_id.as_deref(), &ancestors))
                     .is_some_and(|e| e.state == State::NeedsInput && e.question_kind == Some(QuestionKind::Permission));
                 if already {
                     return None;
                 }
-                (State::NeedsInput, v["message"].as_str().map(String::from), Some(QuestionKind::Permission), None)
+                let pending = v["transcript_path"].as_str().and_then(|p| crate::transcripts::pending_tool_call(Path::new(p)));
+                let question = match &pending {
+                    Some((tool, input)) => {
+                        let (question, full) = permission_question(tool, input);
+                        detail = full;
+                        Some(question)
+                    }
+                    None => v["message"].as_str().map(String::from),
+                };
+                (State::NeedsInput, question, Some(QuestionKind::Permission), None)
             }
             "idle_prompt" => (State::Waiting, None, None, None),
             "elicitation_dialog" | "elicitation_url_dialog" | "agent_needs_input" => {
@@ -229,12 +232,12 @@ pub(crate) fn claude_event(v: &Value) -> Option<HookEvent> {
         // UserPromptSubmit, PostToolUse, PostToolUseFailure: Claude is at work.
         _ => (State::Working, None, None, None),
     };
-    let prompt_id =
-        (v["hook_event_name"] == "PermissionRequest" && question_kind.is_some_and(QuestionKind::answered_with_keys)).then(|| {
-            use sha2::Digest;
-            let h = sha2::Sha256::digest(format!("{}|{}|{}|{at}", session_id.as_deref().unwrap_or(""), v["tool_name"], v["tool_input"]));
-            h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
-        });
+    let asks = v["hook_event_name"] == "PermissionRequest" || v["notification_type"] == "permission_prompt";
+    let prompt_id = (asks && question_kind.is_some_and(QuestionKind::answered_with_keys)).then(|| {
+        use sha2::Digest;
+        let h = sha2::Sha256::digest(format!("{}|{}|{}|{at}", session_id.as_deref().unwrap_or(""), v["tool_name"], v["tool_input"]));
+        h[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+    });
     Some(HookEvent {
         source: "claude".into(),
         state,
@@ -293,6 +296,17 @@ pub(crate) fn question_line(questions: &[ChoiceQuestion]) -> String {
 
 /// What the terminal's second option says when Claude offers "don't ask again" for a permission
 /// (it does whenever the hook carries suggestions).
+/// "Permission to run Bash · rm -rf …", and the request in full for **Show full request**.
+fn permission_question(tool: &str, input: &Value) -> (String, Option<String>) {
+    match input["command"].as_str() {
+        Some(c) => (format!("Permission to run {tool} · {}", one_line(c)), Some(full_text(c))),
+        None => (
+            format!("Permission to run {}", describe_tool(tool, input)),
+            serde_json::to_string_pretty(input).ok().filter(|t| t != "null").map(|t| full_text(&t)),
+        ),
+    }
+}
+
 fn always_option(suggestions: &Value) -> Option<String> {
     let first = suggestions.as_array()?.first()?;
     Some(match first["type"].as_str().unwrap_or("") {
