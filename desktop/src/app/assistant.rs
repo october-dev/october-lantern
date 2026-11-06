@@ -218,6 +218,7 @@ impl Lantern {
             images: several,
             context,
             mode: Some("chat".into()),
+            ai: Some(self.model.october_tier().as_str()),
             ..Default::default()
         };
         crate::analytics::capture("assistant_asked", json!({"follow_up": self.model.assistant.turns.len() > 1}));

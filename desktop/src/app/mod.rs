@@ -422,8 +422,7 @@ impl Lantern {
     /// Tells the engine whether this account's Lantern is paid, so October runs on Pro AI rather
     /// than Lite AI (`october.plan`).
     pub(super) fn publish_october_plan(&mut self) {
-        let rights = self.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
-        let pro = crate::model::OctoberTier::of(rights) == crate::model::OctoberTier::Pro;
+        let pro = self.model.october_tier() == crate::model::OctoberTier::Pro;
         self.request(serde_json::json!({"type": "october.plan", "pro": pro}));
     }
 

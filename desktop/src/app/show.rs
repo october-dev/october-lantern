@@ -418,6 +418,7 @@ impl Lantern {
             mode: Some("show".into()),
             guidance: Some(guidance),
             use_own_key: !self.guide.own_key_off,
+            ai: Some(self.model.october_tier().as_str()),
             ..Default::default()
         };
         let own_key = self.key_for_ask();

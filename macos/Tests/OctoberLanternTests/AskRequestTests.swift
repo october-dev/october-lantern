@@ -89,6 +89,9 @@ final class AskRequestTests: XCTestCase {
         XCTAssertEqual(OctoberTier(plan: paid), .pro)
         XCTAssertEqual(OctoberTier(plan: free), .lite)
         XCTAssertEqual(OctoberTier(plan: nil), .lite, "signed out or not loaded yet")
+        XCTAssertEqual(OctoberTier.chosen(plan: paid, choice: "pro"), .pro)
+        XCTAssertEqual(OctoberTier.chosen(plan: paid, choice: "lite"), .lite, "a paid account may pick Lite AI")
+        XCTAssertEqual(OctoberTier.chosen(plan: free, choice: "pro"), .lite, "a free account can't pick Pro AI")
         XCTAssertEqual(OctoberTier.pro.label, "Pro AI")
         XCTAssertEqual(OctoberTier.lite.label, "Lite AI")
         for tier in [OctoberTier.pro, .lite] {

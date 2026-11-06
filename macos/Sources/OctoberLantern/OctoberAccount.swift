@@ -629,7 +629,22 @@ enum OctoberTier: Equatable {
         self = plan?.lantern?.byok == true ? .pro : .lite
     }
 
+    /// What answers and agents use: the person's choice, within what the plan allows.
+    static func chosen(plan: OctoberAccount.Plan?, choice: String) -> OctoberTier {
+        OctoberTier(plan: plan) == .pro && choice != "lite" ? .pro : .lite
+    }
+
+    @MainActor static var current: OctoberTier {
+        chosen(plan: OctoberAccount.shared.plan, choice: Preferences.shared.octoberAI)
+    }
+
+    /// `ai` in Lantern's Ask request, and the choice as saved.
+    var rawValue: String { self == .pro ? "pro" : "lite" }
+
     var label: String { self == .pro ? "Pro AI" : "Lite AI" }
+
+    /// The menu's line for each choice.
+    var menuTitle: String { self == .pro ? "Pro AI · our smartest" : "Lite AI · fast" }
 
     var explanation: String {
         switch self {

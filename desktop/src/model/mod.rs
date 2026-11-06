@@ -754,6 +754,24 @@ impl OctoberTier {
     pub fn of(rights: Option<&LanternRights>) -> Self {
         if rights.is_some_and(|r| r.byok) { Self::Pro } else { Self::Lite }
     }
+    /// What answers and agents use: the person's choice, within what the plan allows.
+    pub fn chosen(rights: Option<&LanternRights>, choice: &str) -> Self {
+        if Self::of(rights) == Self::Pro && choice != "lite" { Self::Pro } else { Self::Lite }
+    }
+    /// `ai` in Lantern's Ask request, and the choice as saved.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pro => "pro",
+            Self::Lite => "lite",
+        }
+    }
+    /// The menu's line for each choice.
+    pub fn menu_title(self) -> &'static str {
+        match self {
+            Self::Pro => "Pro AI · our smartest",
+            Self::Lite => "Lite AI · fast",
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Pro => "Pro AI",
@@ -775,6 +793,13 @@ impl OctoberTier {
     }
     /// Above the offers on a free account.
     pub const UPGRADE_LINE: &'static str = "Upgrade to get Pro AI, our smartest, for your answers and agents.";
+}
+
+impl Model {
+    /// Pro AI or Lite AI, as chosen and allowed.
+    pub fn october_tier(&self) -> OctoberTier {
+        OctoberTier::chosen(self.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref()), &self.prefs.october_ai)
+    }
 }
 
 impl LanternRights {
@@ -970,6 +995,9 @@ pub struct Prefs {
     /// Let agents Lantern starts use this computer's apps through Cua Driver (engine `computer`).
     pub computer_use: bool,
     pub show_me: bool,
+    /// "pro" or "lite": the AI answers and October agents use, chosen in Ask Lantern. A free account
+    /// gets Lite AI whatever this says (`OctoberTier::chosen`).
+    pub october_ai: String,
     /// Agents Lantern starts ask before each action (engine `askFirst`); off by default.
     pub ask_first: bool,
     pub toolkit_in_sessions: bool,
@@ -1007,6 +1035,7 @@ impl Default for Prefs {
             bus_for_sessions: true,
             computer_use: true,
             show_me: true,
+            october_ai: "pro".into(),
             ask_first: false,
             // As Preferences.swift registers them: finishing notifies, the toolkit list is opt-in.
             toolkit_in_sessions: false,

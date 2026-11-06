@@ -138,7 +138,7 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
         c::label(ui, line, 11.5, Weight::Regular, t::MUTED);
     }
     // Which AI answers and agents use, in plain words (Swift `AccountCard`).
-    let tier = crate::model::OctoberTier::of(account.lantern.as_ref());
+    let tier = cx.model.october_tier();
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let color = if tier == crate::model::OctoberTier::Pro { t::GREEN } else { t::MUTED };

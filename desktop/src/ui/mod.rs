@@ -178,11 +178,16 @@ pub enum SettingChange {
     BusForSessions(bool),
     ComputerUse(bool),
     ShowMe(bool),
+    /// "pro" or "lite" (Ask Lantern's AI menu).
+    OctoberAi(String),
     AskFirst(bool),
     ToolkitInSessions(bool),
     NotificationsEnabled(bool),
     NotifyOnFinish(bool),
-    AgentMuted { kind: AgentKind, muted: bool },
+    AgentMuted {
+        kind: AgentKind,
+        muted: bool,
+    },
 }
 
 /// Everything a person can do (CONTRACT §4; Atlas owns this enum, payloads frozen with the skeleton).

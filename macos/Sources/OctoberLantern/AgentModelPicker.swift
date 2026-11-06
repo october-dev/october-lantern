@@ -10,6 +10,46 @@ struct AgentModelPicker: View {
     @State private var query = ""
 
     var body: some View {
+        if kind == .october { octoberChoice } else { catalogue }
+    }
+
+    /// October: Pro AI or Lite AI, never model names. Pro AI is locked on a free account.
+    private var octoberChoice: some View {
+        let allowed = OctoberTier(plan: OctoberAccount.shared.plan) == .pro
+        let current = OctoberTier.current
+        let title = selection == harnessID(.pro) ? "Pro AI" : selection == harnessID(.lite) ? "Lite AI" : "\(current.label) (as in Ask Lantern)"
+        return VStack(alignment: .leading, spacing: 6) {
+            Menu {
+                Button("\(current.label) (as in Ask Lantern)") { selection = nil }
+                Button(allowed ? OctoberTier.pro.menuTitle : "Pro AI · needs Lantern Lifetime or a trial") { selection = harnessID(.pro) }
+                    .disabled(!allowed)
+                Button(OctoberTier.lite.menuTitle) { selection = harnessID(.lite) }
+            } label: {
+                HStack {
+                    Image(systemName: "sparkles").accessibilityHidden(true)
+                    Text(title).lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .semibold)).accessibilityHidden(true)
+                }
+                .font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.9))
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Theme.faint))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.hairline))
+                .contentShape(Rectangle()).accessibilityElement(children: .combine)
+            }
+            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+            .accessibilityLabel("AI: \(title)")
+            Text(allowed ? OctoberTier.pro.explanation : OctoberTier.lite.explanation)
+                .font(.system(size: 10.5)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
+        }
+        // A saved Pro AI choice doesn't outlive the plan that allowed it.
+        .onAppear { if !allowed, selection == harnessID(.pro) { selection = nil } }
+    }
+
+    /// The harness's model id for a choice (the engine's `october_choices`).
+    private func harnessID(_ tier: OctoberTier) -> String { tier == .pro ? "october/claude/pro" : "october/claude/lite" }
+
+    private var catalogue: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let list = model.models[kind.rawValue] {
                 if let error = list.error {

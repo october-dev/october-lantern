@@ -281,6 +281,7 @@ impl Lantern {
             image: self.pointing.shot.as_deref().and_then(super::shots::jpeg),
             context: context_lines(self.model.point_ask.context.as_ref()).join("\n"),
             mode: Some("point_task".into()),
+            ai: Some(self.model.october_tier().as_str()),
             ..Default::default()
         };
         crate::analytics::capture("point_ask_asked", serde_json::json!({"follow_up": turn > 0}));

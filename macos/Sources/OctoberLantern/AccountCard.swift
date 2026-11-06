@@ -33,7 +33,7 @@ struct AccountCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if account.signedIn, account.plan != nil {
-                    let tier = OctoberTier(plan: account.plan)
+                    let tier = OctoberTier.chosen(plan: account.plan, choice: Preferences.shared.octoberAI)
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         StatusPill(text: tier.label, color: tier == .pro ? Theme.green : Theme.muted)
                         Text(tier.accountLine).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))

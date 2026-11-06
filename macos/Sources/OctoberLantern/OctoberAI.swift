@@ -99,7 +99,8 @@ enum OctoberAI {
                 do {
                     guard let token = await OctoberAccount.shared.accessToken() else { throw Failure.signedOut }
                     let key = request.ownKey ? await OwnKey.shared.answering() : nil
-                    try await ask(request, token: token, key: key, into: continuation)
+                    let ai = await MainActor.run { OctoberTier.current.rawValue }
+                    try await ask(request, token: token, key: key, ai: ai, into: continuation)
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -164,11 +165,13 @@ enum OctoberAI {
 
     /// `POST /api/lantern/ask`: October picks the model (by plan) and bills the answer; the answer
     /// streams back as `start`, `delta`… and `done` events.
-    private static func ask(_ r: Request, token: String, key: OwnKey.Saved?, into continuation: AsyncThrowingStream<Piece, Error>.Continuation) async throws {
+    private static func ask(_ r: Request, token: String, key: OwnKey.Saved?, ai: String, into continuation: AsyncThrowingStream<Piece, Error>.Continuation) async throws {
         var json: [String: Any] = [
             "question": capped(r.question, 4000),
             "history": history(r.turns),
             "client": ["app": "lantern", "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"],
+            // Pro AI or Lite AI, as chosen; the server gives a free account Lite AI anyway.
+            "ai": ai,
         ]
         if !r.context.isEmpty { json["context"] = capped(r.context, 6000) }
         if let mode = r.mode { json["mode"] = mode }

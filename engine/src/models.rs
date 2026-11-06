@@ -13,7 +13,7 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use serde::Serialize;
 
 use crate::launch::program;
@@ -57,12 +57,10 @@ type Listed = HashMap<Kind, (Instant, Vec<Model>)>;
 /// whose current account and catalogue are read for each request.
 pub fn list(kind: Kind) -> Result<Vec<Model>> {
     // The CLI's seeded catalogue can omit models available through the app's paid account.
-    // Never substitute direct-provider credentials when that account's catalogue fails.
+    // October offers two choices, in plain words: the gateway decides which models are behind them
+    // and who may use Pro AI.
     if kind == Kind::October {
-        return match crate::harness::model_session()? {
-            Some(token) => october_catalogue(&token),
-            None => Ok(discover(kind)),
-        };
+        return Ok(october_choices());
     }
     static CACHE: Mutex<Option<Listed>> = Mutex::new(None);
     if let Some((at, models)) = CACHE.lock().unwrap().get_or_insert_with(HashMap::new).get(&kind)
@@ -75,42 +73,12 @@ pub fn list(kind: Kind) -> Result<Vec<Model>> {
     Ok(models)
 }
 
-fn october_catalogue(token: &str) -> Result<Vec<Model>> {
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(20))).build().into();
-    let mut response = agent
-        .get("https://www.october.dev/v1/models")
-        .header("Authorization", format!("Bearer {token}"))
-        .call()
-        .map_err(|_| anyhow::anyhow!("Couldn't load your October account's models. Check your connection and sign-in, then retry."))?;
-    let value = response
-        .body_mut()
-        .with_config()
-        .limit(4 * 1024 * 1024)
-        .read_json::<serde_json::Value>()
-        .context("October returned an unreadable model catalogue. Retry.")?;
-    parse_october_catalogue(&value)
-}
-
-fn parse_october_catalogue(value: &serde_json::Value) -> Result<Vec<Model>> {
-    let entries = value["data"].as_array().context("October returned an invalid model catalogue. Retry.")?;
-    let mut models = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for entry in entries {
-        let id = entry["id"].as_str().context("October returned a model without an id. Retry.")?;
-        // The gateway id already names its upstream. The harness adds its own provider prefix;
-        // preserve every segment, including an id that itself starts with `october/`.
-        let canonical = format!("october/{id}");
-        if !valid(&canonical) {
-            bail!("October returned a model id Lantern cannot launch. Retry.");
-        }
-        if seen.insert(canonical.clone()) {
-            models.push(Model { id: canonical, label: id.into(), group: Some("October account".into()) });
-        }
-    }
-    if models.is_empty() {
-        bail!("Your October account returned no models. Retry.");
-    }
-    Ok(models)
+/// Pro AI and Lite AI, the harness's ids for October's `claude/pro` and `claude/lite`.
+pub fn october_choices() -> Vec<Model> {
+    [(crate::harness::PRO_MODEL, "Pro AI"), (crate::harness::LITE_MODEL, "Lite AI")]
+        .into_iter()
+        .map(|(id, label)| Model { id: id.into(), label: label.into(), group: None })
+        .collect()
 }
 
 fn discover(kind: Kind) -> Vec<Model> {
@@ -211,23 +179,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn account_catalogue_preserves_gateway_routing_and_rejects_partial_lists() {
-        let parsed = parse_october_catalogue(&serde_json::json!({"data":[
-            {"id":"openrouter/moonshotai/kimi-k2.6"}, {"id":"october/free"},
-            {"id":"openrouter/moonshotai/kimi-k2.6"}
-        ]}))
-        .unwrap();
+    fn october_offers_pro_ai_and_lite_ai_without_model_names() {
+        let choices = october_choices();
         assert_eq!(
-            parsed.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            ["october/openrouter/moonshotai/kimi-k2.6", "october/october/free"]
+            choices.iter().map(|m| (m.id.as_str(), m.label.as_str())).collect::<Vec<_>>(),
+            [("october/claude/pro", "Pro AI"), ("october/claude/lite", "Lite AI")]
         );
-        for value in [
-            serde_json::json!({}),
-            serde_json::json!({"data":[]}),
-            serde_json::json!({"data":[{"id":"valid/model"},{}]}),
-            serde_json::json!({"data":[{"id":"bad model"}]}),
-        ] {
-            assert!(parse_october_catalogue(&value).is_err());
-        }
+        assert!(choices.iter().all(|m| valid(&m.id)));
     }
 }

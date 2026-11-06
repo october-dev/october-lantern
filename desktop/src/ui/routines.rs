@@ -93,9 +93,10 @@ pub fn render(ui: &mut Ui, cx: &mut Ctx) {
             form.model_kind = Some(form.kind.clone()); form.model_searching = false; form.model_query.clear();
             cx.emit(UiAction::LoadModels { kind: kind.clone() });
         }
+        let tiers = super::sessions::october_tiers(cx);
         let retry = ui.push_id("routine-model", |ui| super::sessions::model_picker(ui, &kind,
             cx.model.new_session.models.get(kind.as_str()), &mut form.model,
-            (&mut form.model_searching, &mut form.model_query), cx.env)).inner;
+            (&mut form.model_searching, &mut form.model_query), cx.env, tiers)).inner;
         if retry { cx.emit(UiAction::LoadModels { kind }); }
         ui.horizontal(|ui|{ui.label("Repeat");for cadence in ["daily","weekdays","weekly"]{ui.selectable_value(&mut form.cadence,cadence.into(),cadence);}});
         if form.cadence=="weekly" {egui::ComboBox::from_label("Day").selected_text(["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"][form.weekday.min(6) as usize]).show_ui(ui,|ui|{for (i,day) in ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"].iter().enumerate(){ui.selectable_value(&mut form.weekday,i as u32,*day);}});}

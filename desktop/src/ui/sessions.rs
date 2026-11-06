@@ -212,6 +212,7 @@ fn agent_chip(ui: &mut Ui, cx: &Ctx, kind: &AgentKind, selected: bool) -> Respon
 
 fn model(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind) {
     let mut chosen = cx.inputs.new_session.model.clone();
+    let tiers = october_tiers(cx);
     let retry = model_picker(
         ui,
         kind,
@@ -219,6 +220,7 @@ fn model(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind) {
         &mut chosen,
         (&mut cx.view.searching_models, &mut cx.view.model_query),
         cx.env,
+        tiers,
     );
     if chosen != cx.inputs.new_session.model {
         pick_model(cx, kind, chosen);
@@ -226,6 +228,12 @@ fn model(ui: &mut Ui, cx: &mut Ctx, kind: &AgentKind) {
     if retry {
         cx.emit(UiAction::LoadModels { kind: kind.clone() });
     }
+}
+
+/// What Ask Lantern's AI menu chose, and whether this account may use Pro AI.
+pub(super) fn october_tiers(cx: &Ctx) -> (crate::model::OctoberTier, bool) {
+    let rights = cx.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
+    (cx.model.october_tier(), crate::model::OctoberTier::of(rights) == crate::model::OctoberTier::Pro)
 }
 
 /// Shared by sessions and routines; a catalogue error never substitutes a different account.
@@ -236,7 +244,12 @@ pub(super) fn model_picker(
     chosen: &mut Option<String>,
     (searching, query): (&mut bool, &mut String),
     env: &super::Env,
+    tier: (crate::model::OctoberTier, bool),
 ) -> bool {
+    if kind.as_str() == AgentKind::OCTOBER {
+        october_choice(ui, chosen, tier);
+        return false;
+    }
     let Some(list) = list else {
         loading(ui, &format!("Loading {}'s models…", kind.display_name()), 11.5, env);
         return false;
@@ -288,6 +301,42 @@ pub(super) fn model_picker(
     }
     ui.small(chosen.as_ref().map_or_else(|| "Default follows the agent's saved configuration.".into(), |id| format!("Model: {id}")));
     retry
+}
+
+/// October: Pro AI or Lite AI, never model names (Swift `AgentModelPicker.octoberChoice`). Pro AI
+/// is locked on a free account. `tier`: what Ask Lantern's menu chose, and whether Pro AI is allowed.
+fn october_choice(ui: &mut Ui, chosen: &mut Option<String>, (current, allowed): (crate::model::OctoberTier, bool)) {
+    use crate::model::OctoberTier;
+    const PRO: &str = "october/claude/pro";
+    const LITE: &str = "october/claude/lite";
+    // A saved Pro AI choice doesn't outlive the plan that allowed it.
+    if !allowed && chosen.as_deref() == Some(PRO) {
+        *chosen = None;
+    }
+    let default = format!("{} (as in Ask Lantern)", current.label());
+    let label = match chosen.as_deref() {
+        Some(PRO) => "Pro AI".to_string(),
+        Some(LITE) => "Lite AI".to_string(),
+        _ => default.clone(),
+    };
+    let response = field(ui, "session-model", Icon::Cpu, &label).on_hover_text(format!("AI: {label}"));
+    let mut picked = None;
+    egui::Popup::menu(&response).show(|ui| {
+        if ui.button(&default).clicked() {
+            picked = Some(None);
+        }
+        let pro = if allowed { OctoberTier::Pro.menu_title() } else { "🔒 Pro AI · needs Lantern Lifetime or a trial" };
+        if ui.add_enabled(allowed, egui::Button::new(pro)).clicked() {
+            picked = Some(Some(PRO.to_string()));
+        }
+        if ui.button(OctoberTier::Lite.menu_title()).clicked() {
+            picked = Some(Some(LITE.to_string()));
+        }
+    });
+    if let Some(value) = picked {
+        *chosen = value;
+    }
+    ui.small(if allowed { OctoberTier::Pro.explanation() } else { OctoberTier::Lite.explanation() });
 }
 
 fn model_search(ui: &mut Ui, list: &ModelList, query: &mut String) -> Option<String> {

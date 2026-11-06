@@ -480,6 +480,42 @@ fn task_card(ui: &mut Ui, cx: &mut Ctx, turn: u64, link: &TaskLink, latest: bool
     });
 }
 
+/// Pro AI or Lite AI for answers and October agents (Swift `AIChoiceMenu`). A free account sees
+/// Pro AI locked, with the way to get it.
+fn ai_menu(ui: &mut Ui, cx: &mut Ctx) {
+    use crate::model::OctoberTier;
+    let rights = cx.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
+    let allowed = OctoberTier::of(rights) == OctoberTier::Pro;
+    let tier = cx.model.october_tier();
+    let color = if tier == OctoberTier::Pro { t::GREEN } else { t::MUTED };
+    let button =
+        ui.add(egui::Button::new(c::text(format!("{} ▾", tier.label()), 11.0, Weight::Medium, color)).corner_radius(12).fill(t::FAINT));
+    let button = button.on_hover_text(tier.explanation());
+    let email = cx.model.account.signed_in.as_ref().map(|a| a.email.trim()).filter(|e| e.contains('@'));
+    let mut action = None;
+    egui::Popup::menu(&button).show(|ui| {
+        let check =
+            |option: OctoberTier| if option == tier { format!("✓ {}", option.menu_title()) } else { option.menu_title().to_string() };
+        if allowed {
+            if ui.button(check(OctoberTier::Pro)).clicked() {
+                action = Some(UiAction::ChangeSetting(crate::ui::SettingChange::OctoberAi("pro".into())));
+            }
+        } else {
+            for (title, offer) in [("🔒 Pro AI · start a free trial ↗", "trial"), ("🔒 Pro AI · buy Lifetime ↗", "lifetime")] {
+                if ui.button(title).clicked() {
+                    action = Some(UiAction::OpenUpgrade { url: crate::october_ai::offer_url(offer, email), from: "ai_menu", offer });
+                }
+            }
+        }
+        if ui.button(check(OctoberTier::Lite)).clicked() {
+            action = Some(UiAction::ChangeSetting(crate::ui::SettingChange::OctoberAi("lite".into())));
+        }
+    });
+    if let Some(action) = action {
+        cx.emit(action);
+    }
+}
+
 /// One quiet source row; the folder stays in the tooltip.
 fn agent_header(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate::model::Agent>) {
     let folder = chat::folder_name(&link.folder, &cx.env.home);
@@ -492,8 +528,7 @@ fn agent_header(ui: &mut Ui, cx: &mut Ctx, link: &TaskLink, agent: Option<&crate
         };
         c::label(ui, name, 10.5, Weight::Regular, t::MUTED).on_hover_text(format!("{} in {folder}", link.kind.display_name()));
         if link.kind.as_str() == crate::model::AgentKind::OCTOBER && !link.sent {
-            let rights = cx.model.account.signed_in.as_ref().and_then(|a| a.lantern.as_ref());
-            let tier = crate::model::OctoberTier::of(rights);
+            let tier = cx.model.october_tier();
             c::label(ui, "·", 10.5, Weight::Regular, t::MUTED);
             c::label(ui, tier.label(), 10.5, Weight::Regular, t::MUTED).on_hover_text(tier.explanation());
         }
@@ -691,6 +726,7 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                         {
                             cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
                         }
+                        ai_menu(ui, cx);
                         if cx.model.prefs.show_me && replying.is_none() && super::components::show_me_button(ui, "Show me").clicked() {
                             cx.emit(UiAction::StartShow(cx.inputs.assistant.clone()));
                         }

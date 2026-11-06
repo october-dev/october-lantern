@@ -32,6 +32,9 @@ final class Preferences: ObservableObject {
     @Published var defaultAgent: String { didSet { d.set(defaultAgent, forKey: "defaultAgent") } }
     /// Show me: Lantern points at things on your screen (it sends a picture of the screen to October).
     @Published var showMe: Bool { didSet { d.set(showMe, forKey: "showMe") } }
+    /// "pro" or "lite": the AI answers and October agents use, chosen in Ask Lantern. A free account
+    /// gets Lite AI whatever this says (`OctoberTier.chosen`).
+    @Published var octoberAI: String { didSet { d.set(octoberAI, forKey: "octoberAI") } }
 
     private init() {
         d.register(defaults: ["notificationsEnabled": true, "notifyOnFinish": true])
@@ -50,6 +53,7 @@ final class Preferences: ObservableObject {
         defaultAgent = d.string(forKey: "defaultAgent") ?? ""
         d.register(defaults: ["showMe": true])
         showMe = d.bool(forKey: "showMe")
+        octoberAI = d.string(forKey: "octoberAI") == "lite" ? "lite" : "pro"
     }
 
     func counts(_ kind: AgentKind) -> Bool { !mutedKinds.contains(kind.rawValue) }

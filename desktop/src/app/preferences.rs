@@ -54,6 +54,11 @@ impl Lantern {
                     self.stop_show();
                 }
             }
+            SettingChange::OctoberAi(choice) if choice == "pro" || choice == "lite" => {
+                prefs.october_ai = choice;
+                self.publish_october_plan();
+            }
+            SettingChange::OctoberAi(_) => return,
             SettingChange::ComputerUse(on) => {
                 prefs.computer_use = on;
                 self.request(serde_json::json!({"type": "computer.prepare", "enabled": on}));

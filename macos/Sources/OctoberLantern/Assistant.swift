@@ -932,7 +932,7 @@ private struct TaskCard: View {
             }
             Text(link.sent == true ? agent.map { "@\($0.handle)" } ?? kind.displayName : kind.displayName)
             if kind == .october, link.sent != true {
-                let tier = OctoberTier(plan: OctoberAccount.shared.plan)
+                let tier = OctoberTier.current
                 Text("·")
                 Text(tier.label).help(tier.explanation)
             }
@@ -1294,6 +1294,7 @@ struct AskBox: View {
                     .foregroundStyle(dictation.isRecording ? Theme.red : Theme.muted).frame(width: 28, height: 28)
             }
             .buttonStyle(.plain).help(dictation.isRecording ? "Stop listening" : "Speak")
+            AIChoiceMenu()
             Spacer(minLength: 8)
             Button { assistant.submit() } label: {
                 Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
@@ -1414,5 +1415,46 @@ struct AssistantHome: View {
             AskBox(model: model, large: true, account: account)
         }
         .onAppear { model.composeFocusToken += 1 }
+    }
+}
+
+/// Pro AI or Lite AI for answers and October agents. A free account sees Pro AI locked, with the
+/// way to get it.
+struct AIChoiceMenu: View {
+    @ObservedObject private var prefs = Preferences.shared
+    @ObservedObject private var account = OctoberAccount.shared
+
+    var body: some View {
+        let allowed = OctoberTier(plan: account.plan) == .pro
+        let tier = OctoberTier.chosen(plan: account.plan, choice: prefs.octoberAI)
+        Menu {
+            if allowed {
+                Button { prefs.octoberAI = "pro" } label: { choice(.pro, tier) }
+            } else {
+                Button { open(.trial) } label: { Label("Pro AI · start a free trial", systemImage: "lock") }
+                Button { open(.lifetime) } label: { Label("Pro AI · buy Lifetime", systemImage: "lock") }
+            }
+            Button { prefs.octoberAI = "lite" } label: { choice(.lite, tier) }
+        } label: {
+            HStack(spacing: 3) {
+                Text(tier.label)
+                Image(systemName: "chevron.down").font(.system(size: 7.5, weight: .bold))
+            }
+            .font(.system(size: 11, weight: .medium)).foregroundStyle(tier == .pro ? Theme.green : Theme.muted)
+            .padding(.horizontal, 8).frame(height: 24)
+            .background(Capsule().fill(Theme.faint))
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .help(tier.explanation)
+        .accessibilityLabel("AI: \(tier.label)")
+    }
+
+    private func choice(_ option: OctoberTier, _ current: OctoberTier) -> some View {
+        Label(option.menuTitle, systemImage: option == current ? "checkmark" : "")
+    }
+
+    private func open(_ offer: OctoberAI.Offer) {
+        Analytics.shared.capture("upgrade_opened", ["from": "ai_menu", "offer": offer.rawValue])
+        NSWorkspace.shared.open(OctoberAI.offerURL(offer, email: account.session?.email))
     }
 }

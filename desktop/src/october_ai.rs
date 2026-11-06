@@ -31,6 +31,8 @@ pub struct Request {
     /// "chat" for Ask Lantern (its own prompt on the server); `None` for Point & Ask.
     pub mode: Option<String>,
     pub guidance: Option<Value>,
+    /// "pro" or "lite": the AI chosen in Ask Lantern (a free account gets Lite AI anyway).
+    pub ai: Option<&'static str>,
     /// Your own AI key may answer (when one is given to `stream`); off for "Ask October's AI
     /// instead".
     pub use_own_key: bool,
@@ -46,6 +48,7 @@ impl Default for Request {
             context: String::new(),
             mode: None,
             guidance: None,
+            ai: None,
             use_own_key: true,
         }
     }
@@ -202,6 +205,9 @@ pub fn ask_body(request: &Request) -> Value {
     }
     if let Some(mode) = &request.mode {
         body["mode"] = mode.clone().into();
+    }
+    if let Some(ai) = request.ai {
+        body["ai"] = ai.into();
     }
     if let Some(image) = &request.image {
         use base64::Engine;
