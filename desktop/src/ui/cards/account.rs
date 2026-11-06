@@ -139,12 +139,10 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     }
     // Which AI answers and agents use, in plain words (Swift `AccountCard`).
     let tier = cx.model.october_tier();
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let color = if tier == crate::model::OctoberTier::Pro { t::GREEN } else { t::MUTED };
-        c::label(ui, tier.label(), 11.5, Weight::Semibold, color).on_hover_text(tier.explanation());
-        c::label(ui, tier.account_line(), 11.5, Weight::Regular, t::MUTED);
-    });
+    // The name on its own line, so the sentence wraps within the card.
+    let color = if tier == crate::model::OctoberTier::Pro { t::GREEN } else { t::MUTED };
+    c::label(ui, tier.label(), 11.5, Weight::Semibold, color).on_hover_text(tier.explanation());
+    c::label(ui, tier.account_line(), 11.5, Weight::Regular, t::MUTED);
     ui.horizontal(|ui| {
         let refreshing = cx.model.account.refreshing;
         let title = if refreshing { "Refreshing…" } else { "Refresh" };
