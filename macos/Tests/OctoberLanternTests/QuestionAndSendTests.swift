@@ -53,4 +53,30 @@ final class QuestionAndSendTests: XCTestCase {
         let untimed = ChatMessage(role: .user, text: old.text, at: nil)
         XCTAssertEqual(Assistant.after(sent: "New task", since: sent, in: [untimed, oldAnswer]), [])
     }
+
+    /// Typed in, a message arrives on one line (the engine turns line breaks into spaces), so a
+    /// follow-up whose first lines were broken must still be found, or its answer never shows in
+    /// Ask Lantern (issue #10).
+    func testAFollowUpTypedOnOneLineStillFindsItsAnswer() {
+        let sent = Date(timeIntervalSince1970: 1_800_000_000)
+        let iso = { (offset: Double) in ISO8601DateFormatter().string(from: sent.addingTimeInterval(offset)) }
+        let prompt = "Next:\nwrite a casual message\n\nto go with the posters."
+        let earlier = ChatMessage(role: .agent, text: "I rewrote the posters.", at: iso(-60))
+        let typed = ChatMessage(role: .user, text: "Next: write a casual message  to go with the posters.", at: iso(1))
+        let answer = ChatMessage(role: .agent, text: "Here's a laid-back one.", at: iso(5))
+        XCTAssertEqual(Assistant.after(sent: prompt, since: sent, in: [earlier, typed, answer]), [answer])
+        let stale = ChatMessage(role: .user, text: typed.text, at: iso(-600))
+        XCTAssertEqual(Assistant.after(sent: prompt, since: sent, in: [stale, earlier]), [], "an older copy isn't this send")
+        XCTAssertEqual(Assistant.oneLine("  a\n\n b\tc  "), "a b c")
+    }
+
+    /// An approval or a choice is answered with keys: Ask Lantern sends you to its terminal for
+    /// those rather than offering to type a reply into the prompt.
+    func testQuestionsAnsweredWithKeysAreNotOfferedAReply() {
+        XCTAssertTrue(Assistant.answeredInTerminal("permission"))
+        XCTAssertTrue(Assistant.answeredInTerminal("plan"))
+        XCTAssertTrue(Assistant.answeredInTerminal("choice"))
+        XCTAssertFalse(Assistant.answeredInTerminal("other"))
+        XCTAssertFalse(Assistant.answeredInTerminal(nil))
+    }
 }

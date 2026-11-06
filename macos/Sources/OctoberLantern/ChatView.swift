@@ -15,20 +15,22 @@ struct ChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            // In the order things happened: the task's steps and earlier questions, then what it asks now.
-            if let launch = model.launch(forAgent: agent.id) {
-                ScrollView { LaunchCards(launch: launch, model: model, keys: !agent.isAnswerable) }
-                    .frame(maxHeight: 320).fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 12).padding(.bottom, 10)
-            }
+            // What it asks now stays in view above everything that scrolls.
             if agent.isAnswerable {
                 QuestionCard(agent: agent, model: model, keys: true)
                     .padding(.horizontal, 12).padding(.bottom, 10)
             }
             Rectangle().fill(Theme.hairline).frame(height: 1)
+            // One scroll for the task's steps, cards and result and the conversation after them:
+            // two capped areas, one above the other, cut the result off mid-text with the rest
+            // of the conversation still showing below it.
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
+                        if let launch = model.launch(forAgent: agent.id) {
+                            LaunchCards(launch: launch, model: model, keys: !agent.isAnswerable)
+                                .padding(.bottom, 4)
+                        }
                         content
                         Color.clear.frame(height: 1).id("bottom")
                             .onAppear { atBottom = true }
@@ -38,7 +40,7 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                 }
                 // Fits the conversation, up to the panel's room: a short chat stays short.
-                .frame(maxHeight: min(480, max(180, metrics.maxHeight - 240)))
+                .frame(maxHeight: Self.scrollHeight(panel: metrics.maxHeight, asking: agent.isAnswerable))
                 .fixedSize(horizontal: false, vertical: true)
                 .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: model.chatMessages) {
@@ -46,6 +48,15 @@ struct ChatView: View {
                 }
             }
         }
+    }
+
+    /// The most the conversation's scroll takes: the panel's room less the header, the composer
+    /// (up to five lines), a toast and, while it's asking, the question above it. The panel is
+    /// never taller than the screen allows, so content beyond its room would be cut off (and
+    /// its buttons would answer clicks somewhere else) rather than scroll.
+    static func scrollHeight(panel: CGFloat, asking: Bool) -> CGFloat {
+        let reserved: CGFloat = 230 + (asking ? 220 : 0)
+        return min(800, max(160, panel - reserved))
     }
 
     private var header: some View {
@@ -203,7 +214,11 @@ struct Bubble: View {
         case .agent:
             VStack(alignment: .leading, spacing: 4) {
                 collapsible.frame(maxWidth: .infinity, alignment: .leading)
-                moreButton
+                HStack(spacing: 12) {
+                    moreButton
+                    // The whole reply, even while it's shown collapsed.
+                    CopyButton(text: message.text)
+                }
                 let found = Self.targets(in: message.text) { FileManager.default.fileExists(atPath: $0) }
                 if !found.isEmpty {
                     HStack(spacing: 10) {

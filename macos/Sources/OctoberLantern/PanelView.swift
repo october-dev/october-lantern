@@ -180,6 +180,8 @@ private struct OpensChat: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            // Words in the card take the click like the rest of it (see `selectableText`).
+            .environment(\.selectableText, false)
             .contentShape(Rectangle())
             .onTapGesture { model.openChat(agent) }
             .accessibilityElement(children: .contain)
@@ -302,7 +304,7 @@ struct InboxCard: View {
                     Text(question)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(Theme.amber)
-                        .textSelection(.enabled)
+                        .selectable()
                     if let detail = agent.questionDetail, detail != question {
                         RequestDetail(detail: detail)
                     }
@@ -317,7 +319,7 @@ struct InboxCard: View {
                     .font(.system(size: 12.5))
                     .foregroundStyle(Theme.ink.opacity(0.9))
                     .lineLimit(expanded ? 40 : 5)
-                    .textSelection(.enabled)
+                    .selectable()
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if message.count > 280 {
                     Button(expanded ? "Less" : "More") { expanded.toggle() }
@@ -357,7 +359,7 @@ struct RequestDetail: View {
                     Text(detail)
                         .font(.system(size: 11.5, design: .monospaced))
                         .foregroundStyle(Theme.ink.opacity(0.9))
-                        .textSelection(.enabled)
+                        .selectable()
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 180)

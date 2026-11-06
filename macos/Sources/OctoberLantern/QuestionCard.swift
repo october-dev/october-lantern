@@ -72,7 +72,7 @@ struct QuestionCard: View {
                 ScrollView {
                     Text(markdown(text))
                         .font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.9))
-                        .textSelection(.enabled)
+                        .selectable()
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 180)
@@ -145,7 +145,7 @@ struct QuestionCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(text)
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
-                .textSelection(.enabled)
+                .selectable()
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             if first, sent != nil, let promptId = agent.promptId {
