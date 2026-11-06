@@ -756,8 +756,8 @@ impl OctoberTier {
     }
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pro => "Pro",
-            Self::Lite => "Lite",
+            Self::Pro => "Pro AI",
+            Self::Lite => "Lite AI",
         }
     }
     pub fn explanation(self) -> &'static str {
@@ -769,10 +769,12 @@ impl OctoberTier {
     /// The account card's line.
     pub fn account_line(self) -> &'static str {
         match self {
-            Self::Pro => "Agents use Pro AI, our smartest",
-            Self::Lite => "Agents use Lite AI, free with your account",
+            Self::Pro => "Your answers and agents use Pro AI, our smartest.",
+            Self::Lite => "Your answers and agents use Lite AI, free with your account.",
         }
     }
+    /// Above the offers on a free account.
+    pub const UPGRADE_LINE: &'static str = "Upgrade to get Pro AI, our smartest, for your answers and agents.";
 }
 
 impl LanternRights {

@@ -137,6 +137,14 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     for line in &lines {
         c::label(ui, line, 11.5, Weight::Regular, t::MUTED);
     }
+    // Which AI answers and agents use, in plain words (Swift `AccountCard`).
+    let tier = crate::model::OctoberTier::of(account.lantern.as_ref());
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let color = if tier == crate::model::OctoberTier::Pro { t::GREEN } else { t::MUTED };
+        c::label(ui, tier.label(), 11.5, Weight::Semibold, color).on_hover_text(tier.explanation());
+        c::label(ui, tier.account_line(), 11.5, Weight::Regular, t::MUTED);
+    });
     ui.horizontal(|ui| {
         let refreshing = cx.model.account.refreshing;
         let title = if refreshing { "Refreshing…" } else { "Refresh" };
@@ -157,6 +165,7 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     let rights = account.lantern.as_ref();
     let free = account.plan.as_deref().is_none_or(|plan| plan.eq_ignore_ascii_case("free"));
     if free && !rights.is_some_and(|rights| rights.lifetime || rights.trial_running(now)) {
+        c::label(ui, crate::model::OctoberTier::UPGRADE_LINE, 11.5, Weight::Medium, t::INK);
         crate::ui::assistant::offer_buttons(ui, cx, "account");
     }
 }
@@ -174,7 +183,6 @@ fn rights_lines(rights: Option<&crate::model::LanternRights>, now_ms: f64) -> Ve
     if rights.daily_questions > 0 {
         lines.push(format!("Up to {} questions a day on October's AI", rights.daily_questions));
     }
-    lines.push(crate::model::OctoberTier::of(Some(rights)).account_line().to_string());
     lines
 }
 
@@ -327,20 +335,16 @@ mod tests {
         let ist = time::UtcOffset::from_hms(5, 30, 0).unwrap();
         assert_eq!(local_date(rights.trial_ends_ms.unwrap(), ist), "Nov 2, 2026", "local time");
         let lines = rights_lines(Some(&rights), before);
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 2);
         assert!(lines[0].starts_with("Pro trial · ends Nov "));
         assert_eq!(lines[1], "Up to 50 questions a day on October's AI");
-        assert_eq!(lines[2], "Agents use Pro AI, our smartest");
         let after = crate::model::parse_iso8601("2026-11-02T00:00:00Z").unwrap();
-        assert_eq!(
-            rights_lines(Some(&rights), after),
-            ["Up to 50 questions a day on October's AI", "Agents use Pro AI, our smartest"],
-            "an ended trial isn't shown"
-        );
+        assert_eq!(rights_lines(Some(&rights), after), ["Up to 50 questions a day on October's AI"], "an ended trial isn't shown");
         let lifetime = LanternRights { lifetime: true, trial_ends_ms: rights.trial_ends_ms, byok: true, ..Default::default() };
-        assert_eq!(rights_lines(Some(&lifetime), before), ["Lantern Lifetime", "Agents use Pro AI, our smartest"]);
+        assert_eq!(rights_lines(Some(&lifetime), before), ["Lantern Lifetime"]);
         let free = LanternRights { daily_questions: 5, ..Default::default() };
-        assert_eq!(rights_lines(Some(&free), before).last().map(String::as_str), Some("Agents use Lite AI, free with your account"));
+        assert_eq!(crate::model::OctoberTier::of(Some(&free)).label(), "Lite AI");
+        assert_eq!(crate::model::OctoberTier::of(Some(&lifetime)).label(), "Pro AI");
         assert!(rights_lines(None, before).is_empty());
     }
 

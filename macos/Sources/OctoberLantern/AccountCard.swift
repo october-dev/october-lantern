@@ -32,6 +32,15 @@ struct AccountCard: View {
                     Text(line).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if account.signedIn, account.plan != nil {
+                    let tier = OctoberTier(plan: account.plan)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        StatusPill(text: tier.label, color: tier == .pro ? Theme.green : Theme.muted)
+                        Text(tier.accountLine).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .help(tier.explanation)
+                }
                 if account.signedIn {
                     HStack {
                         Button(account.loadingPlan ? "Refreshing…" : "Refresh") { account.refreshPlan() }
@@ -45,6 +54,8 @@ struct AccountCard: View {
                 }
             }
             if account.signedIn, Self.offersUpgrade(account.plan) {
+                Text(OctoberTier.upgradeLine).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.ink)
+                    .fixedSize(horizontal: false, vertical: true)
                 OfferButtons(from: "account")
             }
 
@@ -126,7 +137,6 @@ struct AccountCard: View {
         if lantern.dailyQuestions > 0 {
             lines.append("Up to \(lantern.dailyQuestions) question\(lantern.dailyQuestions == 1 ? "" : "s") a day on October's AI")
         }
-        lines.append(lantern.byok ? OctoberTier.pro.accountLine : OctoberTier.lite.accountLine)
         return lines
     }
 

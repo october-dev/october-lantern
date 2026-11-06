@@ -629,7 +629,7 @@ enum OctoberTier: Equatable {
         self = plan?.lantern?.byok == true ? .pro : .lite
     }
 
-    var label: String { self == .pro ? "Pro" : "Lite" }
+    var label: String { self == .pro ? "Pro AI" : "Lite AI" }
 
     var explanation: String {
         switch self {
@@ -640,6 +640,9 @@ enum OctoberTier: Equatable {
 
     /// The account card's line.
     var accountLine: String {
-        self == .pro ? "Agents use Pro AI, our smartest" : "Agents use Lite AI, free with your account"
+        self == .pro ? "Your answers and agents use Pro AI, our smartest." : "Your answers and agents use Lite AI, free with your account."
     }
+
+    /// Above the offers on a free account.
+    static let upgradeLine = "Upgrade to get Pro AI, our smartest, for your answers and agents."
 }
