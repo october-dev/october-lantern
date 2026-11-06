@@ -139,10 +139,13 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     }
     // Which AI answers and agents use, in plain words (Swift `AccountCard`).
     let tier = cx.model.october_tier();
-    // The name on its own line, so the sentence wraps within the card.
-    let color = if tier == crate::model::OctoberTier::Pro { t::GREEN } else { t::MUTED };
-    c::label(ui, tier.label(), 11.5, Weight::Semibold, color).on_hover_text(tier.explanation());
-    c::label(ui, tier.account_line(), 11.5, Weight::Regular, t::MUTED);
+    // Only once the server has said what this account gets in Lantern (Swift: `plan != nil`). The
+    // name on its own line, so the sentence wraps within the card.
+    if account.lantern.is_some() {
+        let color = if tier == crate::model::OctoberTier::Pro { t::GREEN } else { t::MUTED };
+        c::label(ui, tier.label(), 11.5, Weight::Semibold, color).on_hover_text(tier.explanation());
+        c::label(ui, tier.account_line(), 11.5, Weight::Regular, t::MUTED);
+    }
     ui.horizontal(|ui| {
         let refreshing = cx.model.account.refreshing;
         let title = if refreshing { "Refreshing…" } else { "Refresh" };
@@ -163,7 +166,9 @@ fn lantern(ui: &mut Ui, cx: &mut Ctx) {
     let rights = account.lantern.as_ref();
     let free = account.plan.as_deref().is_none_or(|plan| plan.eq_ignore_ascii_case("free"));
     if free && !rights.is_some_and(|rights| rights.lifetime || rights.trial_running(now)) {
-        c::label(ui, crate::model::OctoberTier::UPGRADE_LINE, 11.5, Weight::Medium, t::INK);
+        if rights.is_some() {
+            c::label(ui, crate::model::OctoberTier::UPGRADE_LINE, 11.5, Weight::Medium, t::INK);
+        }
         crate::ui::assistant::offer_buttons(ui, cx, "account");
     }
 }

@@ -32,7 +32,7 @@ struct AccountCard: View {
                     Text(line).font(.system(size: 11.5)).foregroundStyle(Theme.ink.opacity(0.85))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if account.signedIn, account.plan != nil {
+                if account.signedIn, account.plan?.lantern != nil {
                     let tier = OctoberTier.chosen(plan: account.plan, choice: Preferences.shared.octoberAI)
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         StatusPill(text: tier.label, color: tier == .pro ? Theme.green : Theme.muted)
@@ -54,8 +54,10 @@ struct AccountCard: View {
                 }
             }
             if account.signedIn, Self.offersUpgrade(account.plan) {
-                Text(OctoberTier.upgradeLine).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
+                if account.plan?.lantern != nil {
+                    Text(OctoberTier.upgradeLine).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 OfferButtons(from: "account")
             }
 
