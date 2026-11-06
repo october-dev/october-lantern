@@ -10,6 +10,8 @@ final class Hooks: ObservableObject {
     @Published private(set) var claudeOutdated = false
     @Published private(set) var codex = false
     @Published private(set) var busy = false
+    /// The status has been read at least once (until then, off only means not known yet).
+    @Published private(set) var checked = false
 
     /// Fully set up for both agents.
     var installed: Bool { claude && codex }
@@ -30,6 +32,7 @@ final class Hooks: ObservableObject {
             claude = status.claude
             claudeOutdated = status.claudeOutdated ?? false
             codex = status.codex
+            checked = true
         }
     }
 

@@ -290,7 +290,7 @@ final class EngineClient {
         return sent
     }
 
-    func cancelHistory() { historyRequests.cancelAll() }
+    func cancelHistory(agentId: String) { historyRequests.cancel(for: agentId) }
 
     @discardableResult
     func keys(requestId: String, agentId: String, keys: [String], promptId: String?) -> Bool {

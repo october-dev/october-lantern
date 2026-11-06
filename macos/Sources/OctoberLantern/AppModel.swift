@@ -429,7 +429,9 @@ final class AppModel: ObservableObject {
 
     func closeChat() {
         if launchPreview != nil { endPreview() }
-        engine.cancelHistory()
+        // Only the chat's own read: Ask Lantern may be reading its task's agent at the same time,
+        // and voiding that read would drop the reply it brings.
+        if let chatAgentId, chatAgentId != watchedAgentId { engine.cancelHistory(agentId: chatAgentId) }
         if chatAgentId != nil { chatAgentId = nil }
         if !chatMessages.isEmpty { chatMessages = [] }
         chatPoll?.cancel()

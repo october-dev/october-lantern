@@ -604,8 +604,11 @@ final class Assistant: ObservableObject {
     /// Lantern's nudge to read it on October Bus, made after `since` (when it was sent). A nudge
     /// counts only with a time that shows it's this send's: every send's nudge has the same words.
     /// Nothing until that shows up.
+    ///
+    /// Typed in, the message arrives on one line (the engine turns line breaks into spaces so they
+    /// don't press Return), so it's compared with all whitespace runs as single spaces.
     static func after(sent prompt: String, since: Date?, in messages: [ChatMessage]) -> [ChatMessage] {
-        let start = String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        let start = String(oneLine(prompt).prefix(60))
         func at(_ m: ChatMessage) -> Date? {
             guard let s = m.at else { return nil }
             let f = ISO8601DateFormatter()
@@ -619,11 +622,19 @@ final class Assistant: ObservableObject {
         }
         guard let i = messages.lastIndex(where: { m in
             guard m.role == .user else { return false }
-            if m.text.contains(start) { return fresh(m) ?? true }
+            if !start.isEmpty, oneLine(m.text).contains(start) { return fresh(m) ?? true }
             return m.text.contains("message on October Bus") && fresh(m) == true
         }) else { return [] }
         return Array(messages[(i + 1)...])
     }
+
+    /// `text` trimmed, with every run of whitespace (line breaks included) as one space.
+    static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+    }
+
+    /// Questions answered by pressing keys (an approval, a plan, a choice), not with a message.
+    static func answeredInTerminal(_ kind: String?) -> Bool { ["permission", "plan", "choice"].contains(kind ?? "") }
 
     /// Sends again a message that didn't reach its agent.
     private func resend(_ link: TaskLink, turn: UUID) {
@@ -848,13 +859,17 @@ struct AssistantThread: View {
                 .onChange(of: assistant.turns.last?.answer) {
                     if let last = assistant.turns.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
-                .onChange(of: model.watchedMessages.count) { proxy.scrollTo("task-bottom", anchor: .bottom) }
+                // The newest message, not the count: past the engine's 120-message window the count
+                // stays the same while new replies arrive.
+                .onChange(of: model.watchedMessages.last) { proxy.scrollTo("task-bottom", anchor: .bottom) }
             }
         }
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 6)
         // Only the latest task's agent is read live; the rest show what they last said.
         .onChange(of: assistant.activeAgent?.id, initial: true) { _, id in model.watch(id) }
         .onDisappear { model.watch(nil) }
+        // Whether Claude Code's approval prompts can reach this conversation (see TaskCard).
+        .onAppear { Hooks.shared.refresh() }
     }
 
 }
@@ -867,6 +882,7 @@ private struct TaskCard: View {
     let latest: Bool
     @ObservedObject var model: AppModel
     @ObservedObject var assistant = Assistant.shared
+    @ObservedObject private var hooks = Hooks.shared
     @State private var showingActivity = false
 
     private var kind: AgentKind { AgentKind(rawValue: link.kind) }
@@ -972,8 +988,14 @@ private struct TaskCard: View {
             // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
             // was done, so nothing here claims it.
             switch agent.state {
-            case .working: busy("Working on it…")
-            case .needsInput where !agent.isAnswerable: note("Needs your answer. Reply below.", color: Theme.amber)
+            case .working:
+                busy("Working on it…")
+                // Claude Code's approval prompts reach Lantern only through its hooks: without
+                // them a task waiting for approval looks like one still working.
+                if kind == .claude, hooks.checked, !hooks.claude {
+                    note("If it stops to ask for approval, Lantern can't see that without hooks (Settings). Open agent to check.", color: Theme.muted)
+                }
+            case .needsInput where !agent.isAnswerable: needsYou(agent)
             case .needsInput: EmptyView()
             case .waiting: note("Finished its turn. Reply below if there's more.", color: Theme.muted)
             case .idle: note("Open, but not working on anything.", color: Theme.muted)
@@ -995,6 +1017,29 @@ private struct TaskCard: View {
             ProgressView().controlSize(.mini)
             Text(text).font(.system(size: 11)).foregroundStyle(Theme.muted)
         }
+    }
+
+    /// A question Lantern can't answer from here: what it asks, and where to answer. An approval
+    /// or a choice is answered with keys in its own terminal (typing a reply there would answer
+    /// it wrongly), so it says Open agent rather than Reply below.
+    private func needsYou(_ agent: Agent) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(agent.question ?? "\(agent.kind.displayName) is waiting for you.")
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
+                .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            if let detail = agent.questionDetail, detail != agent.question { RequestDetail(detail: detail) }
+            if Assistant.answeredInTerminal(agent.questionKind) {
+                HStack(spacing: 8) {
+                    Text("Answer it in its terminal.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    SmallButton(title: "Open agent", symbol: "arrow.up.forward.app") { model.open(agent) }
+                }
+            } else {
+                note("Reply below.", color: Theme.muted)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
     }
 
     private func note(_ text: String, color: Color) -> some View {
