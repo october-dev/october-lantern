@@ -1352,8 +1352,15 @@ struct AssistantHome: View {
                                     .font(.system(size: 11)).foregroundStyle(Theme.muted).frame(width: 16)
                                 Text(c.title).font(.system(size: 12.5)).foregroundStyle(Theme.ink.opacity(0.9)).lineLimit(1)
                                 Spacer(minLength: 8)
-                                Text(c.updated, format: .relative(presentation: .numeric, unitsStyle: .narrow))
-                                    .font(.system(size: 11)).foregroundStyle(Theme.muted)
+                                // Under a minute is "now" (the relative format says "in 0s" for a chat just saved).
+                                Group {
+                                    if Date().timeIntervalSince(c.updated) < 60 {
+                                        Text("now")
+                                    } else {
+                                        Text(c.updated, format: .relative(presentation: .numeric, unitsStyle: .narrow))
+                                    }
+                                }
+                                .font(.system(size: 11)).foregroundStyle(Theme.muted)
                             }
                             .padding(.horizontal, 6).padding(.vertical, 7)
                             .contentShape(Rectangle())
