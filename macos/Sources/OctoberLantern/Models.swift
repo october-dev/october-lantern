@@ -189,11 +189,24 @@ struct Agent: Codable, Identifiable, Hashable {
     }
 }
 
+/// One read of an agent's conversation (protocol `historyResult`): its newest messages, the
+/// session they're from, and whether they start at that session's beginning.
+struct HistoryRead: Equatable {
+    var messages: [ChatMessage]
+    var source: String?
+    /// Nothing older was left out: a message missing from it has been taken back.
+    var complete = false
+}
+
 struct ChatMessage: Codable, Hashable {
     enum Role: String, Codable { case user, agent, tool }
     let role: Role
     let text: String
     let at: String?
+    /// Which entry of its session this is, the same on every read (protocol `historyResult`): the
+    /// same id with new text is that entry updated. Nil from readers that can't name entries, and
+    /// in conversations saved before entries had ids.
+    var id: String? = nil
 }
 
 /// The connection to October Desktop (see engine/src/october_link.rs).
@@ -219,7 +232,7 @@ enum EngineMessage: Decodable {
     /// `session`: the tmux session a started agent runs in (absent without tmux).
     case launchResult(requestId: String, ok: Bool, message: String?, session: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
-    case history(requestId: String, agentId: String, supported: Bool, messages: [ChatMessage], busy: Bool)
+    case history(requestId: String, agentId: String, supported: Bool, busy: Bool, read: HistoryRead)
     case october(OctoberLink)
     case phone(PhoneModel.State)
     /// Every session's cards (engine `cards`), newest first.
@@ -279,7 +292,7 @@ enum EngineMessage: Decodable {
     }
 
     private enum Keys: String, CodingKey {
-        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning, busy,
+        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning, busy, source, complete,
             harness, launches, cardId
     }
 
@@ -309,8 +322,12 @@ enum EngineMessage: Decodable {
                 requestId: try c.decode(String.self, forKey: .requestId),
                 agentId: try c.decode(String.self, forKey: .agentId),
                 supported: try c.decode(Bool.self, forKey: .supported),
-                messages: try c.decode([ChatMessage].self, forKey: .messages),
-                busy: try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false
+                busy: try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false,
+                read: HistoryRead(
+                    messages: try c.decode([ChatMessage].self, forKey: .messages),
+                    source: try c.decodeIfPresent(String.self, forKey: .source),
+                    complete: try c.decodeIfPresent(Bool.self, forKey: .complete) ?? false
+                )
             )
         case "models":
             self = .models(try ModelList(from: decoder))

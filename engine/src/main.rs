@@ -116,7 +116,7 @@ fn main() -> Result<()> {
             let cwd = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("."));
             let start: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let (status, chat) = match kind {
-                "opencode" => (readers::opencode::status(&cwd, start), readers::opencode::history(&cwd, start)),
+                "opencode" => (readers::opencode::status(&cwd, start), readers::opencode::history(&cwd, start).messages),
                 "gemini" => {
                     let f = readers::gemini::session_file(&cwd, start);
                     println!("file: {f:?}");

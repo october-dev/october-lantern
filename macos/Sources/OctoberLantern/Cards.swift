@@ -89,19 +89,29 @@ struct LaunchCards: View {
     @ObservedObject var model: AppModel
     /// Number keys pick an option of the waiting question.
     var keys = false
+    var part: Part = .all
+
+    /// What a view shows: all of it, only what waits for you (agent chat keeps that in view
+    /// above its conversation), or everything else.
+    enum Part { case all, waiting, rest }
 
     /// The last few closed questions and things shown, then waiting cards, then the latest result.
     private var shown: [Card] {
+        if part == .waiting { return launch.waiting }
         let result = launch.cards.last { $0.kind == "result" }
         let closed = launch.cards.filter { $0.kind != "result" && !$0.isWaiting }.suffix(3)
-        return Array(closed) + launch.waiting + (result.map { [$0] } ?? [])
+        return Array(closed) + (part == .rest ? [] : launch.waiting) + (result.map { [$0] } ?? [])
     }
 
+    private var hasProgress: Bool { part != .waiting && (launch.endedAt == nil || launch.status != nil || !launch.steps.isEmpty) }
+
     var body: some View {
-        if launch.endedAt == nil || launch.status != nil || !launch.steps.isEmpty || !shown.isEmpty {
+        if hasProgress || !shown.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-            if launch.endedAt == nil { TaskControls(launch: launch, model: model) }
-                progress
+                if part != .waiting {
+                    if launch.endedAt == nil { TaskControls(launch: launch, model: model) }
+                    progress
+                }
                 ForEach(shown) { card in
                     switch card.kind {
                     case "result": ResultCard(card: card)

@@ -10,9 +10,9 @@ use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
-use crate::history::{ChatMessage, Role, describe_tool, keep_recent, push};
+use crate::history::{ChatMessage, Role, describe_tool, keep_recent, line_id, push};
 use crate::model::{SessionStatus, State, epoch_ms, truncate};
-use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range};
+use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range, tail_lines};
 
 fn mtime_ms(path: &Path) -> Option<u64> {
     Some(fs::metadata(path).ok()?.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
@@ -66,6 +66,12 @@ pub mod opencode {
     /// The session a process in `cwd` is working in: the top-level session there with the most
     /// recent activity, preferring ones created after the process started.
     pub fn session_for(cwd: &Path, started_secs: u64) -> Option<(String, String)> {
+        session_since(cwd, started_secs.saturating_sub(60) * 1000)
+    }
+
+    /// The session there with the most recent activity, among those created or active since
+    /// `since_ms`.
+    fn session_since(cwd: &Path, since_ms: u64) -> Option<(String, String)> {
         let dir = resolved(cwd).to_string_lossy().into_owned();
         let rows = query(&format!(
             "SELECT s.id, s.title, s.time_created AS created, \
@@ -74,11 +80,9 @@ pub mod opencode {
              ORDER BY last DESC LIMIT 10",
             sql_str(&dir)
         ));
-        let started_ms = started_secs.saturating_sub(60) * 1000;
         // A process with no session activity since it started hasn't begun one yet (or continued an
         // old one without writing): don't show a stale session. `started_secs == 0` means "any".
-        let pick =
-            rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= started_ms || r["last"].as_u64().unwrap_or(0) >= started_ms)?;
+        let pick = rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= since_ms || r["last"].as_u64().unwrap_or(0) >= since_ms)?;
         Some((pick["id"].as_str()?.to_string(), pick["title"].as_str().unwrap_or("").to_string()))
     }
 
@@ -131,29 +135,44 @@ pub mod opencode {
         Some(status)
     }
 
-    pub fn history(cwd: &Path, started_secs: u64) -> Vec<ChatMessage> {
-        let Some((session, _)) = session_for(cwd, started_secs) else { return Vec::new() };
+    /// The session's newest messages; each part keeps its id, so a tool call filled in later
+    /// (saved first as pending, with no input) is the same entry updated.
+    ///
+    /// Only a session this process created or wrote since it started (`started_secs`, without the
+    /// minute of tolerance `status` allows): a recent session of an earlier process in the same
+    /// folder isn't its conversation. A session it resumed shows once it writes to it.
+    pub fn history(cwd: &Path, started_secs: u64) -> crate::history::History {
+        let Some((session, _)) = session_since(cwd, started_secs * 1000) else { return Default::default() };
         let rows = query(&format!(
-            "SELECT json_extract(m.data, '$.role') AS role, p.data AS part FROM part p \
+            "SELECT json_extract(m.data, '$.role') AS role, json_extract(m.data, '$.time.created') AS created, \
+             m.id AS mid, p.id AS pid, p.data AS part FROM part p \
              JOIN message m ON m.id = p.message_id WHERE m.session_id = {s} \
-             AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT 80) \
+             AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT {LAST_MESSAGES}) \
              ORDER BY m.id, p.id",
             s = sql_str(&session)
         ));
+        let read: std::collections::HashSet<&str> = rows.iter().filter_map(|r| r["mid"].as_str()).collect();
+        let whole = read.len() < LAST_MESSAGES;
         let mut out = Vec::new();
-        for r in rows {
+        for r in &rows {
             let Some(part) = r["part"].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()) else { continue };
+            let id = r["pid"].as_str().map(String::from);
+            let at = r["created"].as_u64().map(crate::model::iso);
+            let at = at.as_deref();
             match (r["role"].as_str(), part["type"].as_str()) {
-                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), None),
-                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), None),
+                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), at, id),
+                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), at, id),
                 (Some("assistant"), Some("tool")) => {
-                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), None)
+                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), at, id)
                 }
                 _ => {}
             }
         }
-        keep_recent(out)
+        crate::history::History::of(&format!("opencode:{session}"), whole, keep_recent(out))
     }
+
+    /// How many of a session's newest messages `history` reads.
+    const LAST_MESSAGES: usize = 80;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -234,28 +253,29 @@ pub mod pi {
     }
 
     pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(text) = read_range(path, true, crate::history::TAIL_BYTES) else { return Vec::new() };
+        let Some(entries) = tail_lines(path, crate::history::TAIL_BYTES) else { return Vec::new() };
         let mut out = Vec::new();
-        for e in lines(&text) {
+        for (offset, e) in entries {
             if e["type"] != "message" {
                 continue;
             }
             let at = e["timestamp"].as_str();
             let m = &e["message"];
             match m["role"].as_str() {
-                Some("user") => push(&mut out, Role::User, &text_of(&m["content"]).unwrap_or_default(), at),
+                Some("user") => push(&mut out, Role::User, &text_of(&m["content"]).unwrap_or_default(), at, line_id(offset, 0)),
                 Some("assistant") => {
-                    for b in m["content"].as_array().into_iter().flatten() {
+                    for (i, b) in m["content"].as_array().into_iter().flatten().enumerate() {
+                        let id = line_id(offset, i);
                         match b["type"].as_str() {
-                            Some("text") => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at),
+                            Some("text") => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at, id),
                             Some("toolCall") => {
-                                push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["arguments"]), at)
+                                push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["arguments"]), at, id)
                             }
                             _ => {}
                         }
                     }
                     if let Some(err) = m["errorMessage"].as_str() {
-                        push(&mut out, Role::Agent, err, at);
+                        push(&mut out, Role::Agent, err, at, line_id(offset, "error"));
                     }
                 }
                 _ => {}
@@ -273,7 +293,7 @@ pub mod gemini {
     use super::*;
 
     /// Everything after this much of a session log is ignored.
-    const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
+    pub(crate) const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
 
     fn root() -> PathBuf {
         std::env::var_os("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(home).join(".gemini")
@@ -388,15 +408,18 @@ pub mod gemini {
         let mut out = Vec::new();
         for m in messages(path) {
             let at = m["timestamp"].as_str();
+            // Its record id: one written again (updated) replaces the earlier copy.
+            let id = |part: &str| m["id"].as_str().map(|id| format!("{id}.{part}"));
             match m["type"].as_str() {
-                Some("user") if is_real_prompt(&m) => push(&mut out, Role::User, &content_text(&m), at),
+                Some("user") if is_real_prompt(&m) => push(&mut out, Role::User, &content_text(&m), at, id("text")),
                 Some("gemini") => {
-                    push(&mut out, Role::Agent, &content_text(&m), at);
-                    for call in m["toolCalls"].as_array().into_iter().flatten() {
-                        push(&mut out, Role::Tool, &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]), at);
+                    push(&mut out, Role::Agent, &content_text(&m), at, id("text"));
+                    for (i, call) in m["toolCalls"].as_array().into_iter().flatten().enumerate() {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        push(&mut out, Role::Tool, &describe_tool(name, &call["args"]), at, id(&format!("tool{i}")));
                     }
                 }
-                Some("error") => push(&mut out, Role::Agent, &content_text(&m), at),
+                Some("error") => push(&mut out, Role::Agent, &content_text(&m), at, id("text")),
                 _ => {}
             }
         }
@@ -508,18 +531,21 @@ pub mod muse {
     }
 
     pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(text) = read_range(path, true, crate::history::TAIL_BYTES) else { return Vec::new() };
+        let Some(entries) = tail_lines(path, crate::history::TAIL_BYTES) else { return Vec::new() };
         let mut out = Vec::new();
-        for e in lines(&text) {
+        for (offset, e) in entries {
             let Some(("run", ev)) = event(&e) else { continue };
             let at = at_ms(&e).map(crate::model::iso);
             let at = at.as_deref();
             match ev["kind"].as_str() {
-                Some("started") => push(&mut out, Role::User, ev["prompt"].as_str().unwrap_or(""), at),
-                Some("assistant_message_committed") => push(&mut out, Role::Agent, ev["text"].as_str().unwrap_or(""), at),
+                Some("started") => push(&mut out, Role::User, ev["prompt"].as_str().unwrap_or(""), at, line_id(offset, 0)),
+                Some("assistant_message_committed") => {
+                    push(&mut out, Role::Agent, ev["text"].as_str().unwrap_or(""), at, line_id(offset, 0))
+                }
                 Some("assistant_tool_calls_committed") => {
-                    for call in ev["tool_calls"].as_array().into_iter().flatten() {
-                        push(&mut out, Role::Tool, &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]), at);
+                    for (i, call) in ev["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        push(&mut out, Role::Tool, &describe_tool(name, &call["args"]), at, line_id(offset, i));
                     }
                 }
                 _ => {}

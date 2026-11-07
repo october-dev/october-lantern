@@ -23,7 +23,8 @@ final class EngineClient {
     var onHarness: ((EngineMessage.HarnessStatus) -> Void)?
     var onComputer: ((EngineMessage.ComputerStatus) -> Void)?
     var onModels: ((EngineMessage.ModelList) -> Void)?
-    var onHistory: ((String, Bool, [ChatMessage]) -> Void)?
+    /// An agent's conversation: whether it's supported, and what was read.
+    var onHistory: ((String, Bool, HistoryRead) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
     var onPhone: ((PhoneModel.State) -> Void)?
     var onControl: ((ControlSnapshot) -> Void)?
@@ -410,8 +411,8 @@ final class EngineClient {
                         modelRequests.removeValue(forKey: list.kind)
                         onModels?(list)
                     }
-                case .history(let id, let agentId, let supported, let messages, let busy):
-                    if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, messages) }
+                case .history(let id, let agentId, let supported, let busy, let read):
+                    if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, read) }
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
                 case .computerHold(let snapshot): onControl?(snapshot)

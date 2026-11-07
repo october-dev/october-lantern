@@ -8,30 +8,38 @@ struct ChatView: View {
     /// Whether the newest message is in view; new messages scroll into view only then, so reading
     /// further up isn't interrupted.
     @State private var atBottom = true
+    /// The full height of what waits for you above the conversation.
+    @State private var pinnedHeight: CGFloat = 0
 
     /// How many messages the engine sends at most (the newest ones).
     static let historyLimit = 120
 
+    private var launch: CardLaunch? { model.launch(forAgent: agent.id) }
+    private var waitingCards: Bool { !(launch?.waiting.isEmpty ?? true) }
+    /// A question Lantern can't answer, shown with its full request: those aren't always in the
+    /// conversation's text.
+    private var unanswered: Bool {
+        agent.state == .needsInput && !agent.isAnswerable && (agent.question != nil || agent.questionDetail != nil)
+    }
+    private var hasPinned: Bool { agent.isAnswerable || unanswered || waitingCards }
+
     var body: some View {
         VStack(spacing: 0) {
             header
-            // What it asks now stays in view above everything that scrolls.
-            if agent.isAnswerable {
-                QuestionCard(agent: agent, model: model, keys: true)
-                    .padding(.horizontal, 12).padding(.bottom, 10)
-            }
+            // What waits for you (a terminal question, Lantern's own question or hand-off) stays in
+            // view above the conversation, however long that is: opening from Waiting or a
+            // notification shows it, and a draft answer stays put while you read further up.
+            if hasPinned { pinned }
             Rectangle().fill(Theme.hairline).frame(height: 1)
-            // One scroll for the task's steps, cards and result and the conversation after them:
-            // two capped areas, one above the other, cut the result off mid-text with the rest
-            // of the conversation still showing below it.
+            // One scroll for the conversation and the task's steps and result after it: two capped
+            // areas, one above the other, cut the result off mid-text.
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        if let launch = model.launch(forAgent: agent.id) {
-                            LaunchCards(launch: launch, model: model, keys: !agent.isAnswerable)
-                                .padding(.bottom, 4)
-                        }
                         content
+                        if let launch {
+                            LaunchCards(launch: launch, model: model, part: .rest).padding(.top, 4)
+                        }
                         Color.clear.frame(height: 1).id("bottom")
                             .onAppear { atBottom = true }
                             .onDisappear { atBottom = false }
@@ -40,23 +48,63 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                 }
                 // Fits the conversation, up to the panel's room: a short chat stays short.
-                .frame(maxHeight: Self.scrollHeight(panel: metrics.maxHeight, asking: agent.isAnswerable))
+                .frame(maxHeight: Self.scrollHeight(panel: metrics.maxHeight,
+                                                    pinned: hasPinned ? min(pinnedHeight, Self.pinnedLimit(panel: metrics.maxHeight)) : 0))
                 .fixedSize(horizontal: false, vertical: true)
                 .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: model.chatMessages) {
+                    if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                // A new step or the result changes only the cards; a question appearing, growing
+                // or going changes the room the conversation has.
+                .onChange(of: launch) {
+                    if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                .onChange(of: hasPinned ? pinnedHeight : 0) {
                     if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
         }
     }
 
-    /// The most the conversation's scroll takes: the panel's room less the header, the composer
-    /// (up to five lines), a toast and, while it's asking, the question above it. The panel is
-    /// never taller than the screen allows, so content beyond its room would be cut off (and
-    /// its buttons would answer clicks somewhere else) rather than scroll.
-    static func scrollHeight(panel: CGFloat, asking: Bool) -> CGFloat {
-        let reserved: CGFloat = 230 + (asking ? 220 : 0)
-        return min(800, max(160, panel - reserved))
+    /// What waits for you, scrolling on its own past `pinnedLimit` (a long plan, many choices).
+    /// Not lazy, so a half-typed answer isn't dropped.
+    private var pinned: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                if agent.isAnswerable {
+                    QuestionCard(agent: agent, model: model, keys: true)
+                } else if unanswered {
+                    UnansweredQuestion(agent: agent, model: model, elsewhere: agent.canReply ? "Reply below." : nil)
+                }
+                if let launch, waitingCards {
+                    LaunchCards(launch: launch, model: model, keys: !agent.isAnswerable, part: .waiting)
+                }
+            }
+            .padding(.horizontal, 12).padding(.bottom, 10)
+            .background(GeometryReader { g in
+                Color.clear.onAppear { pinnedHeight = g.size.height }.onChange(of: g.size.height) { _, h in pinnedHeight = h }
+            })
+        }
+        .frame(maxHeight: Self.pinnedLimit(panel: metrics.maxHeight))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Room the panel keeps for the header, the composer (up to five lines) and a toast.
+    static let reserved: CGFloat = 230
+
+    /// The most what waits for you takes above the conversation: up to 320, less on a short
+    /// panel so the conversation keeps its 160.
+    static func pinnedLimit(panel: CGFloat) -> CGFloat {
+        max(100, min(320, panel - reserved - 160))
+    }
+
+    /// The most the conversation's scroll takes: the panel's room less the header, the composer,
+    /// a toast and what's pinned above it (its shown height). The panel is never taller than the
+    /// screen allows, so content beyond its room would be cut off (and its buttons would answer
+    /// clicks somewhere else) rather than scroll.
+    static func scrollHeight(panel: CGFloat, pinned: CGFloat) -> CGFloat {
+        min(800, max(160, panel - reserved - pinned))
     }
 
     private var header: some View {
@@ -128,7 +176,8 @@ struct ChatView: View {
     static func keyed(_ messages: [ChatMessage]) -> [(key: String, message: ChatMessage)] {
         var seen: [String: Int] = [:]
         return messages.map { m in
-            let base = "\(m.role.rawValue)|\(m.at ?? "")|\(m.text.hashValue)"
+            // An entry's id where it has one: updated (a tool call filled in), it's the same row.
+            let base = m.id.map { "id|\($0)" } ?? "\(m.role.rawValue)|\(m.at ?? "")|\(m.text.hashValue)"
             let n = seen[base, default: 0]
             seen[base] = n + 1
             return (n == 0 ? base : "\(base)#\(n)", m)
