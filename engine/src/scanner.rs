@@ -506,11 +506,20 @@ impl Scanner {
                 _ => return None,
             }
         };
+        let exact = self.app_paths.contains_key(&agent.id) || agent.session_match == SessionMatch::Exact;
         let Some((kind, path)) = source else { return Some(Default::default()) };
         // A session file that's gone (or not written yet) is an empty conversation, not an
         // unsupported agent.
         let Ok(metadata) = std::fs::metadata(&path) else { return Some(Default::default()) };
         let Ok(modified) = metadata.modified() else { return Some(Default::default()) };
+        // A guessed session (picked by folder and time) is this process's conversation only once
+        // it has written to it since it started: until then the newest file there may be an
+        // earlier process's, which isn't this agent's history. (A session it resumed shows from
+        // its first write.) Status keeps its own minute of tolerance.
+        let modified_ms = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        if !exact && modified_ms < agent.start_time.saturating_mul(1000) {
+            return Some(Default::default());
+        }
         let stamp = HistoryStamp::File(kind, path.clone(), crate::platform::file_id(&metadata), metadata.len(), modified);
         if let Some((old, messages)) = self.history_cache.get(&agent.id)
             && *old == stamp
@@ -524,8 +533,10 @@ impl Scanner {
             Kind::Muse => crate::readers::muse::history(&path),
             _ => crate::history::claude(&path),
         };
-        // Named by its file: `/clear` or `/new` in the same process is another source.
-        let history = crate::history::History { source: Some(crate::history::source_id(&path.to_string_lossy())), messages };
+        // Named by its file: `/clear` or `/new` in the same process is another source. The
+        // readers take the last TAIL_BYTES (Gemini replays its first REPLAY_BYTES).
+        let limit = if kind == Kind::Gemini { crate::readers::gemini::REPLAY_BYTES } else { crate::history::TAIL_BYTES };
+        let history = crate::history::History::of(&path.to_string_lossy(), metadata.len() <= limit, messages);
         self.remember_history(&agent.id, stamp, &history);
         Some(history)
     }
@@ -784,6 +795,33 @@ mod history_cache_tests {
         scanner.app_paths.insert(a.id.clone(), (Kind::Claude, second));
         assert_eq!(scanner.history(&a).unwrap().messages[0].text, "new session");
         assert_ne!(scanner.history(&a).unwrap().source, first_source, "a new session in the same process is another source");
+        assert!(scanner.history(&a).unwrap().complete, "a short file is read from its start");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A guessed session written last before the process started is an earlier process's: no
+    /// history (and no source) until this process writes to a session.
+    #[test]
+    fn a_guessed_session_counts_only_once_this_process_writes_it() {
+        let root = std::env::temp_dir().join(format!("lantern-owned-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let previous = root.join("previous.jsonl");
+        std::fs::write(&previous, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"old task\"}}\n").unwrap();
+        let mut scanner = Scanner::new();
+        let mut a = crate::tests::agent_for(321, 1, Some("ttys002"));
+        a.session_match = SessionMatch::Guessed;
+        a.start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 5;
+        scanner.claude_paths.insert(a.pid, (previous.clone(), false));
+        let h = scanner.history(&a).unwrap();
+        assert!(h.messages.is_empty() && h.source.is_none(), "the earlier process's conversation isn't shown");
+        // Once written after the process started, it's this agent's (a resumed session).
+        a.start_time = 0;
+        assert_eq!(scanner.history(&a).unwrap().messages[0].text, "old task");
+        // An exact match needs no such evidence.
+        let mut exact = crate::tests::agent_for(322, 1, Some("ttys003"));
+        exact.start_time = a.start_time + u64::MAX / 2;
+        scanner.claude_paths.insert(exact.pid, (previous, true));
+        assert_eq!(scanner.history(&exact).unwrap().messages.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -66,6 +66,12 @@ pub mod opencode {
     /// The session a process in `cwd` is working in: the top-level session there with the most
     /// recent activity, preferring ones created after the process started.
     pub fn session_for(cwd: &Path, started_secs: u64) -> Option<(String, String)> {
+        session_since(cwd, started_secs.saturating_sub(60) * 1000)
+    }
+
+    /// The session there with the most recent activity, among those created or active since
+    /// `since_ms`.
+    fn session_since(cwd: &Path, since_ms: u64) -> Option<(String, String)> {
         let dir = resolved(cwd).to_string_lossy().into_owned();
         let rows = query(&format!(
             "SELECT s.id, s.title, s.time_created AS created, \
@@ -74,11 +80,9 @@ pub mod opencode {
              ORDER BY last DESC LIMIT 10",
             sql_str(&dir)
         ));
-        let started_ms = started_secs.saturating_sub(60) * 1000;
         // A process with no session activity since it started hasn't begun one yet (or continued an
         // old one without writing): don't show a stale session. `started_secs == 0` means "any".
-        let pick =
-            rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= started_ms || r["last"].as_u64().unwrap_or(0) >= started_ms)?;
+        let pick = rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= since_ms || r["last"].as_u64().unwrap_or(0) >= since_ms)?;
         Some((pick["id"].as_str()?.to_string(), pick["title"].as_str().unwrap_or("").to_string()))
     }
 
@@ -133,30 +137,42 @@ pub mod opencode {
 
     /// The session's newest messages; each part keeps its id, so a tool call filled in later
     /// (saved first as pending, with no input) is the same entry updated.
+    ///
+    /// Only a session this process created or wrote since it started (`started_secs`, without the
+    /// minute of tolerance `status` allows): a recent session of an earlier process in the same
+    /// folder isn't its conversation. A session it resumed shows once it writes to it.
     pub fn history(cwd: &Path, started_secs: u64) -> crate::history::History {
-        let Some((session, _)) = session_for(cwd, started_secs) else { return Default::default() };
+        let Some((session, _)) = session_since(cwd, started_secs * 1000) else { return Default::default() };
         let rows = query(&format!(
-            "SELECT json_extract(m.data, '$.role') AS role, p.id AS pid, p.data AS part FROM part p \
+            "SELECT json_extract(m.data, '$.role') AS role, json_extract(m.data, '$.time.created') AS created, \
+             m.id AS mid, p.id AS pid, p.data AS part FROM part p \
              JOIN message m ON m.id = p.message_id WHERE m.session_id = {s} \
-             AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT 80) \
+             AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT {LAST_MESSAGES}) \
              ORDER BY m.id, p.id",
             s = sql_str(&session)
         ));
+        let read: std::collections::HashSet<&str> = rows.iter().filter_map(|r| r["mid"].as_str()).collect();
+        let whole = read.len() < LAST_MESSAGES;
         let mut out = Vec::new();
-        for r in rows {
+        for r in &rows {
             let Some(part) = r["part"].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()) else { continue };
             let id = r["pid"].as_str().map(String::from);
+            let at = r["created"].as_u64().map(crate::model::iso);
+            let at = at.as_deref();
             match (r["role"].as_str(), part["type"].as_str()) {
-                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), None, id),
-                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), None, id),
+                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), at, id),
+                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), at, id),
                 (Some("assistant"), Some("tool")) => {
-                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), None, id)
+                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), at, id)
                 }
                 _ => {}
             }
         }
-        crate::history::History { source: Some(crate::history::source_id(&format!("opencode:{session}"))), messages: keep_recent(out) }
+        crate::history::History::of(&format!("opencode:{session}"), whole, keep_recent(out))
     }
+
+    /// How many of a session's newest messages `history` reads.
+    const LAST_MESSAGES: usize = 80;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -277,7 +293,7 @@ pub mod gemini {
     use super::*;
 
     /// Everything after this much of a session log is ignored.
-    const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
+    pub(crate) const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
 
     fn root() -> PathBuf {
         std::env::var_os("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(home).join(".gemini")

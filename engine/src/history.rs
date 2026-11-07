@@ -44,7 +44,20 @@ pub struct History {
     /// or `/new` in the same process. An opaque, stable name, not a path.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// The messages start at the session's beginning: nothing older was left out. A message
+    /// missing from a complete read isn't in the session any more (taken back), rather than
+    /// older than the window.
+    pub complete: bool,
     pub messages: Vec<ChatMessage>,
+}
+
+impl History {
+    /// `messages` read from all of a session (not a cut-off tail of it) named `source`.
+    pub(crate) fn of(source: &str, whole: bool, messages: Vec<ChatMessage>) -> Self {
+        // `keep_recent` keeps at most MAX_MESSAGES: a full window may have dropped some.
+        let complete = whole && messages.len() < MAX_MESSAGES;
+        History { source: Some(source_id(source)), complete, messages }
+    }
 }
 
 /// A short, stable name for a session (FNV-1a of its path or id): the same in every version.

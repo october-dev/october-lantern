@@ -456,9 +456,14 @@ pub fn run() -> Result<()> {
                 let supported = history.is_some();
                 let history = history.unwrap_or_default();
                 // `source` is the session these messages were read from, so a reply that was in
-                // flight while the agent changed sessions is still known for the old one.
-                emit(&json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
-                    "supported": supported, "source": history.source, "messages": history.messages}));
+                // flight while the agent changed sessions is still known for the old one; absent
+                // when there's no session to read yet.
+                let mut event = json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
+                    "supported": supported, "complete": history.complete, "messages": history.messages});
+                if let Some(source) = history.source {
+                    event["source"] = json!(source);
+                }
+                emit(&event);
             }
             Ok(Incoming::Deliver(d)) => {
                 let done = d.done;
