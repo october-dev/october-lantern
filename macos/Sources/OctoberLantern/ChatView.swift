@@ -55,8 +55,12 @@ struct ChatView: View {
                 .onChange(of: model.chatMessages) {
                     if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
-                // A new step or the result changes only the cards.
+                // A new step or the result changes only the cards; a question appearing, growing
+                // or going changes the room the conversation has.
                 .onChange(of: launch) {
+                    if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                .onChange(of: hasPinned ? pinnedHeight : 0) {
                     if atBottom { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
