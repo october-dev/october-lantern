@@ -34,6 +34,13 @@
 
 ## Less checking. More getting things done.
 
+<p align="center">
+  <img src="docs/images/pill.png" alt="Lantern pill" width="320" />
+  <img src="docs/images/panel.png" alt="Lantern panel" width="320" />
+  <img src="docs/images/question-card.png" alt="Question card" width="320" />
+  <img src="docs/images/ask-lantern.png" alt="Ask Lantern" width="320" />
+</p>
+
 Claude is working in one window. Codex is waiting in another. October finished ten minutes ago.
 
 Lantern brings your coding agents together in one quiet place. Keep your favorite agents and terminals, and start them as you do today. Lantern finds supported sessions automatically.
