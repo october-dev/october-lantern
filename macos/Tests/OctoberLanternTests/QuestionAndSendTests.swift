@@ -171,4 +171,94 @@ final class QuestionAndSendTests: XCTestCase {
         XCTAssertEqual(Assistant.merged([], Array(a[0..<3])), Array(a[0..<3]))
         XCTAssertEqual(Assistant.merged(Array(a[0..<3]), Array(a[0..<3])), Array(a[0..<3]))
     }
+
+    // MARK: Reconciling reads by entry id, within one session (#24 audit)
+
+    private func entry(_ id: String, _ role: ChatMessage.Role = .tool, _ text: String = "bash") -> ChatMessage {
+        ChatMessage(role: role, text: text, at: nil, id: id)
+    }
+
+    /// Identical-looking steps without times are told apart by their ids: an unchanged read adds
+    /// nothing, and a read with one more adds only that one.
+    func testRepeatedLookingStepsAreNeitherDuplicatedNorMerged() {
+        let nine = (1...9).map { entry("s\($0)") }
+        XCTAssertEqual(Assistant.merged(nine, nine), nine, "an unchanged read is idempotent")
+        XCTAssertEqual(Assistant.merged(nine, nine + [entry("s10")]).count, 10)
+
+        let answer = entry("a1", .agent, "Done.")
+        let again = (10...18).map { entry("s\($0)") }
+        let history = nine + [answer] + again
+        let next = history + [entry("a2", .agent, "Done again.")]
+        let merged = Assistant.merged(history, next)
+        XCTAssertEqual(merged.count, 20)
+        XCTAssertEqual(merged.filter { $0.id == "a1" }.count, 1, "the earlier answer shows once")
+
+        // Saved before entries had ids: matched by what they say, still not added twice.
+        let untimed = Array(repeating: ChatMessage(role: .tool, text: "bash", at: nil), count: 9)
+        XCTAssertEqual(Assistant.merged(untimed, untimed).count, 9)
+    }
+
+    /// OpenCode saves a tool call with no input, then fills it in under the same id: the read
+    /// after replaces it, with the answer before it kept once, and reads after that change nothing.
+    func testAnUpdatedEntryReplacesItsEarlierVersion() {
+        let answer = entry("a", .agent, "Looking.")
+        let pending = entry("t", .tool, "bash")
+        let filled = entry("t", .tool, "bash · pwd")
+        let once = Assistant.merged([answer, pending], [answer, filled])
+        XCTAssertEqual(once, [answer, filled])
+        XCTAssertEqual(Assistant.merged(once, [answer, filled]), [answer, filled])
+        // Kept past the window: the update lands on the saved copy too.
+        let older = entry("o", .agent, "Earlier.")
+        XCTAssertEqual(Assistant.merged([older, answer, pending], [answer, filled]), [older, answer, filled])
+    }
+
+    /// Two distinct calls that read the same stay two; a rewind takes back what it removed.
+    func testDistinctEntriesStayAndARewindTakesBack() {
+        let one = entry("t1", .tool, "read")
+        let two = entry("t2", .tool, "read")
+        XCTAssertEqual(Assistant.merged([one], [one, two]), [one, two])
+        let a = entry("a", .user, "Do it"), b = entry("b", .agent, "Doing"), c = entry("c", .agent, "Done")
+        let d = entry("d", .agent, "Redone")
+        XCTAssertEqual(Assistant.merged([a, b, c], [a, d]), [a, d], "a rewound window replaces what it took back")
+    }
+
+    /// The same process starting a new session (`/clear`, `/new`): the task keeps its replies and
+    /// takes nothing from the new one, live or saved, and a late read of its own still counts.
+    func testANewSessionInTheSameProcessIsntTheTasks() {
+        let typed = ChatMessage(role: .user, text: "Also add tests", at: iso(1), id: "1.0")
+        let answer = ChatMessage(role: .agent, text: "Tests added.", at: iso(5), id: "2.0")
+        var link = Assistant.keeping([typed, answer], source: "A", in: routed())
+        XCTAssertEqual(link.source, "A")
+        XCTAssertEqual(link.found, true)
+
+        let other = [ChatMessage(role: .user, text: "Something else", at: iso(60), id: "1.0"),
+                     ChatMessage(role: .agent, text: "Other work.", at: iso(70), id: "2.0")]
+        XCTAssertEqual(Assistant.keeping(other, source: "B", in: link), link, "session B isn't saved into A's task")
+        XCTAssertEqual(Assistant.taskMessages(link, live: other, source: "B"), [answer], "nor shown live")
+        XCTAssertTrue(Assistant.movedOn(link, source: "B"))
+
+        // A read from session A that was in flight across the switch still lands.
+        let late = ChatMessage(role: .agent, text: "Also the docs.", at: iso(8), id: "3.0")
+        link = Assistant.keeping([typed, answer, late], source: "A", in: link)
+        let reopened = try! JSONDecoder().decode(Assistant.TaskLink.self, from: JSONEncoder().encode(link))
+        XCTAssertEqual(Assistant.taskMessages(reopened, live: nil), [answer, late])
+        XCTAssertEqual(reopened.source, "A")
+
+        // A task Lantern started stays with its session the same way.
+        let started = Assistant.keeping([typed, answer], source: "A",
+                                        in: Assistant.TaskLink(kind: "claude", folder: "/tmp", prompt: "Also add tests"))
+        XCTAssertEqual(Assistant.keeping(other, source: "B", in: started).transcript, [typed, answer])
+    }
+
+    /// Live, the card shows the reconciled read: the updated step once, beside the answer.
+    func testLiveRenderingShowsEachEntryOnce() {
+        let typed = ChatMessage(role: .user, text: "Also add tests", at: iso(1), id: "u")
+        let answer = ChatMessage(role: .agent, text: "Running them.", at: iso(3), id: "a")
+        let pending = ChatMessage(role: .tool, text: "bash", at: nil, id: "t")
+        let filled = ChatMessage(role: .tool, text: "bash · swift test", at: nil, id: "t")
+        let link = Assistant.keeping([typed, answer, pending], source: "A", in: routed())
+        let shown = Assistant.taskMessages(link, live: [typed, answer, filled], source: "A")
+        XCTAssertEqual(shown, [answer, filled])
+        XCTAssertEqual(ChatView.keyed(shown).map(\.key), ["id|a", "id|t"])
+    }
 }

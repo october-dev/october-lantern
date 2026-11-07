@@ -194,6 +194,10 @@ struct ChatMessage: Codable, Hashable {
     let role: Role
     let text: String
     let at: String?
+    /// Which entry of its session this is, the same on every read (protocol `historyResult`): the
+    /// same id with new text is that entry updated. Nil from readers that can't name entries, and
+    /// in conversations saved before entries had ids.
+    var id: String? = nil
 }
 
 /// The connection to October Desktop (see engine/src/october_link.rs).
@@ -219,7 +223,7 @@ enum EngineMessage: Decodable {
     /// `session`: the tmux session a started agent runs in (absent without tmux).
     case launchResult(requestId: String, ok: Bool, message: String?, session: String?)
     case attachResult(requestId: String, ok: Bool, message: String?)
-    case history(requestId: String, agentId: String, supported: Bool, messages: [ChatMessage], busy: Bool)
+    case history(requestId: String, agentId: String, supported: Bool, messages: [ChatMessage], busy: Bool, source: String?)
     case october(OctoberLink)
     case phone(PhoneModel.State)
     /// Every session's cards (engine `cards`), newest first.
@@ -279,7 +283,7 @@ enum EngineMessage: Decodable {
     }
 
     private enum Keys: String, CodingKey {
-        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning, busy,
+        case type, `protocol`, version, agents, requestId, ok, error, message, installed, agentId, supported, messages, october, session, warning, busy, source,
             harness, launches, cardId
     }
 
@@ -310,7 +314,8 @@ enum EngineMessage: Decodable {
                 agentId: try c.decode(String.self, forKey: .agentId),
                 supported: try c.decode(Bool.self, forKey: .supported),
                 messages: try c.decode([ChatMessage].self, forKey: .messages),
-                busy: try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false
+                busy: try c.decodeIfPresent(Bool.self, forKey: .busy) ?? false,
+                source: try c.decodeIfPresent(String.self, forKey: .source)
             )
         case "models":
             self = .models(try ModelList(from: decoder))

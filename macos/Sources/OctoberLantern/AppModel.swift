@@ -102,6 +102,8 @@ final class AppModel: ObservableObject {
     /// like an open chat's.
     @Published private(set) var watchedAgentId: String?
     @Published private(set) var watchedMessages: [ChatMessage] = []
+    /// The session `watchedMessages` were read from (protocol `historyResult.source`).
+    @Published private(set) var watchedSource: String?
     private var watchPoll: Task<Void, Never>?
     private var previewTimeout: Task<Void, Never>?
     private var chatPoll: Task<Void, Never>?
@@ -192,8 +194,12 @@ final class AppModel: ObservableObject {
             self.openWhenSeen = (session, Date().addingTimeInterval(30))
             self.openLaunched()
         }
-        engine.onHistory = { [weak self] agentId, supported, messages in
-            if let self, agentId == self.watchedAgentId, messages != self.watchedMessages { self.watchedMessages = messages }
+        engine.onHistory = { [weak self] agentId, supported, messages, source in
+            if let self, agentId == self.watchedAgentId, messages != self.watchedMessages || source != self.watchedSource {
+                // The session first, so a task never sees these messages under the one before.
+                self.watchedSource = source
+                self.watchedMessages = messages
+            }
             guard let self, agentId == self.chatAgentId else { return }
             if self.chatLoading { self.chatLoading = false }
             // The real conversation takes over from the preview once it has something to show.
@@ -766,6 +772,7 @@ final class AppModel: ObservableObject {
         guard agentId != watchedAgentId else { return }
         watchPoll?.cancel()
         watchedAgentId = agentId
+        watchedSource = nil
         watchedMessages = []
         guard let agentId else { return }
         watchPoll = Task { @MainActor [weak self] in

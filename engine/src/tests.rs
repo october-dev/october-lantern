@@ -1447,3 +1447,57 @@ fn october_runs_on_pro_for_a_paid_lantern_and_lite_otherwise() {
     let plan: serde_json::Value = serde_json::from_str(r#"{"type":"october.plan","pro":true}"#).unwrap();
     assert_eq!(plan["pro"], true);
 }
+
+/// History entries keep the same id on every read: identical-looking steps stay distinct,
+/// appending doesn't renumber earlier ones, and a window cut from the end of the file names its
+/// lines as a whole read does.
+#[test]
+fn history_ids_name_entries_for_good() {
+    let dir = temp_dir("history-ids");
+    let path = dir.join("s.jsonl");
+    let step = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:05.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#;
+    let answer = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:05.000Z","message":{"content":[{"type":"text","text":"Done."},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#;
+    fs::write(&path, format!("{step}\n{step}\n{answer}\n")).unwrap();
+    let first = history::claude(&path);
+    let ids: Vec<String> = first.iter().map(|m| m.id.clone().unwrap()).collect();
+    assert_eq!(first.len(), 4);
+    assert_eq!(first[0].text, first[1].text);
+    let unique: std::collections::HashSet<&String> = ids.iter().collect();
+    assert_eq!(unique.len(), 4, "identical steps are still distinct entries: {ids:?}");
+
+    fs::write(&path, format!("{step}\n{step}\n{answer}\n{step}\n")).unwrap();
+    let more = history::claude(&path);
+    assert_eq!(more[..4].iter().map(|m| m.id.clone().unwrap()).collect::<Vec<_>>(), ids, "appending keeps earlier ids");
+
+    let whole = transcripts::tail_lines(&path, u64::MAX).unwrap();
+    let len = fs::metadata(&path).unwrap().len();
+    let tail = transcripts::tail_lines(&path, len - 10).unwrap();
+    assert_eq!(tail.len(), whole.len() - 1, "the cut first line is dropped");
+    assert_eq!(tail.iter().map(|(o, _)| *o).collect::<Vec<_>>(), whole[1..].iter().map(|(o, _)| *o).collect::<Vec<_>>());
+}
+
+/// The source names the session read, the same each time and different for another one.
+#[test]
+fn history_sources_are_stable_names() {
+    assert_eq!(history::source_id("/a/s.jsonl"), history::source_id("/a/s.jsonl"));
+    assert_ne!(history::source_id("/a/s.jsonl"), history::source_id("/a/t.jsonl"));
+    assert_eq!(history::source_id("").len(), 16);
+}
+
+/// A Gemini record written again is the same entry updated: its id doesn't change.
+#[test]
+fn gemini_history_keeps_a_records_id_when_it_is_rewritten() {
+    use crate::readers::gemini;
+    let dir = temp_dir("gemini-ids");
+    let path = dir.join("session.jsonl");
+    let header = r#"{"sessionId":"g1","startTime":"2026-01-01T00:00:00Z","kind":"main"}"#;
+    let pending = r#"{"id":"g1","type":"gemini","content":"","toolCalls":[{"name":"run_shell_command","args":{}}]}"#;
+    let filled = r#"{"id":"g1","type":"gemini","content":"","toolCalls":[{"name":"run_shell_command","args":{"command":"pwd"}}]}"#;
+    fs::write(&path, format!("{header}\n{pending}\n")).unwrap();
+    let before = gemini::history(&path);
+    fs::write(&path, format!("{header}\n{pending}\n{filled}\n")).unwrap();
+    let after = gemini::history(&path);
+    assert_eq!(after.len(), 1);
+    assert_eq!(before[0].id, after[0].id);
+    assert_ne!(before[0].text, after[0].text);
+}

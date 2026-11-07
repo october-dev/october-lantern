@@ -278,7 +278,7 @@ pub enum Incoming {
     HistoryRead {
         request_id: String,
         agent_id: String,
-        messages: Option<Vec<crate::history::ChatMessage>>,
+        history: Option<crate::history::History>,
     },
 }
 
@@ -378,8 +378,8 @@ pub fn run() -> Result<()> {
                 Incoming::Scanned(known.clone())
             }
             ReadRequest::History { request_id, agent } => {
-                let messages = known.iter().find(|a| a.id == agent.id).and_then(|a| scanner.history(a));
-                Incoming::HistoryRead { request_id, agent_id: agent.id, messages }
+                let history = known.iter().find(|a| a.id == agent.id).and_then(|a| scanner.history(a));
+                Incoming::HistoryRead { request_id, agent_id: agent.id, history }
             }
         }
     });
@@ -451,10 +451,14 @@ pub fn run() -> Result<()> {
                     last_emit = Instant::now();
                 }
             }
-            Ok(Incoming::HistoryRead { request_id, agent_id, messages }) => {
+            Ok(Incoming::HistoryRead { request_id, agent_id, history }) => {
                 history_pending = false;
+                let supported = history.is_some();
+                let history = history.unwrap_or_default();
+                // `source` is the session these messages were read from, so a reply that was in
+                // flight while the agent changed sessions is still known for the old one.
                 emit(&json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
-                    "supported": messages.is_some(), "messages": messages.unwrap_or_default()}));
+                    "supported": supported, "source": history.source, "messages": history.messages}));
             }
             Ok(Incoming::Deliver(d)) => {
                 let done = d.done;

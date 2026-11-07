@@ -172,7 +172,8 @@ struct ChatView: View {
     static func keyed(_ messages: [ChatMessage]) -> [(key: String, message: ChatMessage)] {
         var seen: [String: Int] = [:]
         return messages.map { m in
-            let base = "\(m.role.rawValue)|\(m.at ?? "")|\(m.text.hashValue)"
+            // An entry's id where it has one: updated (a tool call filled in), it's the same row.
+            let base = m.id.map { "id|\($0)" } ?? "\(m.role.rawValue)|\(m.at ?? "")|\(m.text.hashValue)"
             let n = seen[base, default: 0]
             seen[base] = n + 1
             return (n == 0 ? base : "\(base)#\(n)", m)

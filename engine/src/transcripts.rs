@@ -44,6 +44,36 @@ pub fn read_range(path: &Path, from_end: bool, bytes: u64) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// The JSON lines of the last `bytes` of `path` (whole lines only), each with where it starts in
+/// the file. Session files are only appended to, so that offset names a line for good: history
+/// entries take it as their id.
+pub fn tail_lines(path: &Path, bytes: u64) -> Option<Vec<(u64, Value)>> {
+    let mut f = File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut buf = Vec::new();
+    let mut base = 0;
+    if len > bytes {
+        f.seek(SeekFrom::Start(len - bytes)).ok()?;
+        f.take(bytes).read_to_end(&mut buf).ok()?;
+        // Drop the partial first line.
+        let start = buf.iter().position(|&b| b == b'\n').map(|i| i + 1).unwrap_or(0);
+        buf.drain(..start);
+        base = len - bytes + start as u64;
+    } else {
+        f.read_to_end(&mut buf).ok()?;
+    }
+    let mut out = Vec::new();
+    let mut at = 0;
+    for line in buf.split(|&b| b == b'\n') {
+        let offset = base + at as u64;
+        at += line.len() + 1;
+        if let Ok(v) = serde_json::from_slice::<Value>(line) {
+            out.push((offset, v));
+        }
+    }
+    Some(out)
+}
+
 pub fn lines(text: &str) -> impl Iterator<Item = Value> + '_ {
     text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok())
 }

@@ -96,11 +96,16 @@ Answers `card.answer`: whether the answer was saved. `message` says why not (the
 The recent conversation with an agent (up to 120 messages from the end of its session file). `supported` is `false` for harnesses whose sessions Lantern can't read yet.
 ```json
 {"type":"historyResult","requestId":"h1","agentId":"codex:4242:1790180000","supported":true,
- "messages":[{"role":"user","text":"fix the test","at":"2026-09-23T17:03:00Z"},
-             {"role":"tool","text":"Run · npm test"},
-             {"role":"agent","text":"Fixed. The test was racing the timer."}]}
+ "source":"3f9a0c2e7d1b4a56",
+ "messages":[{"role":"user","text":"fix the test","at":"2026-09-23T17:03:00Z","id":"10422.0"},
+             {"role":"tool","text":"Run · npm test","id":"10811.0"},
+             {"role":"agent","text":"Fixed. The test was racing the timer.","id":"11290.0"}]}
 ```
 `role` is `user`, `agent` or `tool` (a one-line summary of a command or tool call).
+
+`source` names the session the messages were read from: an opaque, stable string (not a path), different after `/clear`, `/new` or any other session change in the same process. It's absent when there's no session to read yet. A client that keeps messages for a conversation compares it, so a reply read from one session (including one in flight while the agent switched) is never taken for another's.
+
+`id` names an entry within its `source`, the same on every read: its line's place in an append-only session file, OpenCode's part id or Gemini's record id. Two entries that look the same have different ids; an entry with a known id and new text is that entry updated (OpenCode saves a tool call first with no input, then fills it in), so it replaces the earlier version rather than adding one. Readers that can't name an entry omit it.
 
 ### `replyResult`
 ```json

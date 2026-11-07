@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::model::truncate;
-use crate::transcripts::{lines, read_range};
+use crate::transcripts::tail_lines;
 
 /// How far back to read. Long sessions are tens of MB; the recent part is what matters here.
 pub(crate) const TAIL_BYTES: u64 = 3 * 1024 * 1024;
@@ -30,14 +30,44 @@ pub struct ChatMessage {
     /// ISO 8601, when the session file records it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// Which entry of its session this is, the same on every read: the same id with new text is
+    /// that entry updated (a tool call filled in), not a new one. Unique within `History::source`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
 }
 
-pub(crate) fn push(out: &mut Vec<ChatMessage>, role: Role, text: &str, at: Option<&str>) {
+/// An agent's conversation as read now, and which session it was read from.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct History {
+    /// The session (file, or OpenCode session) the messages come from: a new one after `/clear`
+    /// or `/new` in the same process. An opaque, stable name, not a path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub messages: Vec<ChatMessage>,
+}
+
+/// A short, stable name for a session (FNV-1a of its path or id): the same in every version.
+pub(crate) fn source_id(s: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
+pub(crate) fn push(out: &mut Vec<ChatMessage>, role: Role, text: &str, at: Option<&str>, id: Option<String>) {
     let text = text.trim();
     if text.is_empty() {
         return;
     }
-    out.push(ChatMessage { role, text: truncate(text, MESSAGE_CHARS), at: at.map(String::from) });
+    out.push(ChatMessage { role, text: truncate(text, MESSAGE_CHARS), at: at.map(String::from), id });
+}
+
+/// The id of block `i` of the line at `offset`.
+pub(crate) fn line_id(offset: u64, i: impl std::fmt::Display) -> Option<String> {
+    Some(format!("{offset}.{i}"))
 }
 
 /// The last `MAX_MESSAGES` messages.
@@ -108,9 +138,9 @@ pub(crate) fn describe_code_call(name: &str, code: &str) -> String {
 }
 
 pub fn claude(path: &Path) -> Vec<ChatMessage> {
-    let Some(text) = read_range(path, true, TAIL_BYTES) else { return Vec::new() };
+    let Some(entries) = tail_lines(path, TAIL_BYTES) else { return Vec::new() };
     let mut out = Vec::new();
-    for entry in lines(&text) {
+    for (offset, entry) in entries {
         let kind = entry["type"].as_str().unwrap_or("");
         if !(kind == "user" || kind == "assistant") || entry["isSidechain"] == true || entry["isMeta"] == true {
             continue;
@@ -122,17 +152,18 @@ pub fn claude(path: &Path) -> Vec<ChatMessage> {
             Value::Array(a) => a.clone(),
             _ => continue,
         };
-        for b in blocks {
+        for (i, b) in blocks.iter().enumerate() {
+            let id = line_id(offset, i);
             match (kind, b["type"].as_str()) {
                 ("user", Some("text")) => {
                     let t = b["text"].as_str().unwrap_or("");
                     if !is_injected(t) {
-                        push(&mut out, Role::User, t, at);
+                        push(&mut out, Role::User, t, at, id);
                     }
                 }
-                ("assistant", Some("text")) => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at),
+                ("assistant", Some("text")) => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at, id),
                 ("assistant", Some("tool_use")) => {
-                    push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["input"]), at)
+                    push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["input"]), at, id)
                 }
                 _ => {}
             }
@@ -142,9 +173,9 @@ pub fn claude(path: &Path) -> Vec<ChatMessage> {
 }
 
 pub fn codex(path: &Path) -> Vec<ChatMessage> {
-    let Some(text) = read_range(path, true, TAIL_BYTES) else { return Vec::new() };
+    let Some(entries) = tail_lines(path, TAIL_BYTES) else { return Vec::new() };
     let mut out = Vec::new();
-    for entry in lines(&text) {
+    for (offset, entry) in entries {
         if entry["type"] != "response_item" {
             continue;
         }
@@ -157,17 +188,17 @@ pub fn codex(path: &Path) -> Vec<ChatMessage> {
                     Some("assistant") => Role::Agent,
                     _ => continue,
                 };
-                for b in p["content"].as_array().into_iter().flatten() {
+                for (i, b) in p["content"].as_array().into_iter().flatten().enumerate() {
                     let t = b["text"].as_str().unwrap_or("");
                     if matches!(role, Role::User) && is_injected(t) {
                         continue;
                     }
-                    push(&mut out, role.clone(), t, at);
+                    push(&mut out, role.clone(), t, at, line_id(offset, i));
                 }
             }
             Some("function_call") | Some("custom_tool_call") => {
                 let args = if p["arguments"].is_null() { &p["input"] } else { &p["arguments"] };
-                push(&mut out, Role::Tool, &describe_tool(p["name"].as_str().unwrap_or("tool"), args), at);
+                push(&mut out, Role::Tool, &describe_tool(p["name"].as_str().unwrap_or("tool"), args), at, line_id(offset, 0));
             }
             _ => {}
         }

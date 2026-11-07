@@ -10,9 +10,9 @@ use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
-use crate::history::{ChatMessage, Role, describe_tool, keep_recent, push};
+use crate::history::{ChatMessage, Role, describe_tool, keep_recent, line_id, push};
 use crate::model::{SessionStatus, State, epoch_ms, truncate};
-use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range};
+use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range, tail_lines};
 
 fn mtime_ms(path: &Path) -> Option<u64> {
     Some(fs::metadata(path).ok()?.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
@@ -131,10 +131,12 @@ pub mod opencode {
         Some(status)
     }
 
-    pub fn history(cwd: &Path, started_secs: u64) -> Vec<ChatMessage> {
-        let Some((session, _)) = session_for(cwd, started_secs) else { return Vec::new() };
+    /// The session's newest messages; each part keeps its id, so a tool call filled in later
+    /// (saved first as pending, with no input) is the same entry updated.
+    pub fn history(cwd: &Path, started_secs: u64) -> crate::history::History {
+        let Some((session, _)) = session_for(cwd, started_secs) else { return Default::default() };
         let rows = query(&format!(
-            "SELECT json_extract(m.data, '$.role') AS role, p.data AS part FROM part p \
+            "SELECT json_extract(m.data, '$.role') AS role, p.id AS pid, p.data AS part FROM part p \
              JOIN message m ON m.id = p.message_id WHERE m.session_id = {s} \
              AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT 80) \
              ORDER BY m.id, p.id",
@@ -143,16 +145,17 @@ pub mod opencode {
         let mut out = Vec::new();
         for r in rows {
             let Some(part) = r["part"].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()) else { continue };
+            let id = r["pid"].as_str().map(String::from);
             match (r["role"].as_str(), part["type"].as_str()) {
-                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), None),
-                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), None),
+                (Some("user"), Some("text")) => push(&mut out, Role::User, part["text"].as_str().unwrap_or(""), None, id),
+                (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, part["text"].as_str().unwrap_or(""), None, id),
                 (Some("assistant"), Some("tool")) => {
-                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), None)
+                    push(&mut out, Role::Tool, &describe_tool(part["tool"].as_str().unwrap_or("tool"), &part["state"]["input"]), None, id)
                 }
                 _ => {}
             }
         }
-        keep_recent(out)
+        crate::history::History { source: Some(crate::history::source_id(&format!("opencode:{session}"))), messages: keep_recent(out) }
     }
 }
 
@@ -234,28 +237,29 @@ pub mod pi {
     }
 
     pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(text) = read_range(path, true, crate::history::TAIL_BYTES) else { return Vec::new() };
+        let Some(entries) = tail_lines(path, crate::history::TAIL_BYTES) else { return Vec::new() };
         let mut out = Vec::new();
-        for e in lines(&text) {
+        for (offset, e) in entries {
             if e["type"] != "message" {
                 continue;
             }
             let at = e["timestamp"].as_str();
             let m = &e["message"];
             match m["role"].as_str() {
-                Some("user") => push(&mut out, Role::User, &text_of(&m["content"]).unwrap_or_default(), at),
+                Some("user") => push(&mut out, Role::User, &text_of(&m["content"]).unwrap_or_default(), at, line_id(offset, 0)),
                 Some("assistant") => {
-                    for b in m["content"].as_array().into_iter().flatten() {
+                    for (i, b) in m["content"].as_array().into_iter().flatten().enumerate() {
+                        let id = line_id(offset, i);
                         match b["type"].as_str() {
-                            Some("text") => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at),
+                            Some("text") => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at, id),
                             Some("toolCall") => {
-                                push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["arguments"]), at)
+                                push(&mut out, Role::Tool, &describe_tool(b["name"].as_str().unwrap_or("tool"), &b["arguments"]), at, id)
                             }
                             _ => {}
                         }
                     }
                     if let Some(err) = m["errorMessage"].as_str() {
-                        push(&mut out, Role::Agent, err, at);
+                        push(&mut out, Role::Agent, err, at, line_id(offset, "error"));
                     }
                 }
                 _ => {}
@@ -388,15 +392,18 @@ pub mod gemini {
         let mut out = Vec::new();
         for m in messages(path) {
             let at = m["timestamp"].as_str();
+            // Its record id: one written again (updated) replaces the earlier copy.
+            let id = |part: &str| m["id"].as_str().map(|id| format!("{id}.{part}"));
             match m["type"].as_str() {
-                Some("user") if is_real_prompt(&m) => push(&mut out, Role::User, &content_text(&m), at),
+                Some("user") if is_real_prompt(&m) => push(&mut out, Role::User, &content_text(&m), at, id("text")),
                 Some("gemini") => {
-                    push(&mut out, Role::Agent, &content_text(&m), at);
-                    for call in m["toolCalls"].as_array().into_iter().flatten() {
-                        push(&mut out, Role::Tool, &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]), at);
+                    push(&mut out, Role::Agent, &content_text(&m), at, id("text"));
+                    for (i, call) in m["toolCalls"].as_array().into_iter().flatten().enumerate() {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        push(&mut out, Role::Tool, &describe_tool(name, &call["args"]), at, id(&format!("tool{i}")));
                     }
                 }
-                Some("error") => push(&mut out, Role::Agent, &content_text(&m), at),
+                Some("error") => push(&mut out, Role::Agent, &content_text(&m), at, id("text")),
                 _ => {}
             }
         }
@@ -508,18 +515,21 @@ pub mod muse {
     }
 
     pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(text) = read_range(path, true, crate::history::TAIL_BYTES) else { return Vec::new() };
+        let Some(entries) = tail_lines(path, crate::history::TAIL_BYTES) else { return Vec::new() };
         let mut out = Vec::new();
-        for e in lines(&text) {
+        for (offset, e) in entries {
             let Some(("run", ev)) = event(&e) else { continue };
             let at = at_ms(&e).map(crate::model::iso);
             let at = at.as_deref();
             match ev["kind"].as_str() {
-                Some("started") => push(&mut out, Role::User, ev["prompt"].as_str().unwrap_or(""), at),
-                Some("assistant_message_committed") => push(&mut out, Role::Agent, ev["text"].as_str().unwrap_or(""), at),
+                Some("started") => push(&mut out, Role::User, ev["prompt"].as_str().unwrap_or(""), at, line_id(offset, 0)),
+                Some("assistant_message_committed") => {
+                    push(&mut out, Role::Agent, ev["text"].as_str().unwrap_or(""), at, line_id(offset, 0))
+                }
                 Some("assistant_tool_calls_committed") => {
-                    for call in ev["tool_calls"].as_array().into_iter().flatten() {
-                        push(&mut out, Role::Tool, &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]), at);
+                    for (i, call) in ev["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        push(&mut out, Role::Tool, &describe_tool(name, &call["args"]), at, line_id(offset, i));
                     }
                 }
                 _ => {}
