@@ -442,8 +442,9 @@ final class Assistant: ObservableObject {
             let since = link.sentAt ?? link.startedAt
             link.transcript = retained(merged(link.transcript, messages.filter { fresh($0, since: since) != false }))
         }
-        if let last = link.replies?.last, last.seen != true, contains(link.transcript, last) {
-            link.replies?[link.replies!.count - 1].seen = true
+        if var replies = link.replies, let last = replies.last, last.seen != true, contains(link.transcript, last) {
+            replies[replies.count - 1].seen = true
+            link.replies = replies
         }
         return link
     }
