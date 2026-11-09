@@ -156,22 +156,31 @@ pub mod opencode {
     }
 
     pub(crate) fn history_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<crate::history::History> {
+        history_with(db, cwd, started_secs, || {})
+    }
+
+    /// `history_in`, with `between` run after the session is chosen and before its messages are
+    /// read: where a test puts OpenCode writing at the same time.
+    pub(crate) fn history_with(db: &Path, cwd: &Path, started_secs: u64, between: impl FnOnce()) -> Option<crate::history::History> {
         let Some((session, _)) = session_since(db, cwd, started_secs * 1000)? else { return Some(Default::default()) };
+        between();
         let s = sql_str(&session);
-        // Coverage from the session's own message count, not from the messages that have parts:
-        // one just created, before its first part, would otherwise make a long session look whole.
-        let count = query_in(db, &format!("SELECT COUNT(*) AS n FROM message WHERE session_id = {s}"))?;
-        let total = count.first().and_then(|r| r["n"].as_u64()).unwrap_or(0) as usize;
+        // One statement, so one snapshot: the session's message count (its coverage) and the
+        // window come from the same moment, and a message written meanwhile is in both or in
+        // neither. The count is of messages, not of those with parts: one just created, before its
+        // first part, would otherwise make a long session look whole (it's a row with no part).
         let rows = query_in(
             db,
             &format!(
-                "SELECT json_extract(m.data, '$.role') AS role, json_extract(m.data, '$.time.created') AS created, \
-             p.id AS pid, p.data AS part FROM part p \
-             JOIN message m ON m.id = p.message_id WHERE m.session_id = {s} \
-             AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT {LAST_MESSAGES}) \
+                "WITH recent AS (SELECT id, data FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT {LAST_MESSAGES}) \
+             SELECT (SELECT COUNT(*) FROM message WHERE session_id = {s}) AS total, \
+             json_extract(m.data, '$.role') AS role, json_extract(m.data, '$.time.created') AS created, \
+             p.id AS pid, p.data AS part FROM recent m LEFT JOIN part p ON p.message_id = m.id \
              ORDER BY m.id, p.id"
             ),
         )?;
+        // No rows: no messages at all (each recent message gives at least one row).
+        let total = rows.first().and_then(|r| r["total"].as_u64()).unwrap_or(0) as usize;
         let mut out = Vec::new();
         for r in &rows {
             let Some(part) = r["part"].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()) else { continue };

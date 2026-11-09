@@ -1555,6 +1555,55 @@ fn opencode_history_coverage_and_failure() {
     assert!(opencode::history_in(&db, &cwd, 0).is_none(), "an unreadable database is a failed read");
 }
 
+/// OpenCode writing while Lantern reads, at the 80-message edge: the coverage and the messages
+/// come from the same moment, so a session growing past 80 is never read as a whole one (which
+/// Ask would take as a rewind and drop what it kept).
+#[test]
+fn opencode_history_coverage_holds_while_opencode_writes() {
+    use crate::readers::opencode;
+    let dir = temp_dir("opencode-interleave");
+    let db = dir.join("opencode.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE session(id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER);
+         CREATE TABLE message(id TEXT, session_id TEXT, time_updated INTEGER, data TEXT);
+         CREATE TABLE part(id TEXT, message_id TEXT, data TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO session VALUES('ses_1','t',?1,NULL,1000)", [cwd.to_string_lossy().into_owned()]).unwrap();
+    let message = |n: usize, parts: bool| {
+        let id = format!("msg_{n:04}");
+        let role = if n.is_multiple_of(2) { "user" } else { "assistant" };
+        let data = format!("{{\"role\":\"{role}\",\"time\":{{\"created\":{}}}}}", 1_790_000_000_000u64 + n as u64);
+        c.execute("INSERT INTO message VALUES(?1,'ses_1',?2,?3)", rusqlite::params![id, 1_790_000_000_000i64 + n as i64, data]).unwrap();
+        if parts {
+            let part = format!("{{\"type\":\"text\",\"text\":\"m{n}\"}}");
+            c.execute("INSERT INTO part VALUES(?1,?2,?3)", rusqlite::params![format!("prt_{n:04}"), id, part]).unwrap();
+        }
+    };
+    for n in 0..80 {
+        message(n, true);
+    }
+    let whole = opencode::history_with(&db, &cwd, 0, || {}).unwrap();
+    assert!(whole.complete, "80 messages: the whole session");
+    assert_eq!(whole.messages.first().map(|m| m.text.as_str()), Some("m0"));
+
+    // The 81st arrives after the session is chosen, before its messages are read.
+    let grown = opencode::history_with(&db, &cwd, 0, || message(80, true)).unwrap();
+    assert!(!grown.complete, "81 messages read as 80 of them: not the whole session");
+    assert_eq!(grown.messages.first().map(|m| m.text.as_str()), Some("m1"), "the window moved on");
+    assert_eq!(grown.messages.last().map(|m| m.text.as_str()), Some("m80"));
+
+    // The 82nd, started but without its first part yet.
+    let partial = opencode::history_with(&db, &cwd, 0, || message(81, false)).unwrap();
+    assert!(!partial.complete);
+    assert_eq!(partial.messages.last().map(|m| m.text.as_str()), Some("m80"));
+}
+
 /// A session file that can't be read is a failed read, which isn't cached as an empty one.
 #[test]
 fn an_unreadable_session_file_is_a_failed_read() {
