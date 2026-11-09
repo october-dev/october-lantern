@@ -28,6 +28,9 @@ pub struct Scanner {
     opencode_cache: HashMap<u32, ((u64, u64), SessionStatus)>,
     /// Working directory and start time per agent, for readers that match sessions by them.
     started: HashMap<u32, (PathBuf, u64)>,
+    /// When each agent's process started, in milliseconds (where the platform says): a guessed
+    /// session counts as its history only if written after that.
+    started_ms: HashMap<u32, (u64, u64)>,
     /// App sessions (Codex app threads, recent Claude Desktop/Cowork/Codex app sessions) by agent
     /// id: their session file, for history.
     app_paths: HashMap<String, (Kind, PathBuf)>,
@@ -188,6 +191,7 @@ impl Scanner {
             handles: HashMap::new(),
             opencode_cache: HashMap::new(),
             started: HashMap::new(),
+            started_ms: HashMap::new(),
             app_paths: HashMap::new(),
             app_handles: HashMap::new(),
             recent: None,
@@ -235,6 +239,7 @@ impl Scanner {
         self.opencode_cache.retain(|pid, _| live.contains(pid));
         self.children = live.iter().filter_map(|pid| table.child_of(*pid).map(|c| (*pid, c))).collect();
         self.started = agents.iter().filter_map(|(p, _)| p.cwd.clone().map(|c| (p.pid, (c, p.start_time)))).collect();
+        self.started_ms = agents.iter().map(|(p, _)| (p.pid, (p.start_time, p.start_ms))).collect();
 
         let mut out = Vec::new();
         for (p, kind) in agents {
@@ -464,8 +469,9 @@ impl Scanner {
         }
     }
 
-    /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions.
-    pub fn history(&mut self, agent: &Agent) -> Option<crate::history::History> {
+    /// The conversation for the chat view. `None` when Lantern can't read this harness's sessions;
+    /// `Err` when it couldn't read this one just now (keep what's shown, and try again).
+    pub fn history(&mut self, agent: &Agent) -> Option<Result<crate::history::History, crate::history::ReadFailed>> {
         let source = if let Some((kind, path)) = self.app_paths.get(&agent.id) {
             Some((*kind, path.clone()))
         } else {
@@ -492,53 +498,67 @@ impl Scanner {
                 }
                 Kind::Opencode => {
                     let (cwd, start) = self.started.get(&agent.pid)?.clone();
-                    let Some(stamp) = crate::readers::opencode::stamp() else { return Some(Default::default()) };
+                    let Some(stamp) = crate::readers::opencode::stamp() else { return Some(Ok(Default::default())) };
                     let stamp = HistoryStamp::OpenCode(cwd.clone(), start, stamp);
                     if let Some((old, messages)) = self.history_cache.get(&agent.id)
                         && *old == stamp
                     {
-                        return Some(messages.clone());
+                        return Some(Ok(messages.clone()));
                     }
-                    let history = crate::readers::opencode::history(&cwd, start);
+                    let Some(history) = crate::readers::opencode::history(&cwd, start) else {
+                        return Some(Err(crate::history::ReadFailed));
+                    };
                     self.remember_history(&agent.id, stamp, &history);
-                    return Some(history);
+                    return Some(Ok(history));
                 }
                 _ => return None,
             }
         };
         let exact = self.app_paths.contains_key(&agent.id) || agent.session_match == SessionMatch::Exact;
-        let Some((kind, path)) = source else { return Some(Default::default()) };
+        let Some((kind, path)) = source else { return Some(Ok(Default::default())) };
         // A session file that's gone (or not written yet) is an empty conversation, not an
         // unsupported agent.
-        let Ok(metadata) = std::fs::metadata(&path) else { return Some(Default::default()) };
-        let Ok(modified) = metadata.modified() else { return Some(Default::default()) };
+        let Ok(metadata) = std::fs::metadata(&path) else { return Some(Ok(Default::default())) };
+        let Ok(modified) = metadata.modified() else { return Some(Ok(Default::default())) };
         // A guessed session (picked by folder and time) is this process's conversation only once
         // it has written to it since it started: until then the newest file there may be an
         // earlier process's, which isn't this agent's history. (A session it resumed shows from
         // its first write.) Status keeps its own minute of tolerance.
         let modified_ms = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
-        if !exact && modified_ms < agent.start_time.saturating_mul(1000) {
-            return Some(Default::default());
+        if !exact && modified_ms < self.started_at_ms(agent) {
+            return Some(Ok(Default::default()));
         }
         let stamp = HistoryStamp::File(kind, path.clone(), crate::platform::file_id(&metadata), metadata.len(), modified);
         if let Some((old, messages)) = self.history_cache.get(&agent.id)
             && *old == stamp
         {
-            return Some(messages.clone());
+            return Some(Ok(messages.clone()));
         }
-        let messages = match kind {
+        let chat = match kind {
             Kind::Codex => crate::history::codex(&path),
             Kind::Pi | Kind::October => crate::readers::pi::history(&path),
             Kind::Gemini => crate::readers::gemini::history(&path),
             Kind::Muse => crate::readers::muse::history(&path),
             _ => crate::history::claude(&path),
         };
-        // Named by its file: `/clear` or `/new` in the same process is another source. The
-        // readers take the last TAIL_BYTES (Gemini replays its first REPLAY_BYTES).
-        let limit = if kind == Kind::Gemini { crate::readers::gemini::REPLAY_BYTES } else { crate::history::TAIL_BYTES };
-        let history = crate::history::History::of(&path.to_string_lossy(), metadata.len() <= limit, messages);
+        // A file that couldn't be read is no read, and isn't cached.
+        let Some(chat) = chat else { return Some(Err(crate::history::ReadFailed)) };
+        // Named by its file: `/clear` or `/new` in the same process is another source.
+        let history = crate::history::History::of(&path.to_string_lossy(), chat);
         self.remember_history(&agent.id, stamp, &history);
-        Some(history)
+        Some(Ok(history))
+    }
+
+    /// When `agent`'s process started, in milliseconds: to the millisecond where the platform
+    /// says (a file an earlier process wrote in the same second as this one started is still
+    /// before it), else its whole second.
+    fn started_at_ms(&self, agent: &Agent) -> u64 {
+        match self.started_ms.get(&agent.pid) {
+            // The same process (its whole-second start matches), and a millisecond time that agrees
+            // with it (Linux works out boot time two ways, which can differ by a second).
+            Some(&(secs, ms)) if secs == agent.start_time && ms > 0 && (ms / 1000).abs_diff(secs) <= 1 => ms,
+            _ => agent.start_time.saturating_mul(1000),
+        }
     }
 
     fn remember_history(&mut self, id: &str, stamp: HistoryStamp, history: &crate::history::History) {
@@ -783,19 +803,19 @@ mod history_cache_tests {
         let mut scanner = Scanner::new();
         let a = crate::tests::agent_for(123, 1, Some("ttys001"));
         scanner.app_paths.insert(a.id.clone(), (Kind::Claude, path.clone()));
-        assert_eq!(scanner.history(&a).unwrap().messages[0].text, "first");
-        assert_eq!(scanner.history(&a).unwrap().messages[0].text, "first");
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages[0].text, "first");
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages[0].text, "first");
         assert_eq!(scanner.history_cache.len(), 1);
-        let first_source = scanner.history(&a).unwrap().source;
+        let first_source = scanner.history(&a).unwrap().unwrap().source;
         write(&path, "changed message");
-        assert_eq!(scanner.history(&a).unwrap().messages[0].text, "changed message");
-        assert_eq!(scanner.history(&a).unwrap().source, first_source, "the same session file");
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages[0].text, "changed message");
+        assert_eq!(scanner.history(&a).unwrap().unwrap().source, first_source, "the same session file");
         let second = root.join("second.jsonl");
         write(&second, "new session");
         scanner.app_paths.insert(a.id.clone(), (Kind::Claude, second));
-        assert_eq!(scanner.history(&a).unwrap().messages[0].text, "new session");
-        assert_ne!(scanner.history(&a).unwrap().source, first_source, "a new session in the same process is another source");
-        assert!(scanner.history(&a).unwrap().complete, "a short file is read from its start");
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages[0].text, "new session");
+        assert_ne!(scanner.history(&a).unwrap().unwrap().source, first_source, "a new session in the same process is another source");
+        assert!(scanner.history(&a).unwrap().unwrap().complete, "a short file is read from its start");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -812,16 +832,42 @@ mod history_cache_tests {
         a.session_match = SessionMatch::Guessed;
         a.start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 5;
         scanner.claude_paths.insert(a.pid, (previous.clone(), false));
-        let h = scanner.history(&a).unwrap();
+        let h = scanner.history(&a).unwrap().unwrap();
         assert!(h.messages.is_empty() && h.source.is_none(), "the earlier process's conversation isn't shown");
         // Once written after the process started, it's this agent's (a resumed session).
         a.start_time = 0;
-        assert_eq!(scanner.history(&a).unwrap().messages[0].text, "old task");
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages[0].text, "old task");
         // An exact match needs no such evidence.
         let mut exact = crate::tests::agent_for(322, 1, Some("ttys003"));
         exact.start_time = a.start_time + u64::MAX / 2;
         scanner.claude_paths.insert(exact.pid, (previous, true));
-        assert_eq!(scanner.history(&exact).unwrap().messages.len(), 1);
+        assert_eq!(scanner.history(&exact).unwrap().unwrap().messages.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Within one second: a file the previous run wrote 200 ms before this process started is
+    /// still before it, and one written 200 ms after is this process's.
+    #[test]
+    fn the_ownership_check_uses_the_start_to_the_millisecond() {
+        let root = std::env::temp_dir().join(format!("lantern-owned-ms-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("s.jsonl");
+        std::fs::write(&path, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"same words\"}}\n").unwrap();
+        let written = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1_790_000_000_400);
+        std::fs::File::options().write(true).open(&path).unwrap().set_modified(written).unwrap();
+        let mut scanner = Scanner::new();
+        let mut a = crate::tests::agent_for(323, 1, Some("ttys004"));
+        a.session_match = SessionMatch::Guessed;
+        a.start_time = 1_790_000_000;
+        scanner.claude_paths.insert(a.pid, (path.clone(), false));
+        scanner.started_ms.insert(a.pid, (a.start_time, 1_790_000_000_600));
+        let before = scanner.history(&a).unwrap().unwrap();
+        assert!(before.messages.is_empty() && before.source.is_none(), "written before it started, in the same second");
+        scanner.started_ms.insert(a.pid, (a.start_time, 1_790_000_000_200));
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages.len(), 1, "written after it started");
+        // Without a millisecond start, the whole second it started in.
+        scanner.started_ms.remove(&a.pid);
+        assert_eq!(scanner.history(&a).unwrap().unwrap().messages.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

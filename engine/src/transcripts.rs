@@ -45,9 +45,10 @@ pub fn read_range(path: &Path, from_end: bool, bytes: u64) -> Option<String> {
 }
 
 /// The JSON lines of the last `bytes` of `path` (whole lines only), each with where it starts in
-/// the file. Session files are only appended to, so that offset names a line for good: history
-/// entries take it as their id.
-pub fn tail_lines(path: &Path, bytes: u64) -> Option<Vec<(u64, Value)>> {
+/// the file, and whether they start at the file's beginning. Session files are appended to, so
+/// that offset names a line for as long as earlier bytes don't change: history entries take it
+/// as their id. `None` when the file can't be read.
+pub fn tail_lines(path: &Path, bytes: u64) -> Option<(Vec<(u64, Value)>, bool)> {
     let mut f = File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     let mut buf = Vec::new();
@@ -71,7 +72,7 @@ pub fn tail_lines(path: &Path, bytes: u64) -> Option<Vec<(u64, Value)>> {
             out.push((offset, v));
         }
     }
-    Some(out)
+    Some((out, base == 0))
 }
 
 pub fn lines(text: &str) -> impl Iterator<Item = Value> + '_ {

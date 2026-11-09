@@ -52,13 +52,26 @@ pub struct History {
 }
 
 impl History {
-    /// `messages` read from all of a session (not a cut-off tail of it) named `source`.
-    pub(crate) fn of(source: &str, whole: bool, messages: Vec<ChatMessage>) -> Self {
+    /// What a reader read from the session named `source`.
+    pub(crate) fn of(source: &str, chat: Chat) -> Self {
         // `keep_recent` keeps at most MAX_MESSAGES: a full window may have dropped some.
-        let complete = whole && messages.len() < MAX_MESSAGES;
-        History { source: Some(source_id(source)), complete, messages }
+        let complete = chat.whole && chat.messages.len() < MAX_MESSAGES;
+        History { source: Some(source_id(source)), complete, messages: chat.messages }
     }
 }
+
+/// What a session reader read: the newest messages, and whether everything it read starts at
+/// the session's beginning. Readers return `None` when the session couldn't be read (a file
+/// error, a busy or failed database query): that's no read, not an empty conversation.
+#[derive(Debug, Default)]
+pub struct Chat {
+    pub messages: Vec<ChatMessage>,
+    pub whole: bool,
+}
+
+/// Why there's no history to give: the read failed (try again; keep what's shown).
+#[derive(Debug)]
+pub struct ReadFailed;
 
 /// A short, stable name for a session (FNV-1a of its path or id): the same in every version.
 pub(crate) fn source_id(s: &str) -> String {
@@ -150,8 +163,8 @@ pub(crate) fn describe_code_call(name: &str, code: &str) -> String {
     if tools.is_empty() { name.to_string() } else { tools.join(", ").replace('_', " ") }
 }
 
-pub fn claude(path: &Path) -> Vec<ChatMessage> {
-    let Some(entries) = tail_lines(path, TAIL_BYTES) else { return Vec::new() };
+pub fn claude(path: &Path) -> Option<Chat> {
+    let (entries, whole) = tail_lines(path, TAIL_BYTES)?;
     let mut out = Vec::new();
     for (offset, entry) in entries {
         let kind = entry["type"].as_str().unwrap_or("");
@@ -182,11 +195,11 @@ pub fn claude(path: &Path) -> Vec<ChatMessage> {
             }
         }
     }
-    keep_recent(out)
+    Some(Chat { messages: keep_recent(out), whole })
 }
 
-pub fn codex(path: &Path) -> Vec<ChatMessage> {
-    let Some(entries) = tail_lines(path, TAIL_BYTES) else { return Vec::new() };
+pub fn codex(path: &Path) -> Option<Chat> {
+    let (entries, whole) = tail_lines(path, TAIL_BYTES)?;
     let mut out = Vec::new();
     for (offset, entry) in entries {
         if entry["type"] != "response_item" {
@@ -216,5 +229,5 @@ pub fn codex(path: &Path) -> Vec<ChatMessage> {
             _ => {}
         }
     }
-    keep_recent(out)
+    Some(Chat { messages: keep_recent(out), whole })
 }

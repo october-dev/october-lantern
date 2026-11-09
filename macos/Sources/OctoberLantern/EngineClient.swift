@@ -23,8 +23,11 @@ final class EngineClient {
     var onHarness: ((EngineMessage.HarnessStatus) -> Void)?
     var onComputer: ((EngineMessage.ComputerStatus) -> Void)?
     var onModels: ((EngineMessage.ModelList) -> Void)?
-    /// An agent's conversation: whether it's supported, and what was read.
-    var onHistory: ((String, Bool, HistoryRead) -> Void)?
+    /// An agent's conversation: whether it's supported, what was read, and its request id.
+    var onHistory: ((String, Bool, HistoryRead, String) -> Void)?
+    /// A read that couldn't be done just now (the engine was busy, or the session couldn't be
+    /// read): the agent and the request id.
+    var onHistoryBusy: ((String, String) -> Void)?
     var onOctober: ((OctoberLink) -> Void)?
     var onPhone: ((PhoneModel.State) -> Void)?
     var onControl: ((ControlSnapshot) -> Void)?
@@ -293,6 +296,19 @@ final class EngineClient {
 
     func cancelHistory(agentId: String) { historyRequests.cancel(for: agentId) }
 
+    /// A read of `agentId`'s conversation begun now: one already on its way was asked before now,
+    /// so it's let go (its late reply is ignored) and this one takes its place. The request id,
+    /// or nil when the engine couldn't be asked.
+    func freshHistory(agentId: String) -> String? {
+        historyRequests.cancel(for: agentId)
+        guard let id = historyRequests.begin(for: agentId) else { return nil }
+        guard send(["type": "history", "requestId": id, "agentId": agentId]) else {
+            historyRequests.finish(id, for: agentId)
+            return nil
+        }
+        return id
+    }
+
     @discardableResult
     func keys(requestId: String, agentId: String, keys: [String], promptId: String?) -> Bool {
         var request: [String: Any] = ["type": "keys", "requestId": requestId, "agentId": agentId, "keys": keys]
@@ -412,7 +428,9 @@ final class EngineClient {
                         onModels?(list)
                     }
                 case .history(let id, let agentId, let supported, let busy, let read):
-                    if historyRequests.finish(id, for: agentId), !busy { onHistory?(agentId, supported, read) }
+                    if historyRequests.finish(id, for: agentId) {
+                        if busy { onHistoryBusy?(agentId, id) } else { onHistory?(agentId, supported, read, id) }
+                    }
                 case .october(let link): onOctober?(link)
                 case .phone(let state): onPhone?(state)
                 case .computerHold(let snapshot): onControl?(snapshot)

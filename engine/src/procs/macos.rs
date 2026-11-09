@@ -70,7 +70,14 @@ pub(super) fn ps_rows() -> Vec<PsRow> {
             };
             let name = c_str(&info.pbi_name);
             let comm = if name.is_empty() { c_str(&info.pbi_comm) } else { name };
-            Some(PsRow { pid: pid as u32, ppid: info.pbi_ppid, tty: tty_name(info.e_tdev), comm, start: info.pbi_start_tvsec })
+            Some(PsRow {
+                pid: pid as u32,
+                ppid: info.pbi_ppid,
+                tty: tty_name(info.e_tdev),
+                comm,
+                start: info.pbi_start_tvsec,
+                start_ms: info.pbi_start_tvsec * 1000 + info.pbi_start_tvusec / 1000,
+            })
         })
         .collect()
 }
@@ -99,7 +106,7 @@ fn short_info(pid: i32) -> Option<PsRow> {
     let mut info: ProcBsdShortInfo = unsafe { std::mem::zeroed() };
     let size = std::mem::size_of::<ProcBsdShortInfo>() as i32;
     let got = unsafe { libc::proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, (&mut info as *mut ProcBsdShortInfo).cast(), size) };
-    (got == size).then(|| PsRow { pid: pid as u32, ppid: info.ppid, tty: None, comm: c_str(&info.comm), start: 0 })
+    (got == size).then(|| PsRow { pid: pid as u32, ppid: info.ppid, tty: None, comm: c_str(&info.comm), start: 0, start_ms: 0 })
 }
 
 fn c_str(chars: &[libc::c_char]) -> String {

@@ -126,7 +126,7 @@ final class QuestionAndSendTests: XCTestCase {
     func testALiveRoutedTaskKeepsItsAnswerOnceTheSendLeavesTheWindow() {
         let typed = msg("u", .user, "Also add tests", 1)
         var link = Assistant.keeping(read([typed] + (1...10).map(step)), in: routed())
-        let answer = msg("a", .agent, "Tests added.", 200)
+        let answer = msg("a", .agent, "Tests added.", 121.5)
         let full = Array(([typed] + (1...119).map(step) + [answer]).suffix(120))
         XCTAssertFalse(full.contains(typed), "the send has left the window")
         XCTAssertEqual(Assistant.taskMessages(link, live: read(full)).last, answer)
@@ -353,10 +353,16 @@ final class QuestionAndSendTests: XCTestCase {
         let link = Assistant.keeping(window, in: started())
         XCTAssertNil(link.start)
         XCTAssertTrue(Assistant.taskMessages(link, live: window).isEmpty)
-        XCTAssertFalse(Assistant.unplaced(link, live: window, now: sent.addingTimeInterval(5)), "not yet: it may still show up")
-        XCTAssertTrue(Assistant.unplaced(link, live: window, now: sent.addingTimeInterval(60)))
-        XCTAssertTrue(Assistant.unplaced(link, live: read([msg("x", .user, "Other", 50)], "B"), now: sent.addingTimeInterval(60)))
-        XCTAssertFalse(Assistant.unplaced(link, live: read([], "A"), now: sent.addingTimeInterval(60)), "an empty session isn't missing anything")
+        let later = sent.addingTimeInterval(60)
+        XCTAssertFalse(Assistant.unplaced(link, live: window, working: false, now: sent.addingTimeInterval(5)), "not yet: it may still show up")
+        XCTAssertTrue(Assistant.unplaced(link, live: window, working: false, now: later))
+        XCTAssertTrue(Assistant.unplaced(link, live: read([msg("x", .user, "Other", 50)], "B"), working: false, now: later))
+        XCTAssertFalse(Assistant.unplaced(link, live: read([], "A"), working: false, now: later), "an empty session isn't missing anything")
+        XCTAssertFalse(Assistant.unplaced(link, live: window, working: true, now: later), "still working: it may not have read it yet")
+        var queued = routed()
+        XCTAssertFalse(Assistant.unplaced(queued, live: window, working: false, now: later), "a send that hasn't gone in isn't missing")
+        queued.delivery = "Sent"
+        XCTAssertTrue(Assistant.unplaced(queued, live: window, working: false, now: later))
     }
 
     func testMergingAddsOnlyWhatsNew() {
@@ -365,5 +371,88 @@ final class QuestionAndSendTests: XCTestCase {
         XCTAssertEqual(Assistant.merged(Array(a[0..<10]), Array(a[8..<20])), a)
         XCTAssertEqual(Assistant.merged([], Array(a[0..<3])), Array(a[0..<3]))
         XCTAssertEqual(Assistant.merged(Array(a[0..<3]), Array(a[0..<3])), Array(a[0..<3]))
+    }
+
+    // MARK: Round four (#24 audit): deep rewinds, identity, ownership at the boundary, submission
+
+    /// U, 300 steps and A, kept as the newest 60 steps and A; then the same session rewound to U
+    /// and its first 150 steps. The read shares nothing with what was kept, and its times show
+    /// what was kept came after it: taken back. A must go.
+    func testADeepRewindThatSharesNothingTakesBackWhatWasKept() {
+        let typed = msg("u", .user, "Also add tests", 1)
+        var link = Assistant.keeping(read([typed, step(1)]), in: routed())
+        let answer = msg("a", .agent, "Tests added.", 303.5)
+        link = Assistant.keeping(read(Array(([typed] + (1...300).map(step) + [answer]).suffix(120))), in: link)
+        XCTAssertEqual(link.transcript.last, answer)
+        let rewound = Array(([typed] + (1...150).map(step)).suffix(120))
+        XCTAssertFalse(rewound.contains(typed))
+        link = Assistant.keeping(read(rewound), in: link)
+        XCTAssertFalse(link.transcript.contains(answer), "the taken-back answer is gone")
+        XCTAssertEqual(link.transcript.filter { $0.role == .tool }.last, step(150))
+    }
+
+    /// Two steps alike in role, text and time but with different ids are different entries: a
+    /// window starting at the second keeps the answer between them.
+    func testEntriesAlikeButWithDifferentIdsArentTheSame() {
+        let typed = msg("u", .user, "Also add tests", 1)
+        let t1 = ChatMessage(role: .tool, text: "read", at: iso(5), id: "t1")
+        let answer = msg("a", .agent, "Read them.", 5)
+        let t2 = ChatMessage(role: .tool, text: "read", at: iso(5), id: "t2")
+        var link = Assistant.keeping(read([typed, t1, answer, t2]), in: routed())
+        let window = [t2] + (6...124).map(step)
+        link = Assistant.keeping(read(window), in: link)
+        XCTAssertTrue(link.transcript.contains(answer), "the answer before the shared step stays")
+        XCTAssertEqual(Assistant.index(of: t2, in: [t1]), nil, "a look-alike isn't the start")
+    }
+
+    /// Within the same moment: an earlier run's same prompt, written just before this task
+    /// began, isn't its start (no slack), nor a retry's; an identical earlier send isn't a new
+    /// send's, with or without a baseline.
+    func testTheStartIsNewToTheMillisecond() {
+        let p = read([msg("p", .user, "Make a poster", -0.5), msg("pa", .agent, "Old poster.", -0.2)], "P")
+        XCTAssertNil(Assistant.keeping(p, in: started()).start, "written half a second before it started")
+        var retry = started()
+        retry.startedAt = sent.addingTimeInterval(0.3)
+        XCTAssertNil(Assistant.keeping(read([msg("p", .user, "Make a poster", 0.1)], "P"), in: retry).start, "the failed run's prompt")
+        let earlier = msg("e", .user, "Also add tests", -0.5)
+        XCTAssertNil(Assistant.keeping(read([earlier]), in: routed()).start)
+        var withBaseline = routed()
+        withBaseline.baseline = ["e"]
+        withBaseline.baselineSource = "A"
+        let same = ChatMessage(role: .user, text: "Also add tests", at: iso(0.5), id: "e")
+        XCTAssertNil(Assistant.keeping(read([same]), in: withBaseline).start, "an entry it already had")
+        let now = msg("n", .user, "Also add tests", 0.5)
+        XCTAssertEqual(Assistant.keeping(read([same, now]), in: withBaseline).start?.id, "n")
+    }
+
+    /// Where a message for the latest task's agent goes, from a read made just now.
+    func testWhereAFollowUpGoesIsDecidedByAReadMadeNow() {
+        var link = routed()
+        link.source = "A"
+        XCTAssertEqual(Assistant.destination(for: link, now: read([], "A")), .sameConversation)
+        XCTAssertEqual(Assistant.destination(for: link, now: read([], "B")), .newConversation, "an empty new session")
+        XCTAssertEqual(Assistant.destination(for: link, now: read([], nil)), .newConversation, "no session yet after /clear")
+        XCTAssertEqual(Assistant.destination(for: link, now: nil), .unknown, "can't tell: nothing is sent, the draft stays")
+        XCTAssertEqual(Assistant.destination(for: routed(), now: read([], "B")), .sameConversation, "a task not yet placed")
+    }
+
+    /// A read asked for now is answered only by its own request: the last poll (from before a
+    /// `/clear`) doesn't count, a busy reply is tried again, and the watched read is updated too.
+    func testAReadMadeNowIsAnsweredByItsOwnRequest() {
+        let model = AppModel()
+        model.watch("claude:1:1")
+        var got: [HistoryRead?] = []
+        model.awaitRead(requestId: "history-fresh") { got.append($0) }
+        model.historyArrived(agentId: "claude:1:1", supported: true, read: read([], "A"), requestId: "history-poll")
+        XCTAssertTrue(got.isEmpty, "the earlier poll's answer isn't this read")
+        XCTAssertEqual(model.watchedRead?.source, "A")
+        model.historyArrived(agentId: "claude:1:1", supported: true, read: read([], "B"), requestId: "history-fresh")
+        XCTAssertEqual(got, [read([], "B")])
+        XCTAssertEqual(model.watchedRead?.source, "B")
+        model.awaitRead(requestId: "history-busy") { got.append($0) }
+        model.historyBusy(agentId: "claude:1:1", requestId: "history-busy")
+        XCTAssertEqual(got.count, 2)
+        XCTAssertNil(got[1], "busy, with no tries left: can't tell")
+        model.watch(nil)
     }
 }

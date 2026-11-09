@@ -106,7 +106,11 @@ fn main() -> Result<()> {
             let mut scanner = scanner::Scanner::new();
             let agents = scanner.scan();
             let agent = agents.iter().find(|a| a.id == id).ok_or_else(|| anyhow::anyhow!("no agent {id}"))?;
-            println!("{}", serde_json::to_string_pretty(&scanner.history(agent))?);
+            match scanner.history(agent) {
+                Some(Ok(history)) => println!("{}", serde_json::to_string_pretty(&history)?),
+                Some(Err(_)) => println!("couldn't read its session just now"),
+                None => println!("Lantern can't read this harness's sessions"),
+            }
             Ok(())
         }
         // Development: test a session reader against stored sessions.
@@ -116,17 +120,22 @@ fn main() -> Result<()> {
             let cwd = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("."));
             let start: u64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             let (status, chat) = match kind {
-                "opencode" => (readers::opencode::status(&cwd, start), readers::opencode::history(&cwd, start).messages),
+                "opencode" => {
+                    (readers::opencode::status(&cwd, start), readers::opencode::history(&cwd, start).unwrap_or_default().messages)
+                }
                 "gemini" => {
                     let f = readers::gemini::session_file(&cwd, start);
                     println!("file: {f:?}");
                     let m = f.as_ref().and_then(|f| std::fs::metadata(f).ok()).map(|_| 0).unwrap_or(0);
-                    (f.as_ref().map(|f| readers::gemini::parse(f, m)), f.map(|f| readers::gemini::history(&f)).unwrap_or_default())
+                    (
+                        f.as_ref().map(|f| readers::gemini::parse(f, m)),
+                        f.and_then(|f| readers::gemini::history(&f)).unwrap_or_default().messages,
+                    )
                 }
                 k => {
                     let f = readers::pi::session_file(&cwd, start, k == "october");
                     println!("file: {f:?}");
-                    (f.as_ref().map(|f| readers::pi::parse(f, 0)), f.map(|f| readers::pi::history(&f)).unwrap_or_default())
+                    (f.as_ref().map(|f| readers::pi::parse(f, 0)), f.and_then(|f| readers::pi::history(&f)).unwrap_or_default().messages)
                 }
             };
             println!("{status:#?}");

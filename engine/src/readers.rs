@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
-use crate::history::{ChatMessage, Role, describe_tool, keep_recent, line_id, push};
+use crate::history::{Chat, Role, describe_tool, keep_recent, line_id, push};
 use crate::model::{SessionStatus, State, epoch_ms, truncate};
 use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range, tail_lines};
 
@@ -56,34 +56,42 @@ pub mod opencode {
     }
 
     fn query(sql: &str) -> Vec<Value> {
-        let db = db();
+        query_in(&db(), sql).unwrap_or_default()
+    }
+
+    /// `None` when the query failed (busy, timed out, too large, not a database): not the same as
+    /// no rows. No database at all is no rows.
+    fn query_in(db: &Path, sql: &str) -> Option<Vec<Value>> {
         if !db.exists() {
-            return Vec::new();
+            return Some(Vec::new());
         }
-        crate::sqlite::query(&db, sql).unwrap_or_default()
+        crate::sqlite::query(db, sql).ok()
     }
 
     /// The session a process in `cwd` is working in: the top-level session there with the most
     /// recent activity, preferring ones created after the process started.
     pub fn session_for(cwd: &Path, started_secs: u64) -> Option<(String, String)> {
-        session_since(cwd, started_secs.saturating_sub(60) * 1000)
+        session_since(&db(), cwd, started_secs.saturating_sub(60) * 1000).flatten()
     }
 
     /// The session there with the most recent activity, among those created or active since
-    /// `since_ms`.
-    fn session_since(cwd: &Path, since_ms: u64) -> Option<(String, String)> {
+    /// `since_ms`. `None` when the database couldn't be read.
+    fn session_since(db: &Path, cwd: &Path, since_ms: u64) -> Option<Option<(String, String)>> {
         let dir = resolved(cwd).to_string_lossy().into_owned();
-        let rows = query(&format!(
-            "SELECT s.id, s.title, s.time_created AS created, \
+        let rows = query_in(
+            db,
+            &format!(
+                "SELECT s.id, s.title, s.time_created AS created, \
              (SELECT MAX(m.time_updated) FROM message m WHERE m.session_id = s.id) AS last \
              FROM session s WHERE s.directory = {} AND s.parent_id IS NULL \
              ORDER BY last DESC LIMIT 10",
-            sql_str(&dir)
-        ));
+                sql_str(&dir)
+            ),
+        )?;
         // A process with no session activity since it started hasn't begun one yet (or continued an
         // old one without writing): don't show a stale session. `started_secs == 0` means "any".
-        let pick = rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= since_ms || r["last"].as_u64().unwrap_or(0) >= since_ms)?;
-        Some((pick["id"].as_str()?.to_string(), pick["title"].as_str().unwrap_or("").to_string()))
+        let pick = rows.iter().find(|r| r["created"].as_u64().unwrap_or(0) >= since_ms || r["last"].as_u64().unwrap_or(0) >= since_ms);
+        Some(pick.and_then(|p| Some((p["id"].as_str()?.to_string(), p["title"].as_str().unwrap_or("").to_string()))))
     }
 
     fn parts(message_id: &str) -> Vec<Value> {
@@ -141,18 +149,29 @@ pub mod opencode {
     /// Only a session this process created or wrote since it started (`started_secs`, without the
     /// minute of tolerance `status` allows): a recent session of an earlier process in the same
     /// folder isn't its conversation. A session it resumed shows once it writes to it.
-    pub fn history(cwd: &Path, started_secs: u64) -> crate::history::History {
-        let Some((session, _)) = session_since(cwd, started_secs * 1000) else { return Default::default() };
-        let rows = query(&format!(
-            "SELECT json_extract(m.data, '$.role') AS role, json_extract(m.data, '$.time.created') AS created, \
-             m.id AS mid, p.id AS pid, p.data AS part FROM part p \
+    /// `None` when the database couldn't be read; a default (no session) when this process has
+    /// none yet.
+    pub fn history(cwd: &Path, started_secs: u64) -> Option<crate::history::History> {
+        history_in(&db(), cwd, started_secs)
+    }
+
+    pub(crate) fn history_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<crate::history::History> {
+        let Some((session, _)) = session_since(db, cwd, started_secs * 1000)? else { return Some(Default::default()) };
+        let s = sql_str(&session);
+        // Coverage from the session's own message count, not from the messages that have parts:
+        // one just created, before its first part, would otherwise make a long session look whole.
+        let count = query_in(db, &format!("SELECT COUNT(*) AS n FROM message WHERE session_id = {s}"))?;
+        let total = count.first().and_then(|r| r["n"].as_u64()).unwrap_or(0) as usize;
+        let rows = query_in(
+            db,
+            &format!(
+                "SELECT json_extract(m.data, '$.role') AS role, json_extract(m.data, '$.time.created') AS created, \
+             p.id AS pid, p.data AS part FROM part p \
              JOIN message m ON m.id = p.message_id WHERE m.session_id = {s} \
              AND m.id IN (SELECT id FROM message WHERE session_id = {s} ORDER BY id DESC LIMIT {LAST_MESSAGES}) \
-             ORDER BY m.id, p.id",
-            s = sql_str(&session)
-        ));
-        let read: std::collections::HashSet<&str> = rows.iter().filter_map(|r| r["mid"].as_str()).collect();
-        let whole = read.len() < LAST_MESSAGES;
+             ORDER BY m.id, p.id"
+            ),
+        )?;
         let mut out = Vec::new();
         for r in &rows {
             let Some(part) = r["part"].as_str().and_then(|d| serde_json::from_str::<Value>(d).ok()) else { continue };
@@ -168,7 +187,8 @@ pub mod opencode {
                 _ => {}
             }
         }
-        crate::history::History::of(&format!("opencode:{session}"), whole, keep_recent(out))
+        let chat = Chat { messages: keep_recent(out), whole: total <= LAST_MESSAGES };
+        Some(crate::history::History::of(&format!("opencode:{session}"), chat))
     }
 
     /// How many of a session's newest messages `history` reads.
@@ -252,8 +272,8 @@ pub mod pi {
         status
     }
 
-    pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(entries) = tail_lines(path, crate::history::TAIL_BYTES) else { return Vec::new() };
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (entries, whole) = tail_lines(path, crate::history::TAIL_BYTES)?;
         let mut out = Vec::new();
         for (offset, e) in entries {
             if e["type"] != "message" {
@@ -281,7 +301,7 @@ pub mod pi {
                 _ => {}
             }
         }
-        keep_recent(out)
+        Some(Chat { messages: keep_recent(out), whole })
     }
 }
 
@@ -293,7 +313,7 @@ pub mod gemini {
     use super::*;
 
     /// Everything after this much of a session log is ignored.
-    pub(crate) const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
+    const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
 
     fn root() -> PathBuf {
         std::env::var_os("GEMINI_CLI_HOME").map(PathBuf::from).unwrap_or_else(home).join(".gemini")
@@ -331,7 +351,14 @@ pub mod gemini {
 
     /// Replays the file into the current list of messages.
     fn messages(path: &Path) -> Vec<Value> {
-        let Some(text) = read_range(path, false, REPLAY_BYTES) else { return Vec::new() };
+        replay(path).map(|(list, _)| list).unwrap_or_default()
+    }
+
+    /// The file replayed, and whether all of it was (it's no longer than `REPLAY_BYTES`). `None`
+    /// when it can't be read.
+    fn replay(path: &Path) -> Option<(Vec<Value>, bool)> {
+        let whole = fs::metadata(path).ok()?.len() <= REPLAY_BYTES;
+        let text = read_range(path, false, REPLAY_BYTES)?;
         let mut list: Vec<Value> = Vec::new();
         for e in lines(&text) {
             if let Some(set) = e.get("$set") {
@@ -355,7 +382,7 @@ pub mod gemini {
                 None => list.push(e),
             }
         }
-        list
+        Some((list, whole))
     }
 
     fn content_text(m: &Value) -> String {
@@ -404,9 +431,10 @@ pub mod gemini {
         status
     }
 
-    pub fn history(path: &Path) -> Vec<ChatMessage> {
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (list, whole) = replay(path)?;
         let mut out = Vec::new();
-        for m in messages(path) {
+        for m in list {
             let at = m["timestamp"].as_str();
             // Its record id: one written again (updated) replaces the earlier copy.
             let id = |part: &str| m["id"].as_str().map(|id| format!("{id}.{part}"));
@@ -423,7 +451,7 @@ pub mod gemini {
                 _ => {}
             }
         }
-        keep_recent(out)
+        Some(Chat { messages: keep_recent(out), whole })
     }
 }
 
@@ -530,8 +558,8 @@ pub mod muse {
         status
     }
 
-    pub fn history(path: &Path) -> Vec<ChatMessage> {
-        let Some(entries) = tail_lines(path, crate::history::TAIL_BYTES) else { return Vec::new() };
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (entries, whole) = tail_lines(path, crate::history::TAIL_BYTES)?;
         let mut out = Vec::new();
         for (offset, e) in entries {
             let Some(("run", ev)) = event(&e) else { continue };
@@ -551,6 +579,6 @@ pub mod muse {
                 _ => {}
             }
         }
-        keep_recent(out)
+        Some(Chat { messages: keep_recent(out), whole })
     }
 }

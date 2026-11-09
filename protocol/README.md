@@ -105,9 +105,9 @@ The recent conversation with an agent (up to 120 messages from the end of its se
 
 `source` names the session the messages were read from: an opaque, stable string (not a path), different after `/clear`, `/new` or any other session change in the same process. It's absent when there's no session to read yet. A client that keeps messages for a conversation compares it, so a reply read from one session (including one in flight while the agent switched) is never taken for another's.
 
-Where Lantern only guesses an agent's session (by folder and start time: Pi, the October harness, Gemini CLI, OpenCode, and Claude Code or Codex without an exact match), a session counts as the agent's only once the process has written to it since it started. Until then the newest session in that folder may belong to an earlier process, so the result has no `source` and no messages. A session the process resumed shows from its first write.
+Where Lantern only guesses an agent's session (by folder and start time: Pi, the October harness, Gemini CLI, OpenCode, and Claude Code or Codex without an exact match), a session counts as the agent's only once it was written after the process started, compared to the millisecond where the platform gives the start time (macOS, Linux, Windows). Until then the newest session in that folder may belong to an earlier process, so the result has no `source` and no messages. A session the process resumed shows from its first write. This is evidence from timing, not proof of which process wrote the file: two live processes in one folder are reported as ambiguous instead.
 
-`complete` is `true` when the messages start at the session's beginning (nothing older was left out by the 120-message or file-size limits). An entry missing from a complete read has been taken back (a rewind), not pushed out of the window.
+`complete` is `true` when the messages start at the session's beginning (nothing older was left out by the 120-message, file-size or OpenCode message-count limits; OpenCode counts the session's messages, including ones with no parts yet). An entry missing from a complete read has been taken back (a rewind), not pushed out of the window.
 
 `id` names an entry within its `source`, the same on every read: its line's place in an append-only session file, OpenCode's part id or Gemini's record id. Two entries that look the same have different ids; an entry with a known id and new text is that entry updated (OpenCode saves a tool call first with no input, then fills it in), so it replaces the earlier version rather than adding one. Readers that can't name an entry omit it.
 
@@ -183,7 +183,7 @@ The environment snapshot is never returned over IPC or included in diagnostics a
 
 `replyResult` may carry `delivery: "queued"` and `message: "Queued in October"` when October accepted the entire reply without confirming final typing. October replies over 8,000 Unicode scalar values fail with `message_too_long`; nothing is truncated and the draft remains.
 
-`historyResult` may carry `busy: true` when the bounded reader is occupied; retry later without clearing the displayed conversation. Clients allow one outstanding history request per conversation and match the returned request id before applying it.
+`historyResult` may carry `busy: true` when the bounded reader is occupied, or when the session couldn't be read just now (a file error, or a busy, slow or failed database query); retry later without clearing the displayed conversation. A failed read is never sent as an empty conversation. Clients allow one outstanding history request per conversation and match the returned request id before applying it.
 
 `reply` types the text into the agent's terminal (see `route`), then presses Enter. For agents with `route.via == "none"` it returns `not_reachable`, and the app falls back to copying the text and bringing the host app forward. `october.pair` asks October Desktop to allow Lantern (October shows a code to compare), `october.cancelPair` withdraws that, and `october.forget` drops the credential October issued (Lantern then goes back to listing October's terminals read-only).
 

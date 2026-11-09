@@ -278,7 +278,7 @@ pub enum Incoming {
     HistoryRead {
         request_id: String,
         agent_id: String,
-        history: Option<crate::history::History>,
+        history: Option<Result<crate::history::History, crate::history::ReadFailed>>,
     },
 }
 
@@ -451,10 +451,17 @@ pub fn run() -> Result<()> {
                     last_emit = Instant::now();
                 }
             }
+            Ok(Incoming::HistoryRead { request_id, agent_id, history: Some(Err(_)) }) => {
+                // The session couldn't be read just now: like a busy reader, the client keeps what
+                // it shows and asks again. Never an empty conversation.
+                history_pending = false;
+                emit(&json!({"type": "historyResult", "requestId": request_id, "agentId": agent_id,
+                    "busy": true, "supported": true, "messages": []}));
+            }
             Ok(Incoming::HistoryRead { request_id, agent_id, history }) => {
                 history_pending = false;
                 let supported = history.is_some();
-                let history = history.unwrap_or_default();
+                let history = history.and_then(Result::ok).unwrap_or_default();
                 // `source` is the session these messages were read from, so a reply that was in
                 // flight while the agent changed sessions is still known for the old one; absent
                 // when there's no session to read yet.

@@ -57,6 +57,7 @@ fn proc(cmd: &[&str]) -> Proc {
         cmd: cmd.iter().map(|s| s.to_string()).collect(),
         cwd: None,
         start_time: 0,
+        start_ms: 0,
         tty: Some("ttys001".into()),
     }
 }
@@ -105,7 +106,7 @@ fn claude_transcript_states() {
     // `since` is the entry's own time, so a title written later doesn't start a new turn.
     assert_eq!(s.since, Some(1_790_182_269_000));
 
-    let chat = history::claude(&path);
+    let chat = history::claude(&path).unwrap().messages;
     let roles: Vec<String> = chat.iter().map(|m| format!("{:?}", m.role)).collect();
     assert_eq!(roles, ["User", "Agent", "Tool", "Agent"]);
     assert_eq!(chat[2].text, "Bash · npm test");
@@ -247,7 +248,7 @@ fn pi_session_states() {
     assert_eq!(s.title.as_deref(), Some("add a flag"));
     assert_eq!(s.session_id.as_deref(), Some("p1"));
     assert_eq!(s.since, Some(1_790_000_000_123));
-    let chat = pi::history(&path);
+    let chat = pi::history(&path).unwrap().messages;
     assert_eq!(chat.len(), 3);
     assert_eq!(chat[1].text, "read · a.ts");
 }
@@ -1212,7 +1213,7 @@ fn muse_sessions_give_state_question_and_history() {
         (s.state, s.last_message.as_deref(), s.since),
         (Some(State::Waiting), Some("PR 215 adds chat mode."), Some(1_791_834_142_000))
     );
-    let h = muse::history(&path);
+    let h = muse::history(&path).unwrap().messages;
     let roles: Vec<_> = h.iter().map(|m| (format!("{:?}", m.role), m.text.as_str())).collect();
     assert_eq!(
         roles,
@@ -1458,7 +1459,7 @@ fn history_ids_name_entries_for_good() {
     let step = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:05.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#;
     let answer = r#"{"type":"assistant","timestamp":"2026-09-23T16:51:05.000Z","message":{"content":[{"type":"text","text":"Done."},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}"#;
     fs::write(&path, format!("{step}\n{step}\n{answer}\n")).unwrap();
-    let first = history::claude(&path);
+    let first = history::claude(&path).unwrap().messages;
     let ids: Vec<String> = first.iter().map(|m| m.id.clone().unwrap()).collect();
     assert_eq!(first.len(), 4);
     assert_eq!(first[0].text, first[1].text);
@@ -1466,12 +1467,14 @@ fn history_ids_name_entries_for_good() {
     assert_eq!(unique.len(), 4, "identical steps are still distinct entries: {ids:?}");
 
     fs::write(&path, format!("{step}\n{step}\n{answer}\n{step}\n")).unwrap();
-    let more = history::claude(&path);
+    let more = history::claude(&path).unwrap().messages;
     assert_eq!(more[..4].iter().map(|m| m.id.clone().unwrap()).collect::<Vec<_>>(), ids, "appending keeps earlier ids");
 
-    let whole = transcripts::tail_lines(&path, u64::MAX).unwrap();
+    let (whole, from_start) = transcripts::tail_lines(&path, u64::MAX).unwrap();
+    assert!(from_start);
     let len = fs::metadata(&path).unwrap().len();
-    let tail = transcripts::tail_lines(&path, len - 10).unwrap();
+    let (tail, cut) = transcripts::tail_lines(&path, len - 10).unwrap();
+    assert!(!cut, "a read cut from the end doesn't start at the beginning");
     assert_eq!(tail.len(), whole.len() - 1, "the cut first line is dropped");
     assert_eq!(tail.iter().map(|(o, _)| *o).collect::<Vec<_>>(), whole[1..].iter().map(|(o, _)| *o).collect::<Vec<_>>());
 }
@@ -1494,10 +1497,69 @@ fn gemini_history_keeps_a_records_id_when_it_is_rewritten() {
     let pending = r#"{"id":"g1","type":"gemini","content":"","toolCalls":[{"name":"run_shell_command","args":{}}]}"#;
     let filled = r#"{"id":"g1","type":"gemini","content":"","toolCalls":[{"name":"run_shell_command","args":{"command":"pwd"}}]}"#;
     fs::write(&path, format!("{header}\n{pending}\n")).unwrap();
-    let before = gemini::history(&path);
+    let before = gemini::history(&path).unwrap().messages;
     fs::write(&path, format!("{header}\n{pending}\n{filled}\n")).unwrap();
-    let after = gemini::history(&path);
+    let after = gemini::history(&path).unwrap().messages;
     assert_eq!(after.len(), 1);
     assert_eq!(before[0].id, after[0].id);
     assert_ne!(before[0].text, after[0].text);
+}
+
+/// OpenCode's coverage comes from the session's own message count: a long session whose newest
+/// message has no parts yet isn't whole. A database that can't be read is no read, not an empty
+/// conversation; a short session is whole, and its entries carry their message's time.
+#[test]
+fn opencode_history_coverage_and_failure() {
+    use crate::readers::opencode;
+    let dir = temp_dir("opencode-coverage");
+    let db = dir.join("opencode.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE session(id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER);
+         CREATE TABLE message(id TEXT, session_id TEXT, time_updated INTEGER, data TEXT);
+         CREATE TABLE part(id TEXT, message_id TEXT, data TEXT);",
+    )
+    .unwrap();
+    let dir_s = cwd.to_string_lossy().into_owned();
+    c.execute("INSERT INTO session VALUES('ses_1','t',?1,NULL,1000)", [&dir_s]).unwrap();
+    let message = |n: usize, parts: bool| {
+        let id = format!("msg_{n:04}");
+        let role = if n.is_multiple_of(2) { "user" } else { "assistant" };
+        let data = format!("{{\"role\":\"{role}\",\"time\":{{\"created\":{}}}}}", 1_790_000_000_000u64 + n as u64);
+        c.execute("INSERT INTO message VALUES(?1,'ses_1',?2,?3)", rusqlite::params![id, 1_790_000_000_000i64 + n as i64, data]).unwrap();
+        if parts {
+            let part = format!("{{\"type\":\"text\",\"text\":\"m{n}\"}}");
+            c.execute("INSERT INTO part VALUES(?1,?2,?3)", rusqlite::params![format!("prt_{n:04}"), id, part]).unwrap();
+        }
+    };
+    for n in 0..10 {
+        message(n, true);
+    }
+    let short = opencode::history_in(&db, &cwd, 0).unwrap();
+    assert!(short.complete, "ten messages: the whole session");
+    assert_eq!(short.messages.len(), 10);
+    assert_eq!(short.messages[0].id.as_deref(), Some("prt_0000"));
+    assert!(short.messages[0].at.is_some(), "entries carry their message's time");
+
+    for n in 10..100 {
+        message(n, n != 99);
+    }
+    let long = opencode::history_in(&db, &cwd, 0).unwrap();
+    assert!(!long.complete, "100 messages, the newest without parts yet: not the whole session");
+
+    drop(c);
+    fs::write(&db, b"not a database").unwrap();
+    assert!(opencode::history_in(&db, &cwd, 0).is_none(), "an unreadable database is a failed read");
+}
+
+/// A session file that can't be read is a failed read, which isn't cached as an empty one.
+#[test]
+fn an_unreadable_session_file_is_a_failed_read() {
+    let dir = temp_dir("unreadable");
+    assert!(history::claude(&dir.join("missing.jsonl")).is_none());
+    assert!(crate::readers::pi::history(&dir.join("missing.jsonl")).is_none());
+    assert!(crate::readers::gemini::history(&dir.join("missing.jsonl")).is_none());
 }
