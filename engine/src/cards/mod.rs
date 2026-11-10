@@ -474,6 +474,12 @@ impl Cards {
         changed
     }
 
+    /// Whether this agent was started with Lantern's tools and is still running on them.
+    pub fn has_tools(&self, agent: &str) -> bool {
+        let db = self.db.lock().unwrap();
+        db.query_row("SELECT 1 FROM launches WHERE ended IS NULL AND agent = ?1 LIMIT 1", params![agent], |_| Ok(())).is_ok()
+    }
+
     /// Probe off the scan thread. A failed/unknown probe keeps the launch open.
     fn refresh_sessions(&self, alive: impl Fn(&str) -> Option<bool>) {
         let rows: Vec<(String, String)> = {
@@ -1009,6 +1015,20 @@ pub fn launched(registered: Option<Registered>, result: Result<crate::launch::La
     }
 }
 
+/// What a message Ask Lantern hands to an agent already running with the card tools ends with: an
+/// agent that's been going for days drifts back to asking in its reply, where the person may not
+/// look, so each new task says it again.
+pub const REMINDER: &str = "(From Lantern: if you need the person to decide something, like what to delete, move or \
+     buy, ask with ask_person instead of in your reply, and finish with show_result.)";
+
+/// Text for an agent with the card tools gets the reminder; any other agent gets it unchanged.
+pub fn remind(agent: &str, text: String) -> String {
+    match service() {
+        Some(cards) if cards.has_tools(agent) => format!("{text}\n\n{REMINDER}"),
+        _ => text,
+    }
+}
+
 /// What the first message says about the card tools.
 pub fn note() -> &'static str {
     "You have Lantern's tools (lantern): when you need the person to decide something, use ask_person instead of asking \
@@ -1316,6 +1336,7 @@ mod tests {
         assert!(bound(&cards)["endedAt"].is_null());
         assert!(!cards.bind(&[]));
         assert!(bound(&cards)["endedAt"].is_null());
+        assert!(cards.has_tools("october:42:7") && !cards.has_tools("october:42:8"));
         cards.db.lock().unwrap().execute("UPDATE launches SET created=?2 WHERE id=?1", params![launch, now() - 60_000]).unwrap();
         cards.refresh_sessions(|_| None);
         assert!(bound(&cards)["endedAt"].is_null());
@@ -1323,6 +1344,8 @@ mod tests {
         assert!(bound(&cards)["endedAt"].is_null());
         cards.refresh_sessions(|_| Some(false));
         assert!(bound(&cards)["endedAt"].is_number());
+        // Ended: a task handed to it now doesn't promise tools it no longer has.
+        assert!(!cards.has_tools("october:42:7"));
     }
 
     #[cfg(unix)]
