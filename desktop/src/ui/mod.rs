@@ -338,7 +338,7 @@ pub enum UiAction {
     OpenToolkit,
     OpenNotificationSettings,
     CheckUpdates,
-    /// Sends the logs, then opens an email to the October team.
+    /// Sends the logs to the October team and copies their code.
     ReportProblem,
     HidePill,
     ShowWelcome,

@@ -222,6 +222,7 @@ struct SettingsView: View {
             }
             Section("Help") {
                 Button("Report a Problem…") { Support.reportProblem(model: model) }
+                Text(Support.reportDetail).font(.caption).foregroundStyle(.secondary)
                 Button("Show Welcome Guide") { onShowWelcome() }
                 Link("lantern.october.dev", destination: Support.website)
                 Link(Support.email, destination: URL(string: "mailto:\(Support.email)")!)

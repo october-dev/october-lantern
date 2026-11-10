@@ -160,7 +160,7 @@ fn caption(ui: &mut Ui, text: &str) {
 }
 
 /// What "Share usage counts" sends (Swift SettingsView).
-const REPORT_DETAIL: &str = "Sends Lantern's logs, without passwords or keys, then opens an email.";
+const REPORT_DETAIL: &str = "Sends Lantern's logs to the October team right away, without passwords or keys, and copies the code.";
 pub(super) const USAGE_DETAIL: &str = "How often Lantern and its features are used, so we know what to improve. Never your code, messages, commands or folder names. If you sign in to October, counts are linked to your October account and email.";
 
 fn toggle(ui: &mut Ui, cx: &mut Ctx, title: &str, current: bool, change: impl FnOnce(bool) -> SettingChange) {

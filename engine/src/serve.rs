@@ -701,7 +701,10 @@ pub fn run() -> Result<()> {
                 Ok(Request::Send { request_id, agent_id, text, key }) => {
                     let key = key.filter(|k| !k.is_empty() && k.len() <= 64).unwrap_or_else(|| request_id.clone());
                     match reachable(&agents, &agent_id) {
-                        Ok(agent) => executor.submit(app_action(agent, Op::Bus { text, key }, "sendResult", request_id)),
+                        Ok(agent) => {
+                            let text = crate::cards::remind(&agent.id, text);
+                            executor.submit(app_action(agent, Op::Bus { text, key }, "sendResult", request_id))
+                        }
                         Err(o) => emit(&result_json("sendResult", &request_id, &o)),
                     }
                     next_scan = Instant::now() + Duration::from_millis(300);

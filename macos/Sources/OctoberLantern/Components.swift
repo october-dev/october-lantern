@@ -309,12 +309,29 @@ struct MarkdownBlocks: View {
         var blocks: [Block] = []
         var paragraph: [String] = []
         var code: [String]?
+        // The row just shown, while it may still turn out to be a table's header.
+        var tableRow: String?
         func flush() {
             if !paragraph.isEmpty { blocks.append(.paragraph(paragraph.joined(separator: "\n"))) }
             paragraph = []
         }
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let row = code == nil ? tableCells(trimmed) : nil
+            defer { if code == nil { tableRow = row.map { $0.joined(separator: " · ") } } }
+            if let row {
+                // A Markdown table, too wide for the panel as a grid: its header as a line of its
+                // own, then a row per line with its cells " · " apart.
+                flush()
+                if row.allSatisfy({ !$0.isEmpty && $0.allSatisfy { "-:".contains($0) } }) {
+                    if let header = tableRow, case .item(_, let last)? = blocks.last, last == header {
+                        blocks[blocks.count - 1] = .paragraph(header)
+                    }
+                } else {
+                    blocks.append(.item(marker: "•", text: row.joined(separator: " · ")))
+                }
+                continue
+            }
             if var lines = code {
                 if trimmed.hasPrefix("```") {
                     blocks.append(.code(lines.joined(separator: "\n")))
@@ -348,6 +365,12 @@ struct MarkdownBlocks: View {
         if let lines = code { blocks.append(.code(lines.joined(separator: "\n"))) }
         flush()
         return blocks
+    }
+
+    /// A table row's cells (`| a | b |`), or nil for any other line.
+    static func tableCells(_ line: String) -> [String]? {
+        guard line.count > 1, line.hasPrefix("|"), line.hasSuffix("|") else { return nil }
+        return line.dropFirst().dropLast().components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
     }
 }
 

@@ -324,8 +324,30 @@ pub fn parse_blocks(source: &str) -> Vec<Block> {
     let mut out = Vec::new();
     let mut paragraph = Vec::new();
     let mut code: Option<Vec<&str>> = None;
+    // The row just shown, while it may still turn out to be a table's header.
+    let mut table_row: Option<String> = None;
     for line in source.split('\n') {
         let trimmed = line.trim();
+        let row = if code.is_none() { table_cells(trimmed) } else { None };
+        let shown = row.as_ref().map(|cells| cells.join(" · "));
+        if let Some(cells) = row {
+            // A Markdown table, too wide for the panel as a grid: its header as a line of its own,
+            // then a row per line with its cells " · " apart.
+            flush(&mut paragraph, &mut out);
+            if cells.iter().all(|cell| !cell.is_empty() && cell.chars().all(|c| c == '-' || c == ':')) {
+                if let (Some(header), Some(Block::Item { text, .. })) = (&table_row, out.last())
+                    && text == header
+                {
+                    let header = header.clone();
+                    *out.last_mut().expect("checked above") = Block::Paragraph(header);
+                }
+            } else {
+                out.push(Block::Item { marker: "•".into(), text: cells.join(" · ") });
+            }
+            table_row = shown;
+            continue;
+        }
+        table_row = None;
         if let Some(lines) = &mut code {
             if trimmed.starts_with("```") {
                 out.push(Block::Code(lines.join("\n")));
@@ -360,6 +382,12 @@ pub fn parse_blocks(source: &str) -> Vec<Block> {
     }
     flush(&mut paragraph, &mut out);
     out
+}
+
+/// A table row's cells (`| a | b |`), or `None` for any other line.
+fn table_cells(line: &str) -> Option<Vec<String>> {
+    let inner = line.strip_prefix('|')?.strip_suffix('|')?;
+    Some(inner.split('|').map(|cell| cell.trim().to_string()).collect())
 }
 
 #[derive(Default)]
@@ -514,6 +542,23 @@ mod tests {
                 Block::Code("let x = 1;".into())
             ]
         );
+    }
+    #[test]
+    fn a_table_reads_as_a_header_then_a_row_per_line() {
+        let item = |text: &str| Block::Item { marker: "•".into(), text: text.into() };
+        assert_eq!(
+            parse_blocks(
+                "**Where the space goes**\n\n| What | Size |\n|---|---|\n| macOS itself | 30 GB |\n| `estate` copies | 22 GB |\n\nWant me to move it?"
+            ),
+            vec![
+                Block::Paragraph("**Where the space goes**".into()),
+                Block::Paragraph("What · Size".into()),
+                item("macOS itself · 30 GB"),
+                item("`estate` copies · 22 GB"),
+                Block::Paragraph("Want me to move it?".into())
+            ]
+        );
+        assert_eq!(parse_blocks("| a | b |\n\na | b"), vec![item("a · b"), Block::Paragraph("a | b".into())]);
     }
     #[test]
     fn inline_keeps_whitespace_unicode_and_unclosed_delimiters() {
