@@ -8,6 +8,28 @@ final class ChatLayoutTests: XCTestCase {
         String(MarkdownBlocks.attributed(MarkdownBlocks.parse(text)).characters)
     }
 
+    func testATableReadsAsAHeaderThenARowPerLine() {
+        let reply = """
+        **Where the space goes**
+
+        | What | Size |
+        |---|---|
+        | macOS itself | 30 GB |
+        | `estate` copies | 22 GB |
+
+        Want me to move it?
+        """
+        XCTAssertEqual(MarkdownBlocks.parse(reply), [
+            .paragraph("**Where the space goes**"),
+            .paragraph("What · Size"),
+            .item(marker: "•", text: "macOS itself · 30 GB"),
+            .item(marker: "•", text: "`estate` copies · 22 GB"),
+            .paragraph("Want me to move it?"),
+        ])
+        // A lone row of pipes, no separator under it, is still a row; "a | b" without the outer pipes is text.
+        XCTAssertEqual(MarkdownBlocks.parse("| a | b |\n\na | b"), [.item(marker: "•", text: "a · b"), .paragraph("a | b")])
+    }
+
     func testAReplyIsOneTextWithItsBlocksInOrder() {
         let reply = """
         Here's one ready to paste:

@@ -227,7 +227,7 @@ impl Lantern {
                 }
             }
             UiAction::GetOctober => self.open_url("https://www.october.dev"),
-            // Sends the logs, then opens the email with their code (`logs_sent`).
+            // Sends the logs and copies their code; an email opens only if they couldn't be sent (`logs_sent`).
             UiAction::ReportProblem => self.send_logs(),
             UiAction::HidePill => {
                 self.set_panel(None);

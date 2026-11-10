@@ -1,7 +1,7 @@
 //! Report a Problem (Swift `Support.reportProblem`): the engine sends a report with Lantern's logs,
-//! secrets taken out, to the October team (`lantern-engine report`) and gives a code, then an email
-//! opens with that code for the person to say what happened. If the logs can't be sent, they're
-//! saved to the Desktop and the email says to attach them.
+//! secrets taken out, to the October team (`lantern-engine report`) straight away and gives a code,
+//! which is copied and shown. An email opens only when the logs couldn't be sent: they're saved to
+//! the Desktop and the email says to attach them.
 use super::Lantern;
 use crate::os::Event;
 use serde_json::Value;
@@ -77,12 +77,14 @@ impl Lantern {
             let _ = crate::os::open(folder);
         }
         let logs = match &report {
-            LogsReport::Sent { code } => format!("Logs: {code}"),
+            LogsReport::Sent { .. } | LogsReport::Sending => {
+                self.model.system.logs = Some(report);
+                return;
+            }
             LogsReport::Saved { path, error } => {
                 format!("Logs couldn't be sent ({error}). They're saved as {path}: please attach that file.")
             }
             LogsReport::Failed { error } => format!("Logs couldn't be sent: {error}"),
-            LogsReport::Sending => String::new(),
         };
         if crate::os::open(super::apply::problem_report(&self.model.agents, Some(&logs))).is_err() {
             self.show(format!("Write to {} about the problem.", super::apply::SUPPORT_EMAIL));

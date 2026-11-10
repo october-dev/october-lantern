@@ -6,6 +6,7 @@ import ServiceManagement
 enum Support {
     static let email = "hey@october.dev"
     static let website = URL(string: "https://lantern.october.dev")!
+    static let reportDetail = "Sends Lantern's logs to the October team right away, without passwords or keys, and copies the code."
 
     static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
@@ -49,21 +50,14 @@ enum Support {
         if !attachments.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(attachments) }
     }
 
-    /// Report a Problem: with their OK, the engine sends Lantern's logs (secrets taken out) to the
-    /// October team and gives a code, then an email opens with that code for them to say what
-    /// happened. Logs that can't be sent are saved to the Desktop and attached instead.
+    /// Report a Problem: the engine sends Lantern's logs (secrets taken out) to the October team
+    /// straight away and gives a code, which is copied and shown. Choosing it is the OK: nothing to
+    /// write first. An email opens only when the logs couldn't be sent (they're saved to the Desktop
+    /// and attached), or when the person asks to add details.
     static func reportProblem(model: AppModel) {
-        let alert = NSAlert()
-        alert.messageText = "Report a problem"
-        alert.informativeText = "Lantern sends its logs to the October team, then opens an email for you to say what happened. The logs have Lantern's version, your Mac's version and Lantern's own logs, with passwords and keys taken out. Never your code or your agents' conversations."
-        alert.addButton(withTitle: "Send Logs and Write")
-        alert.addButton(withTitle: "Just Write")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate()
-        let choice = alert.runModal()
+        guard !sending else { return }
+        sending = true
         let crashes = recentCrashReports(since: Date().addingTimeInterval(-7 * 86400))
-        if choice == .alertSecondButtonReturn { emailProblem(agents: model.agents, logs: nil, attachments: crashes) }
-        guard choice == .alertFirstButtonReturn else { return }
         var details = diagnostics(agents: model.agents)
         details += "\nEngine: \(model.engineHealth)"
         details += "\nComputer use: \(model.computer?.status ?? "off")"
@@ -78,9 +72,21 @@ enum Support {
         model.show("Sending logs…")
         Task {
             let result = await runReport(details: details, token: token, version: version)
+            sending = false
             let error = result["error"] as? String ?? "something went wrong"
             if result["sent"] as? Bool == true, let code = result["code"] as? String {
-                emailProblem(agents: agents, logs: "Logs: \(code)", attachments: crashes)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(code, forType: .string)
+                model.show("Logs sent: \(code) (copied)")
+                let alert = NSAlert()
+                alert.messageText = "Logs sent: \(code)"
+                alert.informativeText = "The October team can now see Lantern's logs. The code is copied: send it to us with a line about what happened, wherever you talk to us."
+                alert.addButton(withTitle: "Done")
+                alert.addButton(withTitle: "Email Details…")
+                NSApp.activate()
+                if alert.runModal() == .alertSecondButtonReturn {
+                    emailProblem(agents: agents, logs: "Logs: \(code)", attachments: crashes)
+                }
             } else if let saved = result["saved"] as? String {
                 emailProblem(agents: agents, logs: "Logs couldn't be sent (\(error)), so they're attached.",
                              attachments: crashes + [URL(fileURLWithPath: saved)])
@@ -89,6 +95,9 @@ enum Support {
             }
         }
     }
+
+    /// A report is on its way: a second click waits for it.
+    private static var sending = false
 
     private static func emailProblem(agents: [Agent], logs: String?, attachments: [URL]) {
         compose(
