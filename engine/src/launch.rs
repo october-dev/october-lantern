@@ -1273,6 +1273,7 @@ mod startup_tests {
             cmd: vec!["node".into(), "/usr/bin/copilot".into()],
             cwd: None,
             start_time: 1,
+            start_ms: 1000,
             tty: Some("ttys001".into()),
         };
         let mut live = crate::procs::Live {

@@ -69,9 +69,33 @@ final class Assistant: ObservableObject {
         /// when it was first sent (what the agent said before then isn't its answer).
         var sendKey: String?
         var sentAt: Date?
+        /// Where this task's conversation begins: its own first message in the agent's session (the
+        /// send, or the prompt it was started with), once Lantern has found it there. Until then
+        /// nothing of the agent's counts as this task's. `transcript` then holds what came after
+        /// it, and that message stays the boundary by its id: a later copy of the same words, or
+        /// another October Bus nudge, isn't it.
+        var start: ChatMessage?
+        /// The session (protocol `historyResult.source`) `start` is in: what another session of
+        /// the same process says (after `/clear` or `/new`) isn't this task's.
+        var source: String?
+        /// For one it was sent to: the entries the agent's session (`baselineSource`) already
+        /// had when it was sent, when Lantern had read it. A copy of the send without a time
+        /// counts as this one only if it's new since then.
+        var baseline: [String]?
+        var baselineSource: String?
         /// When it was started, and when Lantern first saw its agent: for Send Logs.
         var startedAt: Date?
         var seenAt: Date?
+        /// What you sent its agent from here since, into this conversation (the newest few): so the
+        /// card can say when one isn't in it (the agent changed conversation as it went in).
+        var replies: [Reply]?
+    }
+
+    struct Reply: Codable, Equatable {
+        let text: String
+        let at: Date
+        /// Found in the task's conversation once: it stays found after it leaves what's kept.
+        var seen: Bool?
     }
 
     struct Conversation: Identifiable, Codable {
@@ -103,8 +127,24 @@ final class Assistant: ObservableObject {
     private var task: Task<Void, Never>?
     private var saving: Task<Void, Never>?
 
-    private init() {
+    /// Saves chats to disk; not in tests.
+    private let persisting: Bool
+
+    private convenience init() {
+        self.init(persisting: true)
+    }
+
+    /// For tests: nothing is read from or saved to disk, and the engine is `seams`.
+    convenience init(testing model: AppModel, seams: Seams) {
+        self.init(persisting: false)
+        self.model = model
+        self.seams = seams
+    }
+
+    private init(persisting: Bool) {
+        self.persisting = persisting
         dictation.onText = { [weak self] text, _ in self?.text = text }
+        guard persisting else { return }
         conversations = Self.load()
         // The text field's own paste ignores pictures: an image on the clipboard is added here.
         pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -181,19 +221,130 @@ final class Assistant: ObservableObject {
         }
     }
 
+    /// What was in the box when it was sent. A send that waits (see `submit`) sends this, not
+    /// what the box holds by the time it goes.
+    struct Draft: Equatable {
+        var text: String
+        var images: [URL]
+    }
+
+    /// A message for the agent waiting on a read of its conversation: what it is, which agent and
+    /// chat it's for. Only the newest one, while it's still this chat's, goes anywhere.
+    struct Submission: Equatable {
+        let id = UUID()
+        let draft: Draft
+        let agentId: String
+        let conversation: UUID
+        let link: TaskLink
+    }
+
+    /// The engine, for tests: a read made now, a reply typed in, a send routed to an agent.
+    struct Seams {
+        var readNow: (String, @escaping (HistoryRead?) -> Void) -> Void
+        var reply: (String, Agent) -> Void
+        var route: (String, Agent, String?, @escaping (Bool, Bool, String?) -> Void) -> Void
+    }
+    private var seams: Seams?
+
+    private func readNow(_ agentId: String, _ done: @escaping (HistoryRead?) -> Void) {
+        if let seams { return seams.readNow(agentId, done) }
+        guard let model else { return done(nil) }
+        model.readNow(agentId, done)
+    }
+
+    /// A send waiting on a read (see `submit`).
+    @Published private(set) var submitting: Submission?
+    /// Checking which conversation the agent is in before sending.
+    var checking: Bool { submitting != nil }
+    /// Messages a chat was left with before they went (by chat): back in the box when it's opened.
+    private var unsent: [UUID: Draft] = [:]
+    /// Changes when the chat does: a routed send's read that comes back after doesn't send.
+    private var epoch = 0
+    /// Turns whose routed send is waiting on its read.
+    private var presending: Set<UUID> = []
+
     func submit() {
+        guard !checking else { return }
         if let agent = activeAgent, !askLanternInstead {
-            reply(to: agent)
+            // What's in the box now is what goes: it's taken out before anything is waited on.
+            guard let draft = takeDraft() else { return }
+            // Which conversation the agent is in decides where this goes, and the last poll may
+            // be from before a `/clear`: a read asked for now settles it. A task not yet placed in
+            // a session has nothing to compare, so the reply goes straight in.
+            guard let link = turns.last(where: { $0.task != nil })?.task, link.source != nil else {
+                return reply(draft, to: agent)
+            }
+            let submission = Submission(draft: draft, agentId: agent.id, conversation: currentId, link: link)
+            submitting = submission
+            readNow(agent.id) { [weak self] read in self?.checked(submission, read) }
         } else {
             ask()
             askLanternInstead = false
         }
     }
 
+    /// The read for `submission` is in. Nothing goes if it's been cancelled (a new chat, another
+    /// one opened) or the chat's agent isn't that one now; then, or without a read, the message
+    /// goes back in the box.
+    func checked(_ submission: Submission, _ read: HistoryRead?) {
+        guard submitting?.id == submission.id else { return }
+        submitting = nil
+        guard currentId == submission.conversation, let agent = activeAgent, agent.id == submission.agentId else {
+            restore(submission.draft)
+            attachProblem = "That message wasn't sent: the agent in this chat changed while Lantern was checking. It's back in the box."
+            return
+        }
+        switch Self.destination(for: submission.link, now: read) {
+        case .sameConversation: reply(submission.draft, to: agent)
+        case .newConversation: followUp(submission.draft, to: agent, baseline: read)
+        case .unknown:
+            restore(submission.draft)
+            attachProblem = "Lantern couldn't check which conversation @\(agent.handle) is in just now, so nothing was sent. Try again."
+        }
+    }
+
+    /// Takes the message out of the box (nil when there's none).
+    private func takeDraft() -> Draft? {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty || !attachments.isEmpty else { return nil }
+        dictation.stop()
+        let draft = Draft(text: message, images: attachments)
+        text = ""
+        attachments = []
+        attachProblem = nil
+        return draft
+    }
+
+    /// Puts a message that didn't go back in the box, before anything typed since.
+    private func restore(_ draft: Draft) {
+        let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        text = typed.isEmpty ? draft.text : draft.text.isEmpty ? typed : draft.text + "\n\n" + typed
+        var images = draft.images
+        for url in attachments where !images.contains(url) { images.append(url) }
+        attachments = Array(images.prefix(ImageAttachments.limit))
+    }
+
+    /// The words that go for a message with only images.
+    private static func words(_ draft: Draft) -> String {
+        if !draft.text.isEmpty { return draft.text }
+        return draft.images.count == 1 ? "Take a look at this image." : "Take a look at these images."
+    }
+
     /// A new chat (the current one is kept in the list).
     func clear() {
         task?.cancel()
         cancelTask()
+        epoch += 1
+        // A message still waiting on its read stays with this chat, not sent and not lost.
+        if let waiting = submitting {
+            submitting = nil
+            unsent[waiting.conversation] = waiting.draft
+        }
+        for id in presending {
+            guard let i = turns.firstIndex(where: { $0.id == id }), turns[i].task?.delivery == nil else { continue }
+            turns[i].task?.error = "It wasn't sent: the chat was closed before it went in."
+        }
+        presending = []
         save()
         restoring = true
         turns = []
@@ -213,6 +364,10 @@ final class Assistant: ObservableObject {
         turns = conversation.turns
         restoring = false
         currentId = conversation.id
+        if let draft = unsent.removeValue(forKey: conversation.id) {
+            restore(draft)
+            attachProblem = "This message wasn't sent before you left the chat. It's back in the box."
+        }
     }
 
     func delete(_ conversation: Conversation) {
@@ -224,6 +379,13 @@ final class Assistant: ObservableObject {
     // MARK: The agent in the conversation
 
     /// The running agent from the latest task in this conversation.
+    /// Whether `link` is the newest task on its agent (a later one, sent to the same agent, takes
+    /// over showing its state and questions).
+    func isNewest(_ link: TaskLink) -> Bool {
+        guard let id = link.agentId else { return true }
+        return turns.last(where: { $0.task?.agentId == id })?.task == link
+    }
+
     var activeAgent: Agent? {
         guard let link = turns.last(where: { $0.task != nil })?.task else { return nil }
         return agent(for: link).flatMap { $0.isLive ? $0 : nil }
@@ -238,7 +400,7 @@ final class Assistant: ObservableObject {
     }
 
     /// Remembers which agent a task became and what it has said, as its messages arrive.
-    func track(_ link: TaskLink, agent: Agent?, messages: [ChatMessage]) {
+    func track(_ link: TaskLink, agent: Agent?, read: HistoryRead?) {
         guard let i = turns.lastIndex(where: { $0.task == link }) else { return }
         var updated = link
         if let agent, updated.agentId == nil {
@@ -247,20 +409,206 @@ final class Assistant: ObservableObject {
             let after = link.startedAt.map { " after \(Int(Date().timeIntervalSince($0))) s" } ?? ""
             AppLog.write("Ask Lantern: \(link.kind) task is agent \(agent.id)\(after)")
         }
-        if !messages.isEmpty { updated.transcript = Array(messages.suffix(60)) }
+        if let read { updated = Self.keeping(read, in: updated) }
         if updated != link { turns[i].task = updated }
     }
 
-    private func reply(to agent: Agent) {
-        var message = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty || !attachments.isEmpty, let model else { return }
-        if message.isEmpty { message = attachments.count == 1 ? "Take a look at this image." : "Take a look at these images." }
-        dictation.stop()
-        model.sendDirect(message + Self.imageLines(attachments), to: agent)
-        text = ""
-        attachments = []
-        attachProblem = nil
+    /// `link` reconciled with a newer read of its agent's conversation.
+    ///
+    /// - Until the task's own first message (`start`) shows up, nothing counts (see `startIndex`).
+    /// - While it's in the read, what follows it is the whole truth: an entry updated since is its
+    ///   new version, and one taken back (a rewind) is gone.
+    /// - A complete read without it: it was taken back, and so was everything after it.
+    /// - Otherwise the read has moved past it: reconciled with what was kept (`merged`), so an
+    ///   answer stays after it leaves the engine's window.
+    ///
+    /// Another session of the same process (`movedOn`) leaves it as it is.
+    static func keeping(_ read: HistoryRead, in link: TaskLink) -> TaskLink {
+        if movedOn(link, source: read.source) { return link }
+        var link = link
+        let messages = read.messages
+        guard let start = link.start else {
+            guard let i = startIndex(link, in: read) else { return link }
+            link.start = messages[i]
+            link.source = read.source
+            link.transcript = retained(Array(messages[(i + 1)...]))
+            return link
+        }
+        if let i = index(of: start, in: messages) {
+            link.transcript = retained(Array(messages[(i + 1)...]))
+        } else if read.complete {
+            link.transcript = []
+        } else {
+            let since = link.sentAt ?? link.startedAt
+            link.transcript = retained(merged(link.transcript, messages.filter { fresh($0, since: since) != false }))
+        }
+        if var replies = link.replies, let last = replies.last, last.seen != true, contains(link.transcript, last) {
+            replies[replies.count - 1].seen = true
+            link.replies = replies
+        }
+        return link
+    }
+
+    /// Whether `source` is another session than the one the task's messages came from.
+    static func movedOn(_ link: TaskLink, source: String?) -> Bool {
+        guard let bound = link.source, let source else { return false }
+        return bound != source
+    }
+
+    /// Where the task's first message is in a read that doesn't have it yet: the send (or Lantern's
+    /// October Bus nudge for it), or the prompt a started task was given, found by its first
+    /// words (so Lantern's notes, images or the engine's shortening don't hide it).
+    ///
+    /// It must be new: from after the task began (no slack: Lantern notes the time before the
+    /// agent can write it), and for a send, not among the entries the session already had when
+    /// Lantern read it just before sending (`baseline`). A copy without a time counts only by
+    /// that second rule. The engine gives a started agent's history only from a session that
+    /// process wrote after it started, so an earlier run's same words aren't in it.
+    static func startIndex(_ link: TaskLink, in read: HistoryRead) -> Int? {
+        let known = link.baselineSource == read.source ? link.baseline.map(Set.init) : nil
+        let new = { (m: ChatMessage) -> Bool in
+            if let known, let id = m.id, known.contains(id) { return false }
+            if let fresh = fresh(m, since: link.sentAt ?? link.startedAt, slack: 0) { return fresh }
+            return known != nil
+        }
+        if link.sent == true {
+            return sendIndex(link.prompt, since: nil, in: read.messages, accept: new)
+        }
+        let start = String(oneLine(link.prompt).prefix(60))
+        guard !start.isEmpty else { return nil }
+        return read.messages.firstIndex { m in m.role == .user && oneLine(m.text).contains(start) && new(m) }
+    }
+
+    /// Where `start` is in `messages`: by its id; by what it says and when only for an entry
+    /// without one (from a reader that can't name entries).
+    static func index(of start: ChatMessage, in messages: [ChatMessage]) -> Int? {
+        if let id = start.id { return messages.firstIndex { $0.id == id } }
+        return messages.firstIndex { $0.id == nil && $0.role == start.role && $0.text == start.text && $0.at == start.at }
+    }
+
+    /// Kept messages reconciled with a read that has moved past the task's start. The read is the
+    /// session as it is now from its first entry on, so from the first kept entry it holds, it
+    /// replaces what was kept: an entry updated since (a tool call filled in) is its new version,
+    /// and one taken back is gone. What's older than the read stays.
+    ///
+    /// A read that holds none of the kept entries either came after them all (the window moved
+    /// on) or replaced them (a deep rewind). Times tell which: a kept entry from after the read's
+    /// earliest entry, yet not in it, was taken back.
+    ///
+    /// Entries are the same by id; by what they say and when only without ids (saved before
+    /// entries had ids). Two entries with different ids are never the same, however alike.
+    static func merged(_ saved: [ChatMessage], _ window: [ChatMessage]) -> [ChatMessage] {
+        guard !saved.isEmpty else { return window }
+        guard !window.isEmpty else { return saved }
+        let ids = Set(window.compactMap(\.id))
+        let unnamed = Set(window.filter { $0.id == nil }.map(Self.content))
+        let inWindow = { (m: ChatMessage) -> Bool in
+            if let id = m.id { return ids.contains(id) }
+            return unnamed.contains(Self.content(m))
+        }
+        if let first = saved.firstIndex(where: inWindow) { return Array(saved[..<first]) + window }
+        guard let earliest = window.compactMap({ date($0.at) }).min() else { return saved + window }
+        return saved.filter { m in date(m.at).map { $0 <= earliest } ?? true } + window
+    }
+
+    private static func content(_ m: ChatMessage) -> String { "\(m.role.rawValue)|\(m.at ?? "")|\(m.text)" }
+
+    /// The newest `limit` messages of the conversation and the newest `limit` tool steps, in
+    /// order: steps don't push the agent's answers out of what a task keeps.
+    static func retained(_ messages: [ChatMessage], limit: Int = 60) -> [ChatMessage] {
+        let talk = messages.indices.filter { messages[$0].role != .tool }.suffix(limit)
+        let steps = messages.indices.filter { messages[$0].role == .tool }.suffix(limit)
+        let keep = Set(talk).union(steps)
+        return messages.indices.filter(keep.contains).map { messages[$0] }
+    }
+
+    /// What a task card shows: what it kept, reconciled with `live` when it's read live.
+    static func taskMessages(_ link: TaskLink, live: HistoryRead?) -> [ChatMessage] {
+        let kept = live.map { keeping($0, in: link) } ?? link
+        if kept.start != nil { return kept.transcript }
+        // Saved before tasks had a start, and not placed since: the raw tail it kept then.
+        if link.sent == true { return after(sent: link.prompt, since: link.sentAt, in: kept.transcript) }
+        let all = kept.transcript
+        guard let first = all.first, first.role == .user,
+              Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
+        return Array(all.dropFirst())
+    }
+
+    /// The task's first message hasn't shown up in its agent's conversation well after it began
+    /// (Ask first read it too late, or the agent moved on): Lantern can't tell which part is
+    /// this task's, so it shows none rather than guess.
+    ///
+    /// Not while the agent is still working, or a send hasn't gone in yet: a message waiting its
+    /// turn isn't missing.
+    static func unplaced(_ link: TaskLink, live: HistoryRead?, working: Bool, now: Date = Date()) -> Bool {
+        guard link.start == nil, !working, link.sent != true || link.delivery != nil, link.error == nil,
+              let live, live.source != nil, !live.messages.isEmpty,
+              let began = link.sentAt ?? link.startedAt ?? link.seenAt else { return false }
+        return now.timeIntervalSince(began) > 30
+    }
+
+    enum Destination: Equatable { case sameConversation, newConversation, unknown }
+
+    /// Where a message for the latest task's agent goes, from a read made just now: into the
+    /// task's own conversation, into the one the agent has moved to (as a task of its own), or,
+    /// without a read, nowhere yet (the draft stays).
+    static func destination(for link: TaskLink, now read: HistoryRead?) -> Destination {
+        guard let read else { return .unknown }
+        // No session at all now: the task's isn't the one it's in (a `/clear` not written yet).
+        guard let source = read.source else { return .newConversation }
+        return link.source == nil || link.source == source ? .sameConversation : .newConversation
+    }
+
+    /// The latest task's agent is in another conversation now (`/clear`, `/new`) than the one the
+    /// task is in, as last read: what you send next goes there, as a task of its own.
+    var inNewConversation: Bool {
+        guard let link = turns.last(where: { $0.task != nil })?.task, let agent = activeAgent, let model,
+              model.watchedAgentId == agent.id else { return false }
+        return Self.movedOn(link, source: model.watchedRead?.source)
+    }
+
+    /// A follow-up to an agent that has moved to another conversation: sent as a task of its own
+    /// (as October's hand-offs are), so its answer shows under it once the send is found there.
+    /// The earlier task keeps its own conversation.
+    private func followUp(_ draft: Draft, to agent: Agent, baseline: HistoryRead?) {
+        let message = Self.words(draft)
+        var turn = Turn(question: message)
+        turn.answer = "@\(agent.handle) is in a new conversation now, so this goes there."
+        if !draft.images.isEmpty { turn.images = draft.images.map(\.path) }
+        turns.append(turn)
+        send(message, to: agent, turn: turn.id, baseline: baseline)
+        Analytics.shared.capture("assistant_task_reply", ["kind": agent.kind.rawValue, "newConversation": true])
+    }
+
+    /// Typed into the latest task's conversation. Noted on the task, so its card can say if it
+    /// isn't found there (the agent changed conversation as it went in).
+    private func reply(_ draft: Draft, to agent: Agent) {
+        let message = Self.words(draft)
+        if let i = turns.lastIndex(where: { $0.task?.agentId == agent.id }) {
+            var replies = turns[i].task?.replies ?? []
+            replies.append(Reply(text: message, at: Date()))
+            turns[i].task?.replies = Array(replies.suffix(5))
+        }
+        let text = message + Self.imageLines(draft.images)
+        if let seams { seams.reply(text, agent) } else { model?.sendDirect(text, to: agent) }
         Analytics.shared.capture("assistant_task_reply", ["kind": agent.kind.rawValue])
+    }
+
+    /// Whether `messages` has `reply` (by its first words, from after it was sent).
+    static func contains(_ messages: [ChatMessage], _ reply: Reply) -> Bool {
+        let words = String(oneLine(reply.text).prefix(60))
+        return messages.contains { m in m.role == .user && oneLine(m.text).contains(words) && fresh(m, since: reply.at) != false }
+    }
+
+    /// Your newest message to the task's agent from here that isn't in what the card shows, once
+    /// that's clear: the agent is in another conversation now (the message went there, or
+    /// `/clear` came between), or it has been idle half a minute since it was sent. Nil while it
+    /// could still show up.
+    static func missingReply(_ link: TaskLink, shown: [ChatMessage], live: HistoryRead?, working: Bool,
+                             now: Date = Date()) -> Reply? {
+        guard link.start != nil, let last = link.replies?.last, last.seen != true, !contains(shown, last) else { return nil }
+        if let live, movedOn(link, source: live.source) { return last }
+        return !working && now.timeIntervalSince(last.at) > 30 ? last : nil
     }
 
     /// For snapshots: recent chats on the home, or a thread with a finished task in it. Nothing
@@ -379,6 +727,7 @@ final class Assistant: ObservableObject {
 
     private func save() {
         saving?.cancel()
+        guard persisting else { return }
         let kept = turns.filter { !$0.question.isEmpty }
         guard !kept.isEmpty else { return }
         let conversation = Conversation(id: currentId, title: Self.title(kept[0].question), updated: Date(), turns: kept)
@@ -576,7 +925,8 @@ final class Assistant: ObservableObject {
 
     /// Hands the work to an agent that's already running (October named it): through October Bus,
     /// or typed in. Its card joins the conversation, as for an agent the conversation started.
-    private func send(_ prompt: String, to agent: Agent, turn: UUID) {
+    /// `baseline` is a read of the agent's conversation just made; without one, one is made first.
+    private func send(_ prompt: String, to agent: Agent, turn: UUID, baseline: HistoryRead?? = nil) {
         guard let model, let i = turns.firstIndex(where: { $0.id == turn }) else { return }
         // October's message for that agent, not your words: those were to Lantern ("tell claude-1
         // to …"), and the agent would take them as something to pass on.
@@ -589,13 +939,35 @@ final class Assistant: ObservableObject {
         link.sentAt = Date()
         turns[i].task = link
         turns[i].started = "Sent to @\(agent.handle)"
-        model.sendFromAssistant(own + Self.imageLines(images), to: agent, key: link.sendKey) { [weak self] ok, uncertain, message in
+        // What its session has just before it goes in: an earlier copy of the same words (or an
+        // earlier Bus nudge) is one of these, so it isn't taken for this send.
+        guard let baseline else {
+            // Not sent if the chat changes meanwhile (`clear` says so on its card).
+            let epoch = self.epoch
+            presending.insert(turn)
+            return readNow(agent.id) { [weak self] read in
+                guard let self, self.epoch == epoch, self.presending.remove(turn) != nil else { return }
+                self.send(prompt, to: agent, turn: turn, baseline: .some(read))
+            }
+        }
+        if let read = baseline {
+            link.baseline = read.messages.compactMap(\.id)
+            link.baselineSource = read.source
+        }
+        link.sentAt = Date()
+        turns[i].task = link
+        let report: (Bool, Bool, String?) -> Void = { [weak self] ok, uncertain, message in
             guard let self, let i = self.turns.firstIndex(where: { $0.id == turn }), self.turns[i].task != nil else { return }
             if ok {
                 self.turns[i].task?.delivery = message ?? "Sent"
             } else {
                 self.turns[i].task?.error = message ?? (uncertain ? "Lantern isn't sure it went in. Check its terminal." : "It didn't go in.")
             }
+        }
+        if let seams {
+            seams.route(own + Self.imageLines(images), agent, link.sendKey, report)
+        } else {
+            model.sendFromAssistant(own + Self.imageLines(images), to: agent, key: link.sendKey, report: report)
         }
         Analytics.shared.capture("assistant_sent", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none", "bus": agent.busId != nil])
     }
@@ -604,26 +976,57 @@ final class Assistant: ObservableObject {
     /// Lantern's nudge to read it on October Bus, made after `since` (when it was sent). A nudge
     /// counts only with a time that shows it's this send's: every send's nudge has the same words.
     /// Nothing until that shows up.
+    ///
+    /// Typed in, the message arrives on one line (the engine turns line breaks into spaces so they
+    /// don't press Return), so it's compared with all whitespace runs as single spaces.
     static func after(sent prompt: String, since: Date?, in messages: [ChatMessage]) -> [ChatMessage] {
-        let start = String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-        func at(_ m: ChatMessage) -> Date? {
-            guard let s = m.at else { return nil }
-            let f = ISO8601DateFormatter()
-            f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
-        }
-        // A little slack for the two clocks (the agent's transcript and this app).
-        let fresh = { (m: ChatMessage) -> Bool? in
-            guard let since, let when = at(m) else { return nil }
-            return when >= since.addingTimeInterval(-2)
-        }
-        guard let i = messages.lastIndex(where: { m in
-            guard m.role == .user else { return false }
-            if m.text.contains(start) { return fresh(m) ?? true }
-            return m.text.contains("message on October Bus") && fresh(m) == true
-        }) else { return [] }
+        guard let i = sendIndex(prompt, since: since, in: messages) else { return [] }
         return Array(messages[(i + 1)...])
     }
+
+    /// Where the send is in `messages` (see `after`). With `accept`, a copy counts only if it says
+    /// so, in place of the time check after `since`.
+    static func sendIndex(_ prompt: String, since: Date?, in messages: [ChatMessage],
+                          accept: ((ChatMessage) -> Bool)? = nil) -> Int? {
+        let start = String(oneLine(prompt).prefix(60))
+        return messages.lastIndex(where: { m in
+            guard m.role == .user else { return false }
+            if let accept {
+                return accept(m) && ((!start.isEmpty && oneLine(m.text).contains(start)) || m.text.contains("message on October Bus"))
+            }
+            if !start.isEmpty, oneLine(m.text).contains(start) { return fresh(m, since: since) ?? true }
+            return m.text.contains("message on October Bus") && fresh(m, since: since) == true
+        })
+    }
+
+    /// Whether a message is from after `since`, with a little slack for the two clocks (the
+    /// agent's transcript and this app). Nil without both times.
+    static func fresh(_ m: ChatMessage, since: Date?, slack: TimeInterval = 2) -> Bool? {
+        guard let since, let when = date(m.at) else { return nil }
+        return when >= since.addingTimeInterval(-slack)
+    }
+
+    /// An entry's time (ISO 8601, with or without fractions of a second).
+    static func date(_ at: String?) -> Date? {
+        guard let at else { return nil }
+        return fractional.date(from: at) ?? whole.date(from: at)
+    }
+
+    private static let fractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let whole = ISO8601DateFormatter()
+
+    /// `text` trimmed, with every run of whitespace (line breaks included) as one space.
+    static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+    }
+
+    /// Questions answered in the agent's own terminal (an approval, a plan, a choice, a form or
+    /// question the engine reads as `other`), not with a message typed in.
+    static func answeredInTerminal(_ kind: String?) -> Bool { ["permission", "plan", "choice", "other"].contains(kind ?? "") }
 
     /// Sends again a message that didn't reach its agent.
     private func resend(_ link: TaskLink, turn: UUID) {
@@ -848,13 +1251,17 @@ struct AssistantThread: View {
                 .onChange(of: assistant.turns.last?.answer) {
                     if let last = assistant.turns.last { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
-                .onChange(of: model.watchedMessages.count) { proxy.scrollTo("task-bottom", anchor: .bottom) }
+                // The newest message, not the count: past the engine's 120-message window the count
+                // stays the same while new replies arrive.
+                .onChange(of: model.watchedMessages.last) { proxy.scrollTo("task-bottom", anchor: .bottom) }
             }
         }
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 6)
         // Only the latest task's agent is read live; the rest show what they last said.
         .onChange(of: assistant.activeAgent?.id, initial: true) { _, id in model.watch(id) }
         .onDisappear { model.watch(nil) }
+        // Whether Claude Code's approval prompts can reach this conversation (see TaskCard).
+        .onAppear { Hooks.shared.refresh() }
     }
 
 }
@@ -867,37 +1274,53 @@ private struct TaskCard: View {
     let latest: Bool
     @ObservedObject var model: AppModel
     @ObservedObject var assistant = Assistant.shared
+    @ObservedObject private var hooks = Hooks.shared
     @State private var showingActivity = false
 
     private var kind: AgentKind { AgentKind(rawValue: link.kind) }
     private var agent: Agent? { assistant.agent(for: link) }
 
-    /// The conversation without your first message (it's the question above). For an agent it was
-    /// sent to, only what came after it.
-    private var messages: [ChatMessage] {
-        let live = latest && agent != nil && agent?.id == model.watchedAgentId && !model.watchedMessages.isEmpty
-        let all = live ? model.watchedMessages : link.transcript
-        if link.sent == true { return Assistant.after(sent: link.prompt, since: link.sentAt, in: all) }
-        guard let first = all.first, first.role == .user,
-              Bubble.withoutLanternNotes(first.text).trimmingCharacters(in: .whitespacesAndNewlines) == link.prompt else { return all }
-        return Array(all.dropFirst())
+    /// Read live: the latest task, its agent the one being read, and a read in.
+    private var read: HistoryRead? {
+        guard latest, let agent, agent.id == model.watchedAgentId else { return nil }
+        return model.watchedRead
     }
+
+    /// The conversation after your first message (it's the question above).
+    private var messages: [ChatMessage] { Assistant.taskMessages(link, live: read) }
+
+    /// Its agent is in another conversation now (`/clear`, `/new`), even one with nothing in it
+    /// yet: this card keeps what it had, and what you send next goes there as a task of its own.
+    private var movedOn: Bool { read.map { Assistant.movedOn(link, source: $0.source) } ?? false }
+
+    /// The agent's state, question and status belong on this card: it's the newest task on that
+    /// agent, in the conversation the agent is in.
+    private var current: Bool { !movedOn && assistant.isNewest(link) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            // Once per render: it reconciles the live read with what the task kept.
+            let shown = messages
             agentHeader
-            ForEach(ChatView.keyed(messages.filter { $0.role != .tool }), id: \.key) { item in
+            ForEach(ChatView.keyed(shown.filter { $0.role != .tool }), id: \.key) { item in
                 Bubble(message: item.message, inAssistant: true)
             }
             // Kept after the agent exits: its questions, progress and result.
             if let launch = model.launch(forAgent: agent?.id ?? link.agentId) {
                 LaunchCards(launch: launch, model: model, keys: latest && agent?.isAnswerable != true)
             }
-            if let agent, agent.isAnswerable {
+            if current, let agent, agent.isAnswerable {
                 QuestionCard(agent: agent, model: model, keys: latest)
             }
+            if let missing = Assistant.missingReply(link, shown: shown, live: read, working: agent?.state == .working) {
+                note("Your message “\(Assistant.title(missing.text))” isn't in this conversation: @\(agent?.handle ?? "the agent") \(movedOn ? "had moved to a new one as it went in" : "may have taken it somewhere else"), so its answer can't show here. Open agent to see it.", color: Theme.muted)
+            } else if movedOn {
+                note("@\(agent?.handle ?? "It") is in a new conversation now (cleared, or a new one started), so this shows what it said before. What you send next goes to the new one.", color: Theme.muted)
+            } else if Assistant.unplaced(link, live: read, working: agent?.state == .working) {
+                note("Lantern can't find this message in @\(agent?.handle ?? "the agent")'s conversation, so it can't tell which part is the answer. Open agent to see it.", color: Theme.muted)
+            }
             status
-            let activity = messages.filter { $0.role == .tool }
+            let activity = shown.filter { $0.role == .tool }
             if !activity.isEmpty {
                 DisclosureGroup(isExpanded: $showingActivity) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -917,9 +1340,9 @@ private struct TaskCard: View {
             Color.clear.frame(height: 1).id(latest ? "task-bottom" : "task-\(link.prompt.hashValue)")
         }
         .padding(.vertical, 4)
-        .onChange(of: agent?.id, initial: true) { _, _ in assistant.track(link, agent: agent, messages: []) }
-        .onChange(of: model.watchedMessages) { _, now in
-            if latest, let agent, agent.id == model.watchedAgentId { assistant.track(link, agent: agent, messages: now) }
+        .onChange(of: agent?.id, initial: true) { _, _ in assistant.track(link, agent: agent, read: nil) }
+        .onChange(of: model.watchedRead) { _, now in
+            if latest, let agent, agent.id == model.watchedAgentId { assistant.track(link, agent: agent, read: now) }
         }
     }
 
@@ -968,12 +1391,20 @@ private struct TaskCard: View {
             }
         } else if link.signIn == true, agent?.state != .working {
             note("\(kind.displayName) needs you to sign in first. It's open in a Terminal window: sign in there and it starts on this.", color: Theme.amber)
+        } else if agent != nil, !current {
+            EmptyView()
         } else if let agent {
             // Only what Lantern can see: a finished turn or a closed agent isn't proof the task
             // was done, so nothing here claims it.
             switch agent.state {
-            case .working: busy("Working on it…")
-            case .needsInput where !agent.isAnswerable: note("Needs your answer. Reply below.", color: Theme.amber)
+            case .working:
+                busy("Working on it…")
+                // Claude Code's approval prompts reach Lantern only through its hooks: without
+                // them a task waiting for approval looks like one still working.
+                if kind == .claude, hooks.checked, !hooks.claude {
+                    note("If it stops to ask for approval, Lantern can't see that without hooks (Settings). Open agent to check.", color: Theme.muted)
+                }
+            case .needsInput where !agent.isAnswerable: needsYou(agent)
             case .needsInput: EmptyView()
             case .waiting: note("Finished its turn. Reply below if there's more.", color: Theme.muted)
             case .idle: note("Open, but not working on anything.", color: Theme.muted)
@@ -995,6 +1426,10 @@ private struct TaskCard: View {
             ProgressView().controlSize(.mini)
             Text(text).font(.system(size: 11)).foregroundStyle(Theme.muted)
         }
+    }
+
+    private func needsYou(_ agent: Agent) -> some View {
+        UnansweredQuestion(agent: agent, model: model, elsewhere: "Reply below.")
     }
 
     private func note(_ text: String, color: Color) -> some View {
@@ -1309,13 +1744,16 @@ struct AskBox: View {
 
     private var placeholder: String {
         if dictation.isRecording { return "Listening…" }
-        if replying, let agent = assistant.activeAgent { return "Reply to @\(agent.handle)…" }
+        if assistant.checking, let agent = assistant.activeAgent { return "Checking which conversation @\(agent.handle) is in…" }
+        if replying, let agent = assistant.activeAgent {
+            return assistant.inNewConversation ? "Message @\(agent.handle)'s new conversation…" : "Reply to @\(agent.handle)…"
+        }
         return assistant.turns.isEmpty ? "Ask Lantern, or tell it what to do" : "Ask a follow-up"
     }
 
     private var canSubmit: Bool {
         (!assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !assistant.attachments.isEmpty)
-            && (replying || !assistant.asking)
+            && (replying || !assistant.asking) && !assistant.checking
     }
 }
 

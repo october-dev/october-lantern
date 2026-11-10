@@ -15,6 +15,9 @@ pub struct Proc {
     pub cwd: Option<PathBuf>,
     /// Seconds since the epoch.
     pub start_time: u64,
+    /// The same, in milliseconds (0 when the platform doesn't say): whether a session file was
+    /// written before or after this process started can be a matter of a fraction of a second.
+    pub start_ms: u64,
     /// e.g. `ttys004`; `None` when the process has no controlling terminal.
     pub tty: Option<String>,
 }
@@ -94,6 +97,7 @@ impl ProcTable {
                     cmd: cached.map(|c| c.cmd.clone()).unwrap_or_default(),
                     cwd: None,
                     start_time: row.start,
+                    start_ms: row.start_ms,
                     tty: row.tty,
                 };
                 (row.pid, proc)
@@ -182,6 +186,8 @@ struct PsRow {
     comm: String,
     /// Seconds since the epoch; 0 when unknown.
     start: u64,
+    /// Milliseconds since the epoch; 0 when unknown.
+    start_ms: u64,
 }
 
 #[cfg(target_os = "macos")]

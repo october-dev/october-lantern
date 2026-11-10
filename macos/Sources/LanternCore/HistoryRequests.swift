@@ -21,5 +21,9 @@ public struct HistoryRequests {
         return true
     }
 
+    /// Forgets `agent`'s outstanding read: its late reply is then ignored. Other agents' reads
+    /// (Ask Lantern's while a chat closes, or the other way round) carry on.
+    public mutating func cancel(for agent: String) { pending[agent] = nil }
+
     public mutating func cancelAll() { pending.removeAll() }
 }

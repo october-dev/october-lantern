@@ -89,19 +89,29 @@ struct LaunchCards: View {
     @ObservedObject var model: AppModel
     /// Number keys pick an option of the waiting question.
     var keys = false
+    var part: Part = .all
+
+    /// What a view shows: all of it, only what waits for you (agent chat keeps that in view
+    /// above its conversation), or everything else.
+    enum Part { case all, waiting, rest }
 
     /// The last few closed questions and things shown, then waiting cards, then the latest result.
     private var shown: [Card] {
+        if part == .waiting { return launch.waiting }
         let result = launch.cards.last { $0.kind == "result" }
         let closed = launch.cards.filter { $0.kind != "result" && !$0.isWaiting }.suffix(3)
-        return Array(closed) + launch.waiting + (result.map { [$0] } ?? [])
+        return Array(closed) + (part == .rest ? [] : launch.waiting) + (result.map { [$0] } ?? [])
     }
 
+    private var hasProgress: Bool { part != .waiting && (launch.endedAt == nil || launch.status != nil || !launch.steps.isEmpty) }
+
     var body: some View {
-        if launch.endedAt == nil || launch.status != nil || !launch.steps.isEmpty || !shown.isEmpty {
+        if hasProgress || !shown.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-            if launch.endedAt == nil { TaskControls(launch: launch, model: model) }
-                progress
+                if part != .waiting {
+                    if launch.endedAt == nil { TaskControls(launch: launch, model: model) }
+                    progress
+                }
                 ForEach(shown) { card in
                     switch card.kind {
                     case "result": ResultCard(card: card)
@@ -185,7 +195,7 @@ struct AskCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(card.question ?? "")
                         .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .selectable().fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     CardStateLabel(card: card, sending: model.cardSending.contains(card.id))
                 }
@@ -200,7 +210,7 @@ struct AskCard: View {
                     }
                 }
                 if let text = card.answer?.text {
-                    Text("You answered: \(text)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.8)).textSelection(.enabled)
+                    Text("You answered: \(text)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.8)).selectable()
                 } else if card.isWaiting {
                     HStack(spacing: 6) {
                         TextField(card.options?.isEmpty == false ? "Or answer in your own words" : "Your answer", text: $words)
@@ -267,7 +277,7 @@ struct HandOffCard: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text("Your turn: \(card.step ?? "")")
                         .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .selectable().fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 4)
                     CardStateLabel(card: card, sending: model.cardSending.contains(card.id))
                 }
@@ -281,10 +291,10 @@ struct HandOffCard: View {
                         .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 }
                 if let why = card.why {
-                    Text("The agent says: \(why)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.8)).textSelection(.enabled)
+                    Text("The agent says: \(why)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.8)).selectable()
                 }
                 ForEach(Array((card.instructions ?? []).enumerated()), id: \.offset) { i, step in
-                    Text("\(i + 1). \(step)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.85)).textSelection(.enabled)
+                    Text("\(i + 1). \(step)").font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.85)).selectable()
                 }
                 if let url = card.url.flatMap(URL.init(string:)), let site {
                     Button("Open \(site)") { NSWorkspace.shared.open(url) }
@@ -341,7 +351,7 @@ struct ResultCard: View {
                 }
                 Text(markdown(card.summary ?? ""))
                     .font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.9))
-                    .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    .selectable().fixedSize(horizontal: false, vertical: true)
                 CardAttachments(card: card)
             }, waiting: false
         )
@@ -358,7 +368,7 @@ struct ShowCard: View {
                 HStack(spacing: 6) {
                     Image(systemName: "eye").font(.system(size: 11)).foregroundStyle(Theme.muted)
                     Text(card.title ?? "").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
-                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .selectable().fixedSize(horizontal: false, vertical: true)
                     Spacer()
                     if let details = card.details {
                         Button {
@@ -385,12 +395,12 @@ struct DraftBox: View {
             if Self.isLayout(text) {
                 ScrollView([.vertical, .horizontal]) {
                     Text(text).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.9))
-                        .textSelection(.enabled).fixedSize().frame(maxWidth: .infinity, alignment: .leading)
+                        .selectable().fixedSize().frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
                 ScrollView {
                     Text(text).font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.9))
-                        .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        .selectable().frame(maxWidth: .infinity, alignment: .leading)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

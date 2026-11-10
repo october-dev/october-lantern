@@ -203,8 +203,37 @@ func markdown(_ text: String) -> AttributedString {
     )) ?? AttributedString(text)
 }
 
-/// Agent text as blocks: paragraphs (inline Markdown, line breaks kept), bulleted and numbered
-/// lists, headings, and fenced code as monospaced blocks with a Copy button.
+/// Whether text can be selected here. Off inside a card that opens its conversation when
+/// clicked: selectable text keeps a click for itself (it may start a selection), so a click on the
+/// card's words wouldn't open it. Selecting and copying belong to the conversation it opens.
+private struct SelectableTextKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var selectableText: Bool {
+        get { self[SelectableTextKey.self] }
+        set { self[SelectableTextKey.self] = newValue }
+    }
+}
+
+private struct Selectable: ViewModifier {
+    @Environment(\.selectableText) private var selectable
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if selectable { content.textSelection(.enabled) } else { content.textSelection(.disabled) }
+    }
+}
+
+extension View {
+    /// Text selection, unless a clickable card around it turned it off (see `selectableText`).
+    func selectable() -> some View { modifier(Selectable()) }
+}
+
+/// Agent text with its Markdown: paragraphs (inline Markdown, line breaks kept), headings,
+/// bulleted and numbered lists, and fenced code in a monospaced face. It's one text, so a drag
+/// selects across all of it (separate texts each keep their own selection, so a drag stopped at
+/// the first paragraph or list); each code block has its own Copy below it.
 struct MarkdownBlocks: View {
     let text: String
     var ink: Color = Theme.ink
@@ -217,23 +246,63 @@ struct MarkdownBlocks: View {
     }
 
     var body: some View {
+        let blocks = Self.parse(text)
+        let code = blocks.compactMap { block -> String? in
+            if case .code(let c) = block { return c }
+            return nil
+        }
         VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(Self.parse(text).enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .paragraph(let t):
-                    Text(markdown(t)).font(.system(size: 12.5)).foregroundStyle(ink).textSelection(.enabled)
-                case .heading(let t):
-                    Text(markdown(t)).font(.system(size: 13, weight: .semibold)).foregroundStyle(ink).textSelection(.enabled)
-                case .item(let marker, let t):
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(marker).font(.system(size: 12.5)).foregroundStyle(Theme.muted)
-                        Text(markdown(t)).font(.system(size: 12.5)).foregroundStyle(ink).textSelection(.enabled)
+            Text(Self.attributed(blocks))
+                .font(.system(size: 12.5)).foregroundStyle(ink)
+                .selectable()
+                .fixedSize(horizontal: false, vertical: true)
+            if !code.isEmpty {
+                // Wraps onto more lines rather than running past a narrow panel: every block
+                // keeps its own Copy.
+                FlowRow(spacing: 12, lineSpacing: 4) {
+                    ForEach(Array(code.enumerated()), id: \.offset) { i, c in
+                        CopyButton(text: c, title: code.count == 1 ? "Copy code" : "Copy code \(i + 1)")
                     }
-                case .code(let code):
-                    CodeBlock(code: code)
                 }
             }
         }
+    }
+
+    /// The blocks as one string: list items on their own lines, other blocks a blank line apart
+    /// (close to how it was written; the whole-reply Copy gives the Markdown itself). Code keeps
+    /// its indentation.
+    static func attributed(_ blocks: [Block]) -> AttributedString {
+        var out = AttributedString()
+        var previous: Block?
+        for block in blocks {
+            if let previous {
+                let list = { (b: Block) -> Bool in
+                    if case .item = b { return true }
+                    return false
+                }
+                out += AttributedString(list(previous) && list(block) ? "\n" : "\n\n")
+            }
+            switch block {
+            case .paragraph(let t):
+                out += markdown(t)
+            case .heading(let t):
+                var h = markdown(t)
+                h[AttributeScopes.SwiftUIAttributes.FontAttribute.self] = Font.system(size: 13, weight: .semibold)
+                out += h
+            case .item(let marker, let t):
+                var m = AttributedString(marker + " ")
+                m[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = Theme.muted
+                out += m
+                out += markdown(t)
+            case .code(let c):
+                var code = AttributedString(c)
+                code[AttributeScopes.SwiftUIAttributes.FontAttribute.self] = Font.system(size: 11.5, design: .monospaced)
+                code[AttributeScopes.SwiftUIAttributes.BackgroundColorAttribute.self] = Color.black.opacity(0.3)
+                out += code
+            }
+            previous = block
+        }
+        return out
     }
 
     static func parse(_ text: String) -> [Block] {
@@ -282,32 +351,60 @@ struct MarkdownBlocks: View {
     }
 }
 
-struct CodeBlock: View {
-    let code: String
+/// Copies `text` as it is, and says so for a moment.
+struct CopyButton: View {
+    let text: String
+    var title = "Copy"
     @State private var copied = false
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(code).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.ink.opacity(0.9))
-                    .textSelection(.enabled).fixedSize().padding(8).padding(.trailing, 24)
-            }
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(code, forType: .string)
-                copied = true
-                Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
-            } label: {
-                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Theme.muted).frame(width: 22, height: 22)
-            }
-            .buttonStyle(.plain)
-            .help("Copy")
-            .accessibilityLabel("Copy code")
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            Task { try? await Task.sleep(for: .seconds(1.5)); copied = false }
+        } label: {
+            Label(copied ? "Copied" : title, systemImage: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.black.opacity(0.3)))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(Theme.hairline))
+        .buttonStyle(.plain)
+        .help(title)
+    }
+}
+
+/// Its views in a row, onto the next line when the row is full.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 4
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let frames = Self.frames(subviews.map { $0.sizeThatFits(.unspecified) }, width: proposal.width ?? .infinity,
+                                 spacing: spacing, lineSpacing: lineSpacing)
+        return CGSize(width: frames.map(\.maxX).max() ?? 0, height: frames.map(\.maxY).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        for (view, frame) in zip(subviews, Self.frames(sizes, width: bounds.width, spacing: spacing, lineSpacing: lineSpacing)) {
+            view.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    /// Where each size goes: left to right, a new line when the next one doesn't fit `width`.
+    static func frames(_ sizes: [CGSize], width: CGFloat, spacing: CGFloat, lineSpacing: CGFloat) -> [CGRect] {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0
+        for size in sizes {
+            if x > 0, x + size.width > width {
+                x = 0
+                y += line + lineSpacing
+                line = 0
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: size))
+            x += size.width + spacing
+            line = max(line, size.height)
+        }
+        return frames
     }
 }
 

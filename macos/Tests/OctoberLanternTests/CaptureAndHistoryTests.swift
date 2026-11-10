@@ -84,6 +84,18 @@ final class CaptureAndHistoryTests: XCTestCase {
         XCTAssertNotNil(requests.begin(for: "agent"))
     }
 
+    /// Closing a chat forgets only that chat's read: Ask Lantern's read of its task's agent, in
+    /// flight at the same time, still delivers (issue #10).
+    func testClosingAChatDoesNotVoidAnotherAgentsHistoryRead() {
+        var requests = HistoryRequests()
+        let chat = requests.begin(for: "chat-agent")!
+        let watched = requests.begin(for: "ask-agent")!
+        requests.cancel(for: "chat-agent")
+        XCTAssertFalse(requests.finish(chat, for: "chat-agent"), "The closed chat's late reply is ignored")
+        XCTAssertTrue(requests.finish(watched, for: "ask-agent"), "Ask Lantern's reply still arrives")
+        XCTAssertFalse(requests.finish(watched, for: "chat-agent"), "A reply never lands on another agent")
+    }
+
     func testLaunchTimeoutKeepsThePendingRequestUntilTheEngineAnswers() {
         let model = AppModel()
         model.track("launch-test", .launch, sent: true)

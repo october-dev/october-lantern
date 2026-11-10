@@ -1,6 +1,35 @@
 import AppKit
 import SwiftUI
 
+/// A question Lantern can't answer from here: what it asks (selectable, with its full request),
+/// and where to answer. One answered in the agent's terminal (an approval, a choice, a form) says
+/// Open agent: typing a reply there would answer it wrongly. Anything else says `elsewhere`.
+struct UnansweredQuestion: View {
+    let agent: Agent
+    @ObservedObject var model: AppModel
+    var elsewhere: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(agent.question ?? "\(agent.kind.displayName) is waiting for you.")
+                .font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.amber)
+                .selectable().fixedSize(horizontal: false, vertical: true)
+            if let detail = agent.questionDetail, detail != agent.question { RequestDetail(detail: detail) }
+            if Assistant.answeredInTerminal(agent.questionKind) {
+                HStack(spacing: 8) {
+                    Text("Answer it in its terminal.").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    SmallButton(title: "Open agent", symbol: "arrow.up.forward.app") { model.open(agent) }
+                }
+            } else if let elsewhere {
+                Text(elsewhere).font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.amber.opacity(0.12)))
+    }
+}
+
 /// An agent's question, answered right here: a permission (Yes / Always / No), Claude's own
 /// questions (their options, numbered as in the terminal) or its plan (start / keep planning).
 /// With `keys`, explicitly focus Use number keys before answering with a fresh number press.
@@ -72,7 +101,7 @@ struct QuestionCard: View {
                 ScrollView {
                     Text(markdown(text))
                         .font(.system(size: 12)).foregroundStyle(Theme.ink.opacity(0.9))
-                        .textSelection(.enabled)
+                        .selectable()
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 180)
@@ -145,7 +174,7 @@ struct QuestionCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(text)
                 .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink)
-                .textSelection(.enabled)
+                .selectable()
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
             if first, sent != nil, let promptId = agent.promptId {

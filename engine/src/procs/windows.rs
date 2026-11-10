@@ -35,13 +35,18 @@ impl Handle {
 
     /// Seconds since the epoch; 0 when unknown.
     fn start(&self) -> u64 {
+        self.start_ms() / 1000
+    }
+
+    /// Milliseconds since the epoch; 0 when unknown.
+    fn start_ms(&self) -> u64 {
         let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
         let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
         if unsafe { GetProcessTimes(self.0, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
             return 0;
         }
         let ticks = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
-        (ticks / 10_000_000).saturating_sub(EPOCH_DIFF_SECS)
+        (ticks / 10_000).saturating_sub(EPOCH_DIFF_SECS * 1000)
     }
 
     fn exe(&self) -> Option<String> {
@@ -137,12 +142,17 @@ pub(super) fn ps_rows() -> Vec<PsRow> {
     let rows: Vec<(u32, u32, String, u64, Option<String>)> = snapshot()
         .into_iter()
         .map(|(pid, ppid, comm)| {
-            let (start, tty) = Handle::open(pid).map_or((0, None), |h| (h.start(), h.console()));
-            (pid, ppid, comm, start, tty)
+            let (start_ms, tty) = Handle::open(pid).map_or((0, None), |h| (h.start_ms(), h.console()));
+            (pid, ppid, comm, start_ms, tty)
         })
         .collect();
-    let starts: HashMap<u32, u64> = rows.iter().map(|r| (r.0, r.3)).collect();
-    rows.into_iter().map(|(pid, ppid, comm, start, tty)| PsRow { pid, ppid: real_parent(ppid, start, &starts), tty, comm, start }).collect()
+    let starts: HashMap<u32, u64> = rows.iter().map(|r| (r.0, r.3 / 1000)).collect();
+    rows.into_iter()
+        .map(|(pid, ppid, comm, start_ms, tty)| {
+            let start = start_ms / 1000;
+            PsRow { pid, ppid: real_parent(ppid, start, &starts), tty, comm, start, start_ms }
+        })
+        .collect()
 }
 
 #[cfg(test)]

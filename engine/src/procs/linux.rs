@@ -33,6 +33,19 @@ fn stat(pid: u32) -> Option<Stat> {
     parse_stat(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
 }
 
+/// When the process started, in milliseconds: boot time from the clock and `/proc/uptime` (its
+/// `btime` is whole seconds) plus the clock ticks it started after boot.
+fn start_ms(ticks: u64) -> u64 {
+    static BOOT_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    let boot = *BOOT_MS.get_or_init(|| {
+        let up = std::fs::read_to_string("/proc/uptime").ok().and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok());
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+        up.map_or(0, |up| now.saturating_sub((up * 1000.0) as u64))
+    });
+    let rate = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+    if boot == 0 { 0 } else { boot + ticks * 1000 / rate }
+}
+
 fn start_time(ticks: u64) -> u64 {
     static BOOT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     let boot = *BOOT.get_or_init(|| {
@@ -110,7 +123,14 @@ pub(super) fn ps_rows() -> Vec<PsRow> {
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
         .filter_map(|pid| {
             let info = stat(pid)?;
-            Some(PsRow { pid, ppid: info.ppid, tty: tty_name(pid, info.tty_dev), comm: info.comm, start: start_time(info.start_ticks) })
+            Some(PsRow {
+                pid,
+                ppid: info.ppid,
+                tty: tty_name(pid, info.tty_dev),
+                comm: info.comm,
+                start: start_time(info.start_ticks),
+                start_ms: start_ms(info.start_ticks),
+            })
         })
         .collect()
 }

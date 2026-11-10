@@ -101,7 +101,10 @@ final class AppModel: ObservableObject {
     /// An agent Ask Lantern shows inside its conversation: its messages, read every two seconds
     /// like an open chat's.
     @Published private(set) var watchedAgentId: String?
-    @Published private(set) var watchedMessages: [ChatMessage] = []
+    /// The newest read of `watchedAgentId`'s conversation; nil until one arrives (or when its
+    /// harness can't be read). An empty read with a source is a real, empty conversation.
+    @Published private(set) var watchedRead: HistoryRead?
+    var watchedMessages: [ChatMessage] { watchedRead?.messages ?? [] }
     private var watchPoll: Task<Void, Never>?
     private var previewTimeout: Task<Void, Never>?
     private var chatPoll: Task<Void, Never>?
@@ -192,15 +195,10 @@ final class AppModel: ObservableObject {
             self.openWhenSeen = (session, Date().addingTimeInterval(30))
             self.openLaunched()
         }
-        engine.onHistory = { [weak self] agentId, supported, messages in
-            if let self, agentId == self.watchedAgentId, messages != self.watchedMessages { self.watchedMessages = messages }
-            guard let self, agentId == self.chatAgentId else { return }
-            if self.chatLoading { self.chatLoading = false }
-            // The real conversation takes over from the preview once it has something to show.
-            if self.launchPreview != nil, !messages.isEmpty || !supported { self.endPreview() }
-            if self.chatSupported != supported { self.chatSupported = supported }
-            if messages != self.chatMessages { self.chatMessages = messages }
+        engine.onHistory = { [weak self] agentId, supported, read, requestId in
+            self?.historyArrived(agentId: agentId, supported: supported, read: read, requestId: requestId)
         }
+        engine.onHistoryBusy = { [weak self] agentId, requestId in self?.historyBusy(agentId: agentId, requestId: requestId) }
         engine.onOctober = { [weak self] link in
             if link.status == "connected", self?.octoberLink?.status != "connected" {
                 Analytics.shared.capture("october_desktop_connected")
@@ -429,7 +427,9 @@ final class AppModel: ObservableObject {
 
     func closeChat() {
         if launchPreview != nil { endPreview() }
-        engine.cancelHistory()
+        // Only the chat's own read: Ask Lantern may be reading its task's agent at the same time,
+        // and voiding that read would drop the reply it brings.
+        if let chatAgentId, chatAgentId != watchedAgentId { engine.cancelHistory(agentId: chatAgentId) }
         if chatAgentId != nil { chatAgentId = nil }
         if !chatMessages.isEmpty { chatMessages = [] }
         chatPoll?.cancel()
@@ -759,12 +759,64 @@ final class AppModel: ObservableObject {
         return true
     }
 
-    /// Reads `agentId`'s conversation every two seconds into `watchedMessages` (nil stops).
+    /// A read of an agent's conversation arrived (the engine matched its request id).
+    func historyArrived(agentId: String, supported: Bool, read: HistoryRead, requestId: String) {
+        // Messages and the session they're from arrive together, so a task never sees one
+        // session's messages under another's name.
+        if agentId == watchedAgentId {
+            let now = supported ? read : nil
+            if now != watchedRead { watchedRead = now }
+        }
+        if let waiting = freshReads.removeValue(forKey: requestId) { waiting.done(supported ? read : nil) }
+        guard agentId == chatAgentId else { return }
+        let messages = read.messages
+        if chatLoading { chatLoading = false }
+        // The real conversation takes over from the preview once it has something to show.
+        if launchPreview != nil, !messages.isEmpty || !supported { endPreview() }
+        if chatSupported != supported { chatSupported = supported }
+        if messages != chatMessages { chatMessages = messages }
+    }
+
+    /// A read that couldn't be done just now: a fresh one waited on is asked again a few times.
+    func historyBusy(agentId: String, requestId: String) {
+        guard let waiting = freshReads.removeValue(forKey: requestId) else { return }
+        guard waiting.tries > 1 else { return waiting.done(nil) }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            self?.readNow(agentId, tries: waiting.tries - 1, waiting.done)
+        }
+    }
+
+    private struct FreshRead {
+        let tries: Int
+        let done: (HistoryRead?) -> Void
+    }
+    /// Reads asked for at a moment that matters (sending a follow-up), by request id.
+    private var freshReads: [String: FreshRead] = [:]
+
+    /// Reads `agentId`'s conversation as it is now, not as the last poll found it: the read is
+    /// asked for after this call. `done` gets nil when it can't be read (not running, busy after
+    /// a few tries, unsupported) or no answer comes within five seconds.
+    func readNow(_ agentId: String, tries: Int = 3, _ done: @escaping (HistoryRead?) -> Void) {
+        guard let id = engine.freshHistory(agentId: agentId) else { return done(nil) }
+        awaitRead(requestId: id, tries: tries, done)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            self?.freshReads.removeValue(forKey: id)?.done(nil)
+        }
+    }
+
+    /// Waits for the read with `requestId` (see `readNow`).
+    func awaitRead(requestId: String, tries: Int = 1, _ done: @escaping (HistoryRead?) -> Void) {
+        freshReads[requestId] = FreshRead(tries: tries, done: done)
+    }
+
+    /// Reads `agentId`'s conversation every two seconds into `watchedRead` (nil stops).
     func watch(_ agentId: String?) {
         guard agentId != watchedAgentId else { return }
         watchPoll?.cancel()
         watchedAgentId = agentId
-        watchedMessages = []
+        watchedRead = nil
         guard let agentId else { return }
         watchPoll = Task { @MainActor [weak self] in
             while !Task.isCancelled {
