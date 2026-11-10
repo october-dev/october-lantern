@@ -101,7 +101,7 @@ Updates, component downloads and optional October connections also use the netwo
 
 Lantern works on its own. Optionally connect it to [October Desktop](https://www.october.dev/) to see and reply to its supported sessions after approving the connection.
 
-For help, see [permissions](docs/PRODUCT.md#requirements-and-permissions), [updates and uninstalling](docs/PRODUCT.md#installing-updating-and-uninstalling), or write to [hey@october.dev](mailto:hey@october.dev).
+For help, see [troubleshooting](docs/TROUBLESHOOTING.md), [permissions](docs/PRODUCT.md#requirements-and-permissions), [updates and uninstalling](docs/PRODUCT.md#installing-updating-and-uninstalling), or write to [hey@october.dev](mailto:hey@october.dev).
 
 ## Build and contribute
 
