@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: October.Lantern
+PackageVersion: 0.6.21
+PackageLocale: en-US
+Publisher: October
+PublisherUrl: https://october.dev
+PublisherSupportUrl: https://github.com/october-dev/october-lantern/issues
+PackageName: October Lantern
+PackageUrl: https://lantern.october.dev
+License: Apache-2.0
+LicenseUrl: https://github.com/october-dev/october-lantern/blob/main/LICENSE
+Copyright: Copyright 2026 October Lantern contributors
+ShortDescription: A little light that glows when an AI coding agent needs you.
+Description: Lantern brings your coding agents together in one quiet place. See when an agent finishes a turn or asks for input, read what it said, and send a reply from one panel without leaving what you were doing.
+Moniker: lantern
+Tags:
+- ai
+- agents
+- claude-code
+- codex
+- developer-tools
+ReleaseNotesUrl: https://github.com/harshsaver/october-lantern-releases/releases/tag/v0.6.21
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
