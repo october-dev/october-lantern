@@ -82,7 +82,7 @@ Optional hooks add completion updates for Codex and permission requests for Clau
 |---|---|
 | **Mac** | Direct replies through cmux, Terminal, iTerm2 and tmux, including background sessions Lantern starts. Other terminals use copy and paste. |
 | **Linux** | Direct replies to tmux sessions, including those Lantern starts. Other terminals use the clipboard. |
-| **Windows (preview)** | Direct replies to sessions Lantern starts. Agents started in other terminals remain visible; answer them in their terminal. |
+| **Windows (preview)** | Direct replies to sessions Lantern starts and to agents in their own console (Windows Terminal, VS Code, console windows). |
 
 Claude Code's hook-based **Allow / Deny** buttons work in cmux, iTerm2 and tmux; Mac Terminal supports text replies. See the [compatibility guide](docs/PRODUCT.md#supported-terminals) and [platform notes](docs/BUILDING.md) for details.
 

@@ -82,7 +82,7 @@ Omit `-Debug` for an optimized build without a console window. Keep the app and 
 ### Sessions and desktop integration
 
 - Lantern discovers supported agents in Windows Terminal, VS Code, Cursor, WezTerm and console windows. Open brings the terminal window forward, rather than selecting an exact tab.
-- Direct replies go to sessions Lantern starts in its own ConPTY host. Their terminal windows and Lantern can close while the agent keeps running. Agents started in other terminals are monitored, not typed into.
+- Direct replies go to sessions Lantern starts in its own ConPTY host. Their terminal windows and Lantern can close while the agent keeps running. Agents started in other terminals can also receive replies in their own console, with checks before typing.
 - Screenshots use the display under the pointer and leave out Lantern's own windows. Sign-in uses Windows Credential Manager. Dictation uses local whisper.cpp; the mic asks before downloading a missing speech model/runtime.
 - Windows is a preview. Use the [release notes](https://github.com/harshsaver/october-lantern-releases/releases) for current installer and signing information; packaging supports signing but a configured build is not evidence that a published installer is signed.
 
