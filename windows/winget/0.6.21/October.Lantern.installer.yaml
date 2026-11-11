@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.28.0.schema.json
 
 PackageIdentifier: October.Lantern
 PackageVersion: 0.6.21
@@ -10,10 +10,8 @@ InstallModes:
 - interactive
 - silent
 - silentWithProgress
-InstallerSwitches:
-  Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
-  SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART /SP-
 UpgradeBehavior: install
+RequireExplicitUpgrade: true
 ProductCode: '{6C4C8A0E-5D0B-4F57-9D34-0C2A6F6E7B11}_is1'
 ReleaseDate: 2026-11-10
 Installers:
@@ -21,4 +19,4 @@ Installers:
   InstallerUrl: https://github.com/harshsaver/october-lantern-releases/releases/download/v0.6.21/October-Lantern-windows-x86_64-setup.exe
   InstallerSha256: 960994F0A8DFA499CCB5DE7C277BCCA7B7A32CC7491488E06FFB2F6EA8BD03CF
 ManifestType: installer
-ManifestVersion: 1.6.0
+ManifestVersion: 1.28.0

@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.28.0.schema.json
 
 PackageIdentifier: October.Lantern
 PackageVersion: 0.6.21
@@ -22,4 +22,4 @@ Tags:
 - developer-tools
 ReleaseNotesUrl: https://github.com/harshsaver/october-lantern-releases/releases/tag/v0.6.21
 ManifestType: defaultLocale
-ManifestVersion: 1.6.0
+ManifestVersion: 1.28.0
