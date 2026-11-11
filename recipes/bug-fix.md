@@ -4,7 +4,7 @@ Find and fix a reported software bug with a focused, verified change.
 
 ## Ask first
 
-One question card, all at once. Ask for all details that are still missing; skip anything already provided:
+Look at the code first, then ask only for what you still need and can't work out yourself: one question card, all at once. Skip anything they already said:
 - What is going wrong, and how to reproduce it
 - What should happen and what happens instead
 - Relevant error messages, logs or screenshots
