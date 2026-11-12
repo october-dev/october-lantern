@@ -114,7 +114,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         // Development: test a session reader against stored sessions.
-        // lantern-engine probe opencode|pi|october|gemini <cwd> [started-secs]
+        // lantern-engine probe opencode|pi|october|gemini|qwen <cwd> [started-secs]
         Some("probe") => {
             let kind = args.get(1).map(String::as_str).unwrap_or("");
             let cwd = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("."));
@@ -130,6 +130,15 @@ fn main() -> Result<()> {
                     (
                         f.as_ref().map(|f| readers::gemini::parse(f, m)),
                         f.and_then(|f| readers::gemini::history(&f)).unwrap_or_default().messages,
+                    )
+                }
+                "qwen" => {
+                    let f = readers::qwen::session_file(&cwd, start);
+                    println!("file: {f:?}");
+                    let m = f.as_ref().and_then(|f| std::fs::metadata(f).ok()).map(|_| 0).unwrap_or(0);
+                    (
+                        f.as_ref().map(|f| readers::qwen::parse(f, m)),
+                        f.and_then(|f| readers::qwen::history(&f)).unwrap_or_default().messages,
                     )
                 }
                 k => {

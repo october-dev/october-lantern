@@ -281,6 +281,88 @@ fn gemini_replay_and_states() {
     assert_eq!(gemini::parse(&path, 0).state, Some(State::Working));
 }
 
+#[test]
+fn qwen_records_and_states() {
+    use crate::readers::qwen;
+    let dir = temp_dir("qwen");
+    let path = dir.join("session.jsonl");
+    let ask = r#"{"uuid":"u1","sessionId":"q1","timestamp":"2026-09-21T14:13:20.123Z","type":"user","message":{"role":"user","parts":[{"text":"rename the file"}]},"cwd":"/x"}"#;
+    let call = r#"{"uuid":"a1","sessionId":"q1","type":"assistant","message":{"role":"model","parts":[{"functionCall":{"id":"c1","name":"run_shell_command","args":{"command":"mv a b"}}}]},"cwd":"/x"}"#;
+    let tool_result = r#"{"uuid":"t1","sessionId":"q1","type":"tool_result","message":{"role":"user","parts":[{"functionResponse":{"id":"c1","name":"run_shell_command","response":{"output":"ok"}}}]},"cwd":"/x"}"#;
+    let reply = r#"{"uuid":"a2","sessionId":"q1","timestamp":"2026-09-21T14:14:20.123Z","type":"assistant","message":{"role":"model","parts":[{"text":"Renamed."}]},"cwd":"/x"}"#;
+    // A notification is a `user` record too, but not a prompt and not a state change.
+    let notice =
+        r#"{"uuid":"n1","sessionId":"q1","type":"user","subtype":"notification","provenance":"system","displayText":"done","cwd":"/x"}"#;
+
+    fs::write(&path, format!("{notice}\n")).unwrap();
+    assert_eq!(qwen::parse(&path, 0).state, Some(State::Idle));
+    fs::write(&path, format!("{ask}\n{call}\n{tool_result}\n")).unwrap();
+    assert_eq!(qwen::parse(&path, 0).state, Some(State::Working));
+    fs::write(&path, format!("{ask}\n{call}\n{tool_result}\n{reply}\n")).unwrap();
+    let s = qwen::parse(&path, 0);
+    assert_eq!(s.state, Some(State::Waiting));
+    assert_eq!(s.last_message.as_deref(), Some("Renamed."));
+    assert_eq!(s.title.as_deref(), Some("rename the file"));
+    assert_eq!(s.session_id.as_deref(), Some("q1"));
+    assert_eq!(s.since, Some(1_790_000_060_123));
+    fs::write(&path, format!("{ask}\n{call}\n{tool_result}\n{reply}\n{notice}\n")).unwrap();
+    assert_eq!(qwen::parse(&path, 0).state, Some(State::Waiting));
+}
+
+#[test]
+fn qwen_history_skips_system_records() {
+    use crate::history::Role;
+    use crate::readers::qwen;
+    let dir = temp_dir("qwen-history");
+    let path = dir.join("session.jsonl");
+    let ask = r#"{"uuid":"u1","sessionId":"q1","timestamp":"2026-09-21T14:13:20.123Z","type":"user","message":{"role":"user","parts":[{"text":"rename the file"}]},"cwd":"/x"}"#;
+    let call = r#"{"uuid":"a1","sessionId":"q1","type":"assistant","message":{"role":"model","parts":[{"text":"On it.","thought":true},{"text":"Renaming now."},{"functionCall":{"id":"c1","name":"run_shell_command","args":{"command":"mv a b"}}}]},"cwd":"/x"}"#;
+    let tool_result = r#"{"uuid":"t1","sessionId":"q1","type":"tool_result","message":{"role":"user","parts":[{"functionResponse":{"id":"c1","name":"run_shell_command","response":{"output":"ok"}}}]},"cwd":"/x"}"#;
+    let notice = r#"{"uuid":"n1","sessionId":"q1","type":"user","subtype":"cron","provenance":"system","displayText":"tick","cwd":"/x"}"#;
+    fs::write(&path, format!("{ask}\n{call}\n{tool_result}\n{notice}\n")).unwrap();
+    let chat = qwen::history(&path).expect("the fixture reads");
+    assert!(chat.whole);
+    assert_eq!(chat.messages.len(), 3, "prompt, reply and tool call — no reasoning, results or cron: {:?}", chat.messages);
+    assert!(matches!(chat.messages[0].role, Role::User));
+    assert_eq!(chat.messages[0].text, "rename the file");
+    assert!(matches!(chat.messages[1].role, Role::Agent));
+    assert_eq!(chat.messages[1].text, "Renaming now.");
+    assert!(matches!(chat.messages[2].role, Role::Tool));
+    assert!(chat.messages[2].text.contains("run_shell_command"), "the tool call is described: {}", chat.messages[2].text);
+    assert_eq!(chat.messages[0].id.as_deref(), Some("u1.text"));
+    assert_eq!(chat.messages[2].id.as_deref(), Some("a1.tool0"));
+}
+
+#[test]
+fn qwen_session_file_matches_cwd_and_skips_archive() {
+    use crate::readers::qwen;
+    let dir = temp_dir("qwen-projects");
+    let work = dir.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let cwd = work.canonicalize().unwrap().to_string_lossy().into_owned();
+    let slug: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let chats = dir.join("projects").join(&slug).join("chats");
+    let archive = chats.join("archive");
+    fs::create_dir_all(&archive).unwrap();
+    let live = chats.join("11111111-1111-1111-1111-111111111111.jsonl");
+    let other = chats.join("22222222-2222-2222-2222-222222222222.jsonl");
+    fs::write(&live, format!("{{\"uuid\":\"u1\",\"sessionId\":\"q1\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"parts\":[{{\"text\":\"hi\"}}]}},\"cwd\":\"{cwd}\"}}\n")).unwrap();
+    // Same folder, another project: newer, but its records name another cwd.
+    fs::write(&other, "{\"uuid\":\"u9\",\"sessionId\":\"q9\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},\"cwd\":\"/elsewhere\"}\n").unwrap();
+    // Archived and newest of all: never read.
+    fs::write(archive.join("33333333-3333-3333-3333-333333333333.jsonl"), format!("{{\"uuid\":\"u8\",\"sessionId\":\"q8\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"parts\":[{{\"text\":\"hi\"}}]}},\"cwd\":\"{cwd}\"}}\n")).unwrap();
+
+    // SAFETY: no other test reads `QWEN_RUNTIME_DIR`, and the old value is restored below.
+    let old = std::env::var_os("QWEN_RUNTIME_DIR");
+    unsafe { std::env::set_var("QWEN_RUNTIME_DIR", dir.as_path()) };
+    let found = qwen::session_file(&work, 0);
+    match old {
+        Some(v) => unsafe { std::env::set_var("QWEN_RUNTIME_DIR", v) },
+        None => unsafe { std::env::remove_var("QWEN_RUNTIME_DIR") },
+    }
+    assert_eq!(found.as_deref(), Some(live.as_path()), "only the live session on this cwd matches");
+}
+
 pub(crate) fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
     Agent {
         id: format!("claude:{pid}:{start_time}"),
@@ -1611,4 +1693,5 @@ fn an_unreadable_session_file_is_a_failed_read() {
     assert!(history::claude(&dir.join("missing.jsonl")).is_none());
     assert!(crate::readers::pi::history(&dir.join("missing.jsonl")).is_none());
     assert!(crate::readers::gemini::history(&dir.join("missing.jsonl")).is_none());
+    assert!(crate::readers::qwen::history(&dir.join("missing.jsonl")).is_none());
 }

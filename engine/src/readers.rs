@@ -1,8 +1,8 @@
-//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI and Muse.
-//! Like the Claude Code and Codex readers, these only read the agents' own files.
+//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI, Qwen Code
+//! and Muse. Like the Claude Code and Codex readers, these only read the agents' own files.
 //!
-//! None of these three keeps its session file open, so a running process is matched to its
-//! session by working directory and start time.
+//! None of these keeps its session file open, so a running process is matched to its session by
+//! working directory and start time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -457,6 +457,163 @@ pub mod gemini {
                     }
                 }
                 Some("error") => push(&mut out, Role::Agent, &content_text(&m), at, id("text")),
+                _ => {}
+            }
+        }
+        Some(Chat { messages: keep_recent(out), whole })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Qwen Code: one JSONL transcript per session,
+// `<runtime>/projects/<sanitized cwd>/chats/<sessionId>.jsonl` (the runtime base is
+// `$QWEN_RUNTIME_DIR`, `$QWEN_HOME` or `~/.qwen`). Every record carries its `cwd`, which is the
+// match — the directory name is lossy (`/` and `.` both become `-`). Archived sessions move to
+// `chats/archive/`, which is never read.
+
+pub mod qwen {
+    use super::*;
+
+    /// Everything after this much of a session log is ignored.
+    const REPLAY_BYTES: u64 = 16 * 1024 * 1024;
+
+    fn root() -> PathBuf {
+        std::env::var_os("QWEN_RUNTIME_DIR")
+            .or_else(|| std::env::var_os("QWEN_HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".qwen"))
+    }
+
+    /// The project directory name: every character outside `[a-zA-Z0-9]` becomes `-`
+    /// (lower-cased on Windows).
+    fn sanitize(cwd: &str) -> String {
+        let mut slug: String = cwd.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        if cfg!(windows) {
+            slug.make_ascii_lowercase();
+        }
+        slug
+    }
+
+    /// The `cwd` the session's first record claims (the source of truth for the match).
+    fn first_cwd(path: &Path) -> Option<String> {
+        let head = read_range(path, false, 4096)?;
+        lines(&head).next().and_then(|e| e["cwd"].as_str().map(String::from))
+    }
+
+    pub fn session_file(cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        let want = resolved(cwd).to_string_lossy().into_owned();
+        let projects = root().join("projects");
+        // The sanitized directory first, then every project (a symlinked cwd may not sanitize
+        // to what's on disk); the record's own `cwd` decides.
+        let mut dirs = vec![projects.join(sanitize(&want))];
+        if let Ok(rd) = fs::read_dir(&projects) {
+            dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        }
+        let started_ms = started_secs.saturating_sub(60) * 1000;
+        let mut found: Vec<(u64, PathBuf)> = Vec::new();
+        for chats in dirs.iter().map(|d| d.join("chats")) {
+            let Ok(rd) = fs::read_dir(&chats) else { continue };
+            for p in rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "jsonl")) {
+                let Some(m) = mtime_ms(&p) else { continue };
+                if m < started_ms || first_cwd(&p).as_deref() != Some(want.as_str()) {
+                    continue;
+                }
+                found.push((m, p));
+            }
+        }
+        found.into_iter().max_by_key(|(m, _)| *m).map(|(_, p)| p)
+    }
+
+    /// The model API's `Content` parts as text, skipping reasoning (`thought`) parts.
+    fn parts_text(message: &Value) -> String {
+        message["parts"]
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter(|p| p["thought"].as_bool() != Some(true))
+                    .filter_map(|p| p["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+
+    fn tool_calls(message: &Value) -> Vec<&Value> {
+        message["parts"].as_array().map(|parts| parts.iter().filter(|p| p.get("functionCall").is_some()).collect()).unwrap_or_default()
+    }
+
+    /// A real prompt: the user's own words, not a notification, a cron firing, a goal message
+    /// or another agent's.
+    fn is_real_prompt(e: &Value) -> bool {
+        if e["type"] != "user" {
+            return false;
+        }
+        if e["provenance"].as_str().is_some_and(|p| p != "real_user") {
+            return false;
+        }
+        if matches!(e["subtype"].as_str(), Some("notification" | "cron" | "goal_runtime" | "agent_message" | "agent_mention")) {
+            return false;
+        }
+        !parts_text(&e["message"]).trim().is_empty()
+    }
+
+    pub fn parse(path: &Path, mtime: u64) -> SessionStatus {
+        let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
+        let text = read_range(path, false, REPLAY_BYTES).unwrap_or_default();
+        let records: Vec<Value> = lines(&text).collect();
+        status.session_id = records
+            .iter()
+            .find_map(|e| e["sessionId"].as_str().map(String::from))
+            .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(String::from));
+        status.title =
+            records.iter().find(|e| is_real_prompt(e)).map(|e| truncate(parts_text(&e["message"]).lines().next().unwrap_or(""), 80));
+        let Some(last) =
+            records.iter().rev().find(|e| matches!(e["type"].as_str(), Some("assistant" | "tool_result")) || is_real_prompt(e))
+        else {
+            status.state = Some(State::Idle);
+            return status;
+        };
+        if let Some(at) = last["timestamp"].as_str().and_then(epoch_ms) {
+            status.since = Some(at);
+        }
+        let state = match last["type"].as_str() {
+            Some("assistant") => {
+                let message = &last["message"];
+                if !tool_calls(message).is_empty() || parts_text(message).trim().is_empty() { State::Working } else { State::Waiting }
+            }
+            _ => State::Working,
+        };
+        status.state = Some(state);
+        if state == State::Waiting {
+            status.last_message = Some(truncate(&parts_text(&last["message"]), MESSAGE_CHARS)).filter(|t| !t.is_empty());
+        }
+        status
+    }
+
+    pub fn history(path: &Path) -> Option<Chat> {
+        let whole = fs::metadata(path).ok()?.len() <= REPLAY_BYTES;
+        let text = read_range(path, false, REPLAY_BYTES)?;
+        let mut out = Vec::new();
+        for e in lines(&text) {
+            let at = e["timestamp"].as_str();
+            // Its record id: one line is one record, so the id is stable.
+            let id = |part: &str| e["uuid"].as_str().map(|u| format!("{u}.{part}"));
+            match e["type"].as_str() {
+                Some("user") if is_real_prompt(&e) => push(&mut out, Role::User, &parts_text(&e["message"]), at, id("text")),
+                Some("assistant") => {
+                    push(&mut out, Role::Agent, &parts_text(&e["message"]), at, id("text"));
+                    for (i, part) in tool_calls(&e["message"]).into_iter().enumerate() {
+                        let call = &part["functionCall"];
+                        push(
+                            &mut out,
+                            Role::Tool,
+                            &describe_tool(call["name"].as_str().unwrap_or("tool"), &call["args"]),
+                            at,
+                            id(&format!("tool{i}")),
+                        );
+                    }
+                }
                 _ => {}
             }
         }
