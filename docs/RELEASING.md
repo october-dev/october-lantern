@@ -72,7 +72,11 @@ a newer self-updated copy. The flag keeps Lantern out of bulk upgrades for insta
 
 ### Validate and test on Windows
 
-On a clean Windows machine ([Windows Sandbox](https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/) works), note the Windows
+On a clean Windows machine ([Windows Sandbox](https://learn.microsoft.com/windows/security/application-security/application-isolation/windows-sandbox/) works, but it ships
+without winget: install winget there first, following Microsoft's
+[winget-on-Sandbox instructions](https://learn.microsoft.com/en-us/windows/package-manager/winget/#install-winget-on-windows-sandbox),
+or use winget-pkgs' [SandboxTest.ps1](https://github.com/microsoft/winget-pkgs/blob/master/doc/tools/SandboxTest.md),
+which sets up the environment and tests installation), note the Windows
 and winget versions (`ver`, `winget --version`), then:
 
 ```powershell
@@ -82,7 +86,7 @@ winget settings --enable LocalManifestFiles
 # from a normal shell
 winget validate --manifest windows\winget\<version>
 winget install --manifest windows\winget\<version>          # finishes without installer choices
-winget list --name "October Lantern" --exact --scope user   # name, publisher, version, per-user location
+winget list --name "October Lantern" --exact --scope user --details   # name, publisher, version, per-user location
 ```
 
 Check the listed version before Lantern's own updater replaces the running copy. winget's silent
@@ -110,7 +114,8 @@ wingetcreate update October.Lantern --version <version> --urls <InstallerUrl> --
 
 Review what it generates against the table above (especially `ReleaseDate`, `ReleaseNotesUrl` and
 `RequireExplicitUpgrade: true`), copy it to `windows/winget/<version>/`, run the validate and
-install tests, then submit (`--submit`, or a pull request by hand).
+install tests, then submit the reviewed folder (`wingetcreate submit windows\winget\<version>`,
+or a pull request by hand).
 
 After the first catalogue publication, install once from the source (`winget install
 October.Lantern`) and confirm that `winget list October.Lantern` matches the installed copy and that
