@@ -49,4 +49,16 @@ for s in "$ROOT"/scripts/*.sh; do bash -n "$s"; done
 if [[ "$(uname -s)" == Linux ]] && command -v node >/dev/null; then
   node --check "$ROOT/linux/gnome-extension/extension.js"
 fi
+
+echo "==> docs"
+# Every local image the README shows must exist (once, #25 referenced screenshots that
+# were never committed, leaving four broken images).
+missing=0
+refs="$(grep -o 'src="[^"]*"' "$ROOT/README.md" | sed 's/^src="//; s/"$//' || true)
+$(grep -o '!\[[^]]*\]([^)]*)' "$ROOT/README.md" | sed 's/^![^]]*(\(.*\))$/\1/' || true)"
+while IFS= read -r img; do
+  case "$img" in http*|data:*|'') continue;; esac
+  if [[ ! -f "$ROOT/$img" ]]; then echo "README references missing image: $img" >&2; missing=1; fi
+done <<< "$refs"
+[[ "$missing" == 0 ]] || exit 1
 echo "==> checks passed"
