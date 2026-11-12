@@ -386,6 +386,7 @@ impl Scanner {
             },
             "Terminal" => dev_tty.map(|tty| Route::Terminal { tty }).unwrap_or(Route::None),
             "iTerm" | "iTerm2" => dev_tty.map(|tty| Route::Iterm { tty }).unwrap_or(Route::None),
+            "WezTerm" if tty.is_some() && crate::wezterm::cli_available() => Route::Wezterm,
             _ => Route::None,
         }
     }

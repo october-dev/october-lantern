@@ -45,6 +45,7 @@ mod tests;
 mod tmux;
 mod toolkit;
 mod transcripts;
+mod wezterm;
 
 use anyhow::{Result, bail};
 

@@ -219,6 +219,8 @@ pub enum Route {
     Iterm {
         tty: String,
     },
+    /// WezTerm: `wezterm cli` (see wezterm.rs), addressed by the pane on the agent's tty.
+    Wezterm,
     /// One of Lantern's own sessions on Windows (see pty.rs), by name.
     Pty {
         session: String,

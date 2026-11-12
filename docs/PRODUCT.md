@@ -156,6 +156,7 @@ Headless runs (for example `claude -p` or `codex exec` in a script) are ignored 
 | Terminal | ✅ Types into the agent's tab (asks once for Automation permission) | — | Its tab |
 | iTerm2 | ✅ Types into the agent's session (asks once for Automation permission) | ✅ | Its session |
 | tmux (inside any terminal) | ✅ | ✅ | Its pane |
+| WezTerm | ✅ Types into the agent's pane (through `wezterm cli`) | ✅ | Its pane |
 | Sessions Lantern started | ✅ (they run in tmux) | ✅ | A Terminal window attached to it |
 | Ghostty, VS Code / Cursor terminal, Warp, others | Copies your reply and brings the app forward; you paste with ⌘V | — | The app |
 
@@ -169,10 +170,10 @@ Lantern is in **beta (v0.6.21)**.
 | Automatic updates | ✅ |
 | Finds agents in any terminal | ✅ |
 | Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI, Muse |
-| Reply from Lantern | ✅ cmux, Terminal, iTerm2, tmux. Other terminals: copy and paste. |
-| Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2 and tmux. The card shows the tool and the full command being approved. The key is only pressed if that prompt is still the one on screen. |
+| Reply from Lantern | ✅ cmux, Terminal, iTerm2, tmux, WezTerm. Other terminals: copy and paste. |
+| Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2, tmux and WezTerm. The card shows the tool and the full command being approved. The key is only pressed if that prompt is still the one on screen. |
 | Cards: an agent Lantern started asks you a question or hands you a step, shows its progress and its result | ✅ Claude Code, Codex and October started from Lantern (with or without October Bus and Cua Driver). An answer goes only to a question the agent is still waiting on (up to 25 minutes); otherwise the card says it closed, and nothing is typed in later. Proven end to end with Claude Code and Codex on macOS; October's own model turn and Windows/Linux not yet. |
-| Jump to the agent's exact tab | ✅ cmux, Terminal, iTerm2, tmux |
+| Jump to the agent's exact tab | ✅ cmux, Terminal, iTerm2, tmux, WezTerm |
 | Notifications | ✅ Optional |
 | Start new sessions (Terminal window or background) | ✅ Background runs in tmux: yours, or the one Lantern brings |
 | October Harness built in | ✅ The default agent for assistant tasks when no agent is signed in to a plan you already pay for (Claude Code, Codex, Grok or Gemini go first; falls back to Claude Code, then Codex, when October can't start). Your own `october` is used when it's on your PATH; otherwise Lantern installs the pinned version on first use (not in the DMG; a few minutes and about 370 MB on disk, less when October Desktop's Node.js can be reused). Signs in with your October account when you're signed in to Lantern. |
