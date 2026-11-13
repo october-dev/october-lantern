@@ -360,8 +360,10 @@ fn grok_session_file_matches_encoded_cwd_with_fallback_scan() {
     fs::create_dir_all(&live_dir).unwrap();
     let live = live_dir.join("updates.jsonl");
     let line = r#"{"timestamp":1787811120,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"}}}}}"#;
+    // Serialized, not interpolated: a Windows cwd's backslashes are JSON escapes.
+    let summary = |id: &str, cwd: &str| serde_json::json!({"id": id, "cwd": cwd}).to_string();
     fs::write(&live, format!("{line}\n")).unwrap();
-    fs::write(live_dir.join("summary.json"), format!("{{\"id\":\"11111111-1111-1111-1111-111111111111\",\"cwd\":\"{cwd}\"}}")).unwrap();
+    fs::write(live_dir.join("summary.json"), summary("11111111-1111-1111-1111-111111111111", &cwd)).unwrap();
     // Same bucket, but its summary names another cwd: never a match, however new.
     let other_dir = sessions.join(&encoded).join("22222222-2222-2222-2222-222222222222");
     fs::create_dir_all(&other_dir).unwrap();
@@ -379,7 +381,7 @@ fn grok_session_file_matches_encoded_cwd_with_fallback_scan() {
     fs::create_dir_all(&stray_dir).unwrap();
     let stray = stray_dir.join("updates.jsonl");
     fs::write(&stray, format!("{line}\n")).unwrap();
-    fs::write(stray_dir.join("summary.json"), format!("{{\"id\":\"33333333-3333-3333-3333-333333333333\",\"cwd\":\"{cwd}\"}}")).unwrap();
+    fs::write(stray_dir.join("summary.json"), summary("33333333-3333-3333-3333-333333333333", &cwd)).unwrap();
     let fallback = grok::session_file(&work, 0);
     match old {
         Some(v) => unsafe { std::env::set_var("GROK_HOME", v) },
