@@ -732,6 +732,28 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                         }
                         let spacer = (ui.available_width() - 28.0 - ui.spacing().item_spacing.x).max(0.0);
                         ui.add_space(spacer);
+                        // Stop takes Send's place while something runs and nothing is typed: with
+                        // words in the box, Send stays, so you can tell a working agent more.
+                        let empty = cx.inputs.assistant.trim().is_empty() && cx.model.assistant.attachments.is_empty();
+                        let working = agent.is_some_and(|a| a.state == AgentState::Working);
+                        if empty && (cx.model.assistant.asking || working) {
+                            let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(28.0), Sense::click());
+                            ui.painter().circle_filled(rect.center(), 14.0, t::AMBER);
+                            ui.painter().rect_filled(
+                                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(9.0)),
+                                2.0,
+                                t::black(0.85),
+                            );
+                            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stop"));
+                            let help = match agent {
+                                Some(a) if !cx.model.assistant.asking => format!("Stop @{}", a.handle),
+                                _ => "Stop Lantern's answer".to_string(),
+                            };
+                            if response.on_hover_text(help).clicked() {
+                                cx.emit(UiAction::StopAssistant);
+                            }
+                            return;
+                        }
                         // A reply can go while Lantern is still answering.
                         let enabled = (!cx.inputs.assistant.trim().is_empty() || !cx.model.assistant.attachments.is_empty())
                             && (replying.is_some() || !cx.model.assistant.asking);
@@ -1168,6 +1190,24 @@ mod tests {
             );
         }
         out
+    }
+
+    #[test]
+    fn stop_takes_send_s_place_while_something_runs_and_the_box_is_empty() {
+        let ctx = egui::Context::default();
+        t::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let mut fixture: crate::app::fixture::Fixture =
+            serde_json::from_str(include_str!("../../fixtures/panel-assistant-home.json")).unwrap();
+        let mut view = UiState::default();
+        let (model, inputs) = (&mut fixture.model, &mut fixture.inputs);
+        inputs.assistant.clear();
+        model.assistant.asking = true;
+        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Stop"), vec![UiAction::StopAssistant]);
+        // With words in the box, Send is back.
+        model.assistant.asking = false;
+        inputs.assistant = "and the PDF".into();
+        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Ask"), vec![UiAction::SubmitAssistant]);
     }
 
     #[test]
