@@ -603,6 +603,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Requests that are a Stop, so their result says "Stopped" rather than "Sent".
+    private var stopping: Set<String> = []
+
+    /// Stops what a working agent is doing (Escape, as in its terminal); its session stays open.
+    func interrupt(_ agent: Agent) {
+        let id = request("k")
+        stopping.insert(id)
+        Analytics.shared.capture("agent_stopped", ["kind": agent.kind.rawValue, "route": agent.route?.via ?? "none"])
+        track(id, .keys(agentId: agent.id), sent: engine.keys(requestId: id, agentId: agent.id, keys: ["Escape"], promptId: nil))
+    }
+
     func send() {
         guard let agent = target, !sending else { return }
         // Lock the recipient (a fallback target becomes the chosen one) before taking the ticket.
@@ -1078,6 +1089,12 @@ final class AppModel: ObservableObject {
             }
         case .send(_, let report):
             report(ok, uncertain, message)
+        case .keys(let agentId) where stopping.remove(requestId) != nil:
+            if ok {
+                show("Stopped @\(handle(agentId))")
+            } else {
+                show("Couldn't stop @\(handle(agentId)): \(message ?? "unknown error")")
+            }
         case .keys(let agentId), .direct(let agentId):
             if let promptId = answering.removeValue(forKey: requestId) {
                 if ok {
