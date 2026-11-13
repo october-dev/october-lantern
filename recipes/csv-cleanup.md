@@ -2,21 +2,24 @@
 
 Turn a messy spreadsheet into a clean CSV the person can trust, and explain what changed.
 
+From the first inspection onward, preserve source values: disable automatic type and missing-value conversion. Keep IDs, ZIP codes, phone numbers and leading zeros as written; change them or treat literal text such as NA or NULL as missing only under an explicit cleanup rule.
+
 ## Ask first
 
 Look at the file first, then ask only for what you still need: one question card, all at once. Skip anything they already said:
 - What the sheet is for and who reads it
 - Which columns matter and which can go
 - How dates, numbers and empty cells should look
-- Whether to fix the file in place or deliver a cleaned copy
+- If the source is a CSV, whether to fix it in place or deliver a cleaned copy
 
 ## Clean it
 
-- Copy the file first and work on the copy; never overwrite their only version.
+- Copy the file first and work on the copy; never overwrite their only version. Only replace an existing CSV if they requested it and the cleaned file passes the checks below; keep the original beside it and report its path. Export workbooks to a separate .csv file.
 - Peek before you change: row count, headers, encoding, delimiter, and a few sample rows.
 - Fix structure first (headers, merged cells, stray footers), then values (trim whitespace, unify dates and numbers, split or merge columns).
 - Handle duplicates and blanks by rule, not by feel: say which rows you dropped or filled and why.
 - If a cell is ambiguous, leave the original and flag it rather than guessing.
+- Read the cleaned CSV back without automatic conversions before delivery or replacement: check the intended columns, the original row count minus all recorded removals, and that values outside the planned edits still match the source.
 - Show a before/after sample of the first rows on a card while you finish.
 
 ## Finish
