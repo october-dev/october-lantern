@@ -1,49 +1,28 @@
 //! Replying to agents in WezTerm, and jumping to their panes.
 //!
-//! WezTerm's own CLI addresses panes by id, and lists them with their ttys:
+//! The agent's own WezTerm CLI addresses panes by id, and lists them with their ttys:
 //! `wezterm cli list --format json` (a stable schema: `pane_id`, `tty_name`, … —
 //! `wezterm/src/cli/list.rs`), `wezterm cli send-text --pane-id <id> --no-paste <text>`
 //! (raw bytes; `--no-paste` skips the bracketed paste — `wezterm/src/cli/send_text.rs`), and
 //! `wezterm cli activate-pane --pane-id <id>` (`wezterm/src/cli/activate_pane.rs`).
 //!
-//! Like tmux, the pane is looked up by the agent's tty at send time, so a pane that moved is a
-//! failure, not a mistype. Finding no pane, or two panes on one tty, refuses.
+//! Every call runs the CLI from the agent's own app bundle against the agent's own instance
+//! (its `WEZTERM_UNIX_SOCKET`, set per command), so a second WezTerm process never receives the
+//! typing. Like tmux, the pane is looked up by the agent's tty at send time, so a pane that moved
+//! is a failure, not a mistype. Finding no pane, or two panes on one tty, refuses.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// `wezterm` from Homebrew, MacPorts, Nix, the system or the app bundle; else next to the engine
-/// (as for tmux); "wezterm" (not absolute: rely on PATH) otherwise.
-fn wezterm_bin() -> PathBuf {
-    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BIN.get_or_init(|| {
-        let home = crate::transcripts::home();
-        let candidates = [
-            "/opt/homebrew/bin/wezterm".to_string(),
-            "/usr/local/bin/wezterm".into(),
-            "/opt/local/bin/wezterm".into(),
-            home.join(".nix-profile/bin/wezterm").to_string_lossy().into_owned(),
-            "/usr/bin/wezterm".into(),
-            "/Applications/WezTerm.app/Contents/MacOS/wezterm".into(),
-        ];
-        let bundled = std::env::current_exe().ok().and_then(|exe| Some(exe.parent()?.join("wezterm").to_string_lossy().into_owned()));
-        candidates.into_iter().chain(bundled).map(PathBuf::from).find(|p| p.is_file()).unwrap_or_else(|| "wezterm".into())
-    })
-    .clone()
-}
-
-/// Whether `wezterm cli` can run: a known location, or somewhere on PATH.
-pub fn cli_available() -> bool {
-    let bin = wezterm_bin();
-    if bin.is_absolute() {
-        return true;
-    }
-    std::env::var_os("PATH")
-        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("wezterm").is_file() || dir.join("wezterm.exe").is_file()))
+/// The CLI from the agent's own app (`<bundle>/Contents/MacOS/wezterm`), when it exists: the CLI
+/// and the instance always come from the same install, wherever it lives.
+pub fn cli_for(bundle_path: &str) -> Option<PathBuf> {
+    let cli = Path::new(bundle_path).join("Contents/MacOS/wezterm");
+    cli.is_file().then_some(cli)
 }
 
 const LIMIT: Duration = Duration::from_secs(5);
@@ -55,8 +34,18 @@ struct Pane {
     tty_name: Option<String>,
 }
 
-fn list() -> Result<Vec<Pane>> {
-    let out = crate::deliver::output_within(Command::new(wezterm_bin()).args(["cli", "list", "--format", "json"]), LIMIT, false)?;
+/// One `wezterm cli` call against the agent's own instance: `--no-auto-start` right after
+/// `cli`, so a GUI that isn't published never starts a background server (and shell) Lantern
+/// didn't ask for, and the agent's `WEZTERM_UNIX_SOCKET` on this command only.
+fn command(cli: &Path, socket: &str, args: &[&str]) -> Command {
+    let mut cmd = Command::new(cli);
+    cmd.env("WEZTERM_UNIX_SOCKET", socket);
+    cmd.arg("cli").arg("--no-auto-start").args(args);
+    cmd
+}
+
+fn list(cli: &Path, socket: &str) -> Result<Vec<Pane>> {
+    let out = crate::deliver::output_within(&mut command(cli, socket, &["list", "--format", "json"]), LIMIT, false)?;
     if !out.status.success() {
         bail!("wezterm cli list failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -64,8 +53,8 @@ fn list() -> Result<Vec<Pane>> {
 }
 
 /// The pane on `tty` (`ttys012`, without `/dev/`), refusing ambiguity.
-pub fn pane_for(tty: &str) -> Result<u64> {
-    let panes = list()?;
+pub fn pane_for(cli: &Path, socket: &str, tty: &str) -> Result<u64> {
+    let panes = list(cli, socket)?;
     pane_on(&panes, tty)
 }
 
@@ -79,16 +68,19 @@ fn pane_on(panes: &[Pane], tty: &str) -> Result<u64> {
     }
 }
 
-/// The exact `wezterm cli …` argv (`--pane-id` before the rest; clap positionals follow flags).
+/// The `wezterm cli …` arguments after the binary (`--pane-id` before the rest; clap
+/// positionals follow flags). `--` sits before every payload, so text starting with a dash is
+/// typed, not read as options.
 fn argv(pane_id: u64, args: &[&str]) -> Vec<String> {
-    let mut full = vec!["cli".to_string(), args[0].to_string(), "--pane-id".to_string(), pane_id.to_string()];
+    let mut full = vec![args[0].to_string(), "--pane-id".to_string(), pane_id.to_string()];
     full.extend(args[1..].iter().map(|s| s.to_string()));
     full
 }
 
-fn run(pane_id: u64, args: &[&str], typing: bool) -> Result<std::process::Output> {
+fn run(cli: &Path, socket: &str, pane_id: u64, args: &[&str], typing: bool) -> Result<std::process::Output> {
     let full = argv(pane_id, args);
-    let out = crate::deliver::output_within(Command::new(wezterm_bin()).args(&full), crate::deliver::SEND_LIMIT, typing)?;
+    let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+    let out = crate::deliver::output_within(&mut command(cli, socket, &refs), crate::deliver::SEND_LIMIT, typing)?;
     if !out.status.success() {
         bail!("wezterm {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -96,24 +88,24 @@ fn run(pane_id: u64, args: &[&str], typing: bool) -> Result<std::process::Output
 }
 
 /// Type `text` into the pane and press Enter (one line; a newline would submit early).
-pub fn send_text(pane_id: u64, text: &str) -> Result<()> {
+pub fn send_text(cli: &Path, socket: &str, pane_id: u64, text: &str) -> Result<()> {
     let line = text.replace(['\r', '\n'], " ");
-    run(pane_id, &["send-text", "--no-paste", &line], true)?;
+    run(cli, socket, pane_id, &["send-text", "--no-paste", "--", &line], true)?;
     // Give the TUI a moment to take the text before Enter.
     std::thread::sleep(Duration::from_millis(60));
-    run(pane_id, &["send-text", "--no-paste", "\r"], true)
+    run(cli, socket, pane_id, &["send-text", "--no-paste", "--", "\r"], true)
         .map(|_| ())
         .map_err(|e| crate::deliver::Uncertain(format!("the text went in but Enter didn't ({e:#})")).into())
 }
 
 /// Press one key: Escape, Tab, Enter or a single character.
-pub fn send_key(pane_id: u64, key: &str) -> Result<()> {
-    run(pane_id, &["send-text", "--no-paste", key], true).map(|_| ())
+pub fn send_key(cli: &Path, socket: &str, pane_id: u64, key: &str) -> Result<()> {
+    run(cli, socket, pane_id, &["send-text", "--no-paste", "--", key], true).map(|_| ())
 }
 
 /// Bring the pane's tab to the front (the app activates WezTerm afterwards).
-pub fn activate(pane_id: u64) -> Result<()> {
-    run(pane_id, &["activate-pane"], false).map(|_| ())
+pub fn activate(cli: &Path, socket: &str, pane_id: u64) -> Result<()> {
+    run(cli, socket, pane_id, &["activate-pane"], false).map(|_| ())
 }
 
 #[cfg(test)]
@@ -147,7 +139,39 @@ mod tests {
 
     #[test]
     fn cli_commands_are_well_formed() {
-        assert_eq!(argv(3, &["send-text", "--no-paste", "hi"]), ["cli", "send-text", "--pane-id", "3", "--no-paste", "hi"]);
-        assert_eq!(argv(3, &["activate-pane"]), ["cli", "activate-pane", "--pane-id", "3"]);
+        assert_eq!(argv(3, &["send-text", "--no-paste", "--", "hi"]), ["send-text", "--pane-id", "3", "--no-paste", "--", "hi"]);
+        assert_eq!(argv(3, &["activate-pane"]), ["activate-pane", "--pane-id", "3"]);
+    }
+
+    const SOCKET: &str = "/Users/you/.local/share/wezterm/gui-sock-1234";
+
+    /// The built command for one payload, as plain strings plus the socket it carries.
+    fn built(payload: &str) -> (Vec<String>, Option<String>) {
+        let full = argv(3, &["send-text", "--no-paste", "--", payload]);
+        let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+        let cmd = command(Path::new("/Applications/WezTerm.app/Contents/MacOS/wezterm"), SOCKET, &refs);
+        let args = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let socket =
+            cmd.get_envs().find(|(k, _)| *k == "WEZTERM_UNIX_SOCKET").and_then(|(_, v)| v).map(|v| v.to_string_lossy().into_owned());
+        (args, socket)
+    }
+
+    #[test]
+    fn commands_never_start_a_server_and_target_the_agents_instance() {
+        for payload in ["hi", "-h hello", "--"] {
+            let (args, socket) = built(payload);
+            assert_eq!(&args[..2], ["cli", "--no-auto-start"], "payload {payload:?}");
+            assert_eq!(socket.as_deref(), Some(SOCKET), "payload {payload:?}");
+        }
+    }
+
+    #[test]
+    fn dash_payloads_are_typed_not_parsed() {
+        for payload in ["-h hello", "--"] {
+            let (args, _) = built(payload);
+            let sep = args.iter().position(|a| a == "--").expect("a -- separator");
+            assert_eq!(args[sep + 1], payload, "the separator sits immediately before the payload");
+            assert_eq!(args[sep - 1], "--no-paste");
+        }
     }
 }

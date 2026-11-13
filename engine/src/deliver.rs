@@ -190,9 +190,9 @@ pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
         Route::October { .. } => bail!("replies to October's agents go through October"),
         Route::Terminal { tty } => osascript(TERMINAL_SEND, &[tty, &line], SEND_LIMIT, true).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_SEND, &[tty, &line, "yes"], SEND_LIMIT, true).map(|_| ()),
-        Route::Wezterm => {
+        Route::Wezterm { socket, cli } => {
             let tty = agent.tty.as_deref().with_context(|| format!("@{} has no terminal Lantern can type into", agent.handle))?;
-            crate::wezterm::send_text(crate::wezterm::pane_for(tty)?, &line)
+            crate::wezterm::send_text(cli, socket, crate::wezterm::pane_for(cli, socket, tty)?, &line)
         }
         Route::Pty { session } => crate::pty::send_text(session, &line),
         Route::Console { .. } => crate::console::send(agent, "text", &line),
@@ -224,7 +224,7 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
         (Route::Iterm { tty }, Key::Tab) => osascript(ITERM_SEND, &[tty, "\t", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Enter) => osascript(ITERM_SEND, &[tty, "\r", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Char(c)) => osascript(ITERM_SEND, &[tty, &c.to_string(), "no"], SEND_LIMIT, true).map(|_| ()),
-        (Route::Wezterm, key) => {
+        (Route::Wezterm { socket, cli }, key) => {
             let tty = agent.tty.as_deref().with_context(|| format!("@{} has no terminal Lantern can type into", agent.handle))?;
             let stroke = match key {
                 Key::Escape => "\u{1b}".to_string(),
@@ -232,7 +232,7 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
                 Key::Enter => "\r".to_string(),
                 Key::Char(c) => c.to_string(),
             };
-            crate::wezterm::send_key(crate::wezterm::pane_for(tty)?, &stroke)
+            crate::wezterm::send_key(cli, socket, crate::wezterm::pane_for(cli, socket, tty)?, &stroke)
         }
         (Route::Pty { session }, Key::Escape) => crate::pty::send_bytes(session, "\u{1b}"),
         (Route::Pty { session }, Key::Tab) => crate::pty::send_bytes(session, "\t"),
@@ -272,9 +272,9 @@ pub fn focus(agent: &Agent) -> Result<()> {
         Route::Cmux { workspace, .. } => cmux(&["select-workspace", "--workspace", workspace]),
         Route::Terminal { tty } => osascript(TERMINAL_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
-        Route::Wezterm => {
+        Route::Wezterm { socket, cli } => {
             let tty = agent.tty.as_deref().context("agent has no terminal to focus")?;
-            crate::wezterm::activate(crate::wezterm::pane_for(tty)?)
+            crate::wezterm::activate(cli, socket, crate::wezterm::pane_for(cli, socket, tty)?)
         }
         Route::Pty { session } => focus_session(session),
         #[cfg(windows)]

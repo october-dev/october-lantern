@@ -140,7 +140,7 @@ fn destination(agent: &Agent) -> String {
         Route::Tmux => agent.tmux.as_ref().map(|p| format!("tmux:{:?}:{}", p.socket, p.pane_id)).unwrap_or_else(|| agent.id.clone()),
         Route::Cmux { surface, .. } => format!("cmux:{surface}"),
         Route::Terminal { tty } | Route::Iterm { tty } => format!("tty:{tty}"),
-        Route::Wezterm => agent.tty.as_ref().map(|t| format!("wezterm:{t}")).unwrap_or_else(|| agent.id.clone()),
+        Route::Wezterm { socket, .. } => agent.tty.as_ref().map(|t| format!("wezterm:{socket}:{t}")).unwrap_or_else(|| agent.id.clone()),
         Route::October { node_id, .. } => format!("october:{node_id}"),
         Route::Pty { session } => format!("pty:{session}"),
         Route::Console { host } => format!("console:{host}"),

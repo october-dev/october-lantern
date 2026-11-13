@@ -219,8 +219,14 @@ pub enum Route {
     Iterm {
         tty: String,
     },
-    /// WezTerm: `wezterm cli` (see wezterm.rs), addressed by the pane on the agent's tty.
-    Wezterm,
+    /// WezTerm: the agent's own `wezterm cli` against its own instance (see wezterm.rs),
+    /// addressed by the pane on the agent's tty.
+    Wezterm {
+        /// The agent's `WEZTERM_UNIX_SOCKET`, set on every CLI call.
+        socket: String,
+        /// The CLI from the agent's own app bundle.
+        cli: std::path::PathBuf,
+    },
     /// One of Lantern's own sessions on Windows (see pty.rs), by name.
     Pty {
         session: String,

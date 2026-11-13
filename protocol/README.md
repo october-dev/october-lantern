@@ -47,7 +47,7 @@ Sent when anything changes, and at least every 10 seconds.
 | `host` | `{ "app": string, "pid": number, "bundlePath": string }?` | The GUI app the agent runs inside (Terminal, iTerm2, Ghostty, cmux, ...) |
 | `tmux` | `{ "socket": string?, "target": string, "paneId": string }?` | Present when the agent runs inside a tmux pane |
 | `canReply` | bool | `true` when the engine can type a reply into the agent (`route.via` isn't `none`) |
-| `route` | object | How replies reach the agent. `{"via":"tmux"}`, `{"via":"cmux","workspace":"…","surface":"…"}`, `{"via":"terminal","tty":"/dev/ttys004"}`, `{"via":"iterm","tty":"…"}`, `{"via":"wezterm"}` (the pane on the agent's tty, through `wezterm cli`), `{"via":"october","canvasId":"…","nodeId":"…"}` (through October Desktop, when Lantern is connected to it), `{"via":"pty","session":"…"}` (one of Lantern's own sessions on Windows) or `{"via":"none"}`. Single keys (`keys`) work for tmux, cmux, iterm, wezterm and pty. |
+| `route` | object | How replies reach the agent. `{"via":"tmux"}`, `{"via":"cmux","workspace":"…","surface":"…"}`, `{"via":"terminal","tty":"/dev/ttys004"}`, `{"via":"iterm","tty":"…"}`, `{"via":"wezterm","socket":"…","cli":"…"}` (the pane on the agent's tty, through the agent's own `wezterm cli` against its own instance), `{"via":"october","canvasId":"…","nodeId":"…"}` (through October Desktop, when Lantern is connected to it), `{"via":"pty","session":"…"}` (one of Lantern's own sessions on Windows) or `{"via":"none"}`. Single keys (`keys`) work for tmux, cmux, iterm, wezterm and pty. |
 | `stateSource` | `"hook" \| "transcript" \| "none"` | Where the state came from ("transcript" covers every session reader) |
 
 ### `installed`

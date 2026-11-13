@@ -36,7 +36,7 @@ Implement the Lantern-branded signup and password-recovery pages and the native 
 
 - **Which agents and terminals work**, from the product guide tables "Supported agents" and "Supported terminals". Be exact:
   - Full support: Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI and Muse (Meta).
-  - Replying from Lantern: cmux, Terminal, iTerm2 and tmux.
+  - Replying from Lantern: cmux, Terminal, iTerm2, tmux and WezTerm.
   - Ghostty, VS Code and Warp: copy and paste for now.
 - **Permissions**, so nobody is surprised during setup: Automation (Terminal / iTerm2, asked on the first reply; browsers, only to read the page address for Point & Ask), Notifications (optional), Microphone and Speech Recognition (only for dictation), Screen Recording (only for Point & Ask and new-session screenshots), Accessibility (only if you let Lantern see which window or document is open, or the selected text). No Full Disk Access.
 - **FAQ entries** from the product guide FAQ, especially "Why did macOS ask whether Lantern can control Terminal?" and "How do I uninstall it?".

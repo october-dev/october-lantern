@@ -386,7 +386,13 @@ impl Scanner {
             },
             "Terminal" => dev_tty.map(|tty| Route::Terminal { tty }).unwrap_or(Route::None),
             "iTerm" | "iTerm2" => dev_tty.map(|tty| Route::Iterm { tty }).unwrap_or(Route::None),
-            "WezTerm" if tty.is_some() && crate::wezterm::cli_available() => Route::Wezterm,
+            "WezTerm" if tty.is_some() => {
+                let cli = host.and_then(|h| crate::wezterm::cli_for(&h.bundle_path));
+                match (env("WEZTERM_UNIX_SOCKET"), cli) {
+                    (Some(socket), Some(cli)) => Route::Wezterm { socket, cli },
+                    _ => Route::None,
+                }
+            }
             _ => Route::None,
         }
     }
