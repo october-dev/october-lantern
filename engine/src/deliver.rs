@@ -7,7 +7,8 @@
 //! - Terminal and iTerm2: their AppleScript, finding the tab by its tty (asks the user once for
 //!   Automation permission)
 //! - kitty: `kitty @`, through the window id and socket in the agent's environment (see kitty.rs;
-//!   needs `allow_remote_control` plus `listen_on`)
+//!   needs `allow_remote_control` plus `listen_on`, on kitty 0.50.0 or newer — older releases get
+//!   no route, so replies stay copy and paste)
 //! - Lantern's own sessions on Windows: the session's host, which runs only the agent (pty.rs)
 //!
 //! Every send first checks that the terminal still belongs to the agent Lantern saw: the same

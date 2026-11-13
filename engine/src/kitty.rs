@@ -4,22 +4,34 @@
 //! id:<id> send_text all <text>` and `kitty @ --to <socket> focus-window --match id:<id>`.
 //! kitty exports the window id (`KITTY_WINDOW_ID`) in every child's environment, and the
 //! control socket (`KITTY_LISTEN_ON`) when a control socket exists: `kitty.conf` needs
-//! `listen_on unix:/tmp/kitty` (or `kitty --listen-on`) with `allow_remote_control` set to
-//! `yes`, `socket`, `socket-only` or `password`, then a restart. Lantern sends no password, so
-//! `socket-only` is the setup to use; a kitty without a socket simply has no route. The scanner
-//! reads both values from the agent's own environment (see scanner.rs).
+//! `listen_on unix:/tmp/kitty` (or `kitty --listen-on`) with `allow_remote_control` permitting
+//! it, then a restart. `socket-only` is the setup to use (Lantern passes no password, so a
+//! password challenge it cannot answer means no route); a kitty without a socket simply has no
+//! route. The scanner reads both values from the agent's own environment (see scanner.rs).
 //!
-//! Every reply and key first checks the window is still the agent's: `kitty @ ls` lists each
+//! Direct input needs kitty 0.50.0 or newer: older releases ignore the write's `--match` and
+//! act on the active window instead, while still reporting success. Lantern never trusts the
+//! version on disk (an upgraded app can talk to an older running kitty); it probes the running
+//! instance instead. The probe asks for the no-op `discard_event` action on a window id that
+//! cannot exist: a fixed kitty matches the target before dispatching and refuses with `No
+//! matching windows`, while an affected one runs the no-op and reports success. Only the
+//! no-match refusal grants a direct route; anything else — success, denial, timeout, another
+//! error — means `Route::None`, and replies stay copy and paste. The scan caches the answer
+//! briefly (see scanner.rs), and every send checks the running instance again, so a restarted
+//! kitty is always re-gated.
+//!
+//! Every reply and key also checks the window is still the agent's: `kitty @ ls` lists each
 //! window with the pids in its foreground, and the send is refused unless the agent's pid is in
 //! its own window's list. That stops typing into whatever sits between kitty and the agent
 //! (Neovim's `:terminal`).
 //!
-//! The check only proves the destination; the write itself goes through `action`, which waits
+//! The checks only prove the destination; the write itself goes through `action`, which waits
 //! for kitty's answer (unlike `send-text`, which always reports success even when nothing
 //! arrived). A denied or unhandled write fails, so Lantern keeps the draft instead of saying
-//! Sent — including a setup that allows listing windows but denies input. Each write is
-//! acknowledged on its own: text, then Enter, then the key. After a partial delivery (the text
-//! went in but Enter didn't) or a timeout, the outcome is uncertain, never success.
+//! Sent. Each write is acknowledged on its own: text, then Enter, then the key. After a partial
+//! delivery (the text went in but Enter didn't) or a timeout, the outcome is uncertain, never
+//! success. An acknowledgement proves the write ran on the requested window (the gate above
+//! established targeting first); it does not prove the agent submitted the reply.
 //!
 //! The `send_text` action takes a keyboard mode and the text (`all` matches any mode); its
 //! parser expands ANSI-C escapes server-side and drops the whitespace between the mode and the
@@ -82,6 +94,66 @@ fn check_action(argv: &[String], out: &std::process::Output) -> Result<()> {
         bail!("kitty {} failed: {}", subcommand(argv), String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
+}
+
+/// A window id no kitty can have: ids are small sequential numbers, so the probe's target can
+/// never match a real window.
+const BOGUS_WINDOW: &str = "4294967295";
+
+/// The capability probe: the no-op `discard_event` action on the impossible target. A fixed
+/// kitty refuses with `No matching windows`; an affected one runs the no-op and succeeds.
+fn probe_argv(socket: &str) -> Vec<String> {
+    argv(socket, "action", BOGUS_WINDOW, &["discard_event"])
+}
+
+/// How long the capability probe may take. It types nothing, so running out of time means no
+/// route, never uncertainty.
+const PROBE_LIMIT: Duration = Duration::from_secs(5);
+
+/// True only when the probe failed with the recognized no-match refusal: the running kitty
+/// honors `--match`. Probe success (affected kitty runs the no-op), denial, and any other
+/// failure all mean no route — the gate fails closed, so an unrecognized answer disables direct
+/// delivery instead of risking a mistype.
+fn targeting_honored(out: &std::process::Output) -> bool {
+    if out.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&out.stderr).contains("No matching windows")
+}
+
+/// Whether the kitty behind `socket` honors `--match` for `action`. Anything but the
+/// recognized no-match refusal — including a probe that never answers — is `false`.
+pub fn targeting_works(cli: &Path, socket: &str) -> bool {
+    match crate::deliver::output_within(Command::new(cli).args(probe_argv(socket)), PROBE_LIMIT, false) {
+        Ok(out) => {
+            let honored = targeting_honored(&out);
+            if !honored {
+                if out.status.success() {
+                    crate::elog::line("kitty targeting probe ran: this kitty predates targeted input (needs 0.50.0 or newer)");
+                } else {
+                    crate::elog::line(format!(
+                        "kitty targeting probe refused without the no-match answer: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ));
+                }
+            }
+            honored
+        }
+        Err(e) => {
+            crate::elog::line(format!("kitty targeting probe failed to run: {e:#}"));
+            false
+        }
+    }
+}
+
+/// Refuses unless the running kitty still honors `--match`: a restarted instance is caught at
+/// send time even when the scan saw a healthy one. Nothing is typed either way.
+fn verify_targeting(cli: &Path, socket: &str) -> Result<()> {
+    if targeting_works(cli, socket) {
+        Ok(())
+    } else {
+        bail!("kitty didn't prove it honors targeted input (needs 0.50.0 or newer); nothing was typed")
+    }
 }
 
 /// What `kitty @ ls` reports, trimmed to what the send-time check needs: each window's id and
@@ -183,6 +255,7 @@ const ENTER: &str = "\\r";
 /// Type `text` into the window and press Enter (one line; a newline would submit early), each
 /// write acknowledged by kitty. Empty text only presses Enter.
 pub fn send_text(cli: &Path, socket: &str, window: &str, text: &str) -> Result<()> {
+    verify_targeting(cli, socket)?;
     send_text_with(text, &mut |payload: &str| run(cli, action_argv(socket, window, payload), true))
 }
 
@@ -214,12 +287,16 @@ fn stroke(key: crate::deliver::Key) -> String {
 /// Press one key: Escape, Tab, Enter or a single character. A denied key is a refusal: nothing
 /// was typed.
 pub fn send_key(cli: &Path, socket: &str, window: &str, key: crate::deliver::Key) -> Result<()> {
+    verify_targeting(cli, socket)?;
     let stroke = stroke(key);
     run(cli, action_argv(socket, window, &stroke), true)
 }
 
-/// Bring the window's tab to the front (the app activates kitty afterwards).
+/// Bring the window's tab to the front (the app activates kitty afterwards). `focus-window`
+/// honors its match on every release, but Open shares the reply's route: one requirement for
+/// both, and an ungated kitty only comes forward.
 pub fn activate(cli: &Path, socket: &str, window: &str) -> Result<()> {
+    verify_targeting(cli, socket)?;
     run(cli, argv(socket, "focus-window", window, &[]), false)
 }
 
@@ -373,5 +450,28 @@ mod tests {
         check_ls(&os_windows, 3, 9999, "claude-1").expect_err("a pid that isn't in the foreground refuses");
         check_ls(&os_windows, 4, 4242, "claude-1").expect_err("the agent's pid in another window refuses");
         check_ls(&os_windows, 7, 4242, "claude-1").expect_err("a missing window refuses");
+    }
+
+    #[test]
+    fn probe_asks_the_noop_on_an_impossible_window() {
+        assert_eq!(
+            probe_argv("unix:/tmp/kitty-123"),
+            ["@", "--to", "unix:/tmp/kitty-123", "action", "--match", "id:4294967295", "discard_event"]
+        );
+    }
+
+    #[test]
+    fn gate_only_trusts_the_no_match_refusal() {
+        assert!(
+            targeting_honored(&output_of(false, "No matching windows for expression: id:4294967295\n")),
+            "the fixed refusal grants a route"
+        );
+        assert!(!targeting_honored(&output_of(true, "")), "probe success is an affected kitty: no route");
+        assert!(!targeting_honored(&output_of(false, "kitty: not allowed\n")), "a permission denial is not proof of targeting: no route");
+        assert!(
+            !targeting_honored(&output_of(false, "Unknown action: discard_event\n")),
+            "an unknown probe action proves nothing: no route"
+        );
+        assert!(!targeting_honored(&output_of(false, "")), "a bare failure proves nothing: no route");
     }
 }

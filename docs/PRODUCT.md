@@ -156,7 +156,7 @@ Headless runs (for example `claude -p` or `codex exec` in a script) are ignored 
 | Terminal | ✅ Types into the agent's tab (asks once for Automation permission) | — | Its tab |
 | iTerm2 | ✅ Types into the agent's session (asks once for Automation permission) | ✅ | Its session |
 | tmux (inside any terminal) | ✅ | ✅ | Its pane |
-| kitty | ✅ Types into the agent's window (needs remote control on in `kitty.conf`, then a restart: `allow_remote_control socket-only` and `listen_on unix:/tmp/kitty`; Lantern sends no password, so password mode can't type) | ✅ | Its window |
+| kitty | ✅ Types into the agent's window (needs kitty 0.50.0 or newer, with remote control on in `kitty.conf`, then a restart: `allow_remote_control socket-only` and `listen_on unix:/tmp/kitty`. Lantern probes the running kitty before typing; an older or unreachable one keeps copy and paste) | ✅ | Its window |
 | Sessions Lantern started | ✅ (they run in tmux) | ✅ | A Terminal window attached to it |
 | Ghostty, VS Code / Cursor terminal, Warp, others | Copies your reply and brings the app forward; you paste with ⌘V | — | The app |
 

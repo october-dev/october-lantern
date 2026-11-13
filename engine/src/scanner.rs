@@ -38,6 +38,30 @@ pub struct Scanner {
     app_handles: HashMap<String, (String, usize)>,
     /// App sessions that aren't running, re-read every 30 s.
     recent: Option<(std::time::Instant, Vec<crate::apps::Recent>)>,
+    /// Whether each kitty socket's running instance honors `--match`, and when that was
+    /// decided: the probe spawns the kitty CLI, and scans run every 1.5 s.
+    kitty_targeting: HashMap<String, (std::time::Instant, Option<SocketId>, bool)>,
+}
+
+/// A kitty control socket as an instance identity: a restarted kitty rebinds its socket, so a
+/// changed file means a new instance that must be probed again.
+type SocketId = (u64, u64, std::time::SystemTime);
+
+/// How long a kitty targeting answer stays cached. A restart inside the window still can't
+/// mistype: every send re-checks the running instance.
+const KITTY_PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(unix)]
+fn socket_id(socket: &str) -> Option<SocketId> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(socket.strip_prefix("unix:").unwrap_or(socket)).ok()?;
+    Some((meta.dev(), meta.ino(), meta.modified().ok()?))
+}
+
+#[cfg(not(unix))]
+fn socket_id(socket: &str) -> Option<SocketId> {
+    let meta = std::fs::metadata(socket.strip_prefix("unix:").unwrap_or(socket)).ok()?;
+    Some((0, 0, meta.modified().ok()?))
 }
 
 #[derive(PartialEq)]
@@ -195,6 +219,7 @@ impl Scanner {
             app_paths: HashMap::new(),
             app_handles: HashMap::new(),
             recent: None,
+            kitty_targeting: HashMap::new(),
         }
     }
 
@@ -369,7 +394,7 @@ impl Scanner {
 
     /// How Lantern can type into this agent: tmux first (it's exact), then the terminal app's own
     /// mechanism.
-    fn route(&self, pid: u32, tty: Option<&str>, in_tmux: bool, host: Option<&HostApp>) -> Route {
+    fn route(&mut self, pid: u32, tty: Option<&str>, in_tmux: bool, host: Option<&HostApp>) -> Route {
         if in_tmux {
             return Route::Tmux;
         }
@@ -389,12 +414,31 @@ impl Scanner {
             "kitty" if tty.is_some() => {
                 let cli = host.and_then(|h| crate::kitty::cli_for(&h.bundle_path));
                 match (env("KITTY_WINDOW_ID"), env("KITTY_LISTEN_ON"), cli) {
-                    (Some(window), Some(socket), Some(cli)) if socket.starts_with("unix:") => Route::Kitty { window, socket, cli },
+                    (Some(window), Some(socket), Some(cli)) if socket.starts_with("unix:") => {
+                        if self.kitty_honors_targeting(&socket, &cli) { Route::Kitty { window, socket, cli } } else { Route::None }
+                    }
                     _ => Route::None,
                 }
             }
             _ => Route::None,
         }
+    }
+
+    /// Whether the kitty behind `socket` honors `--match`, asked of the running instance and
+    /// cached briefly. A changed socket file means a restarted instance, which is always probed
+    /// again.
+    fn kitty_honors_targeting(&mut self, socket: &str, cli: &std::path::Path) -> bool {
+        let id = socket_id(socket);
+        if let Some((at, cached, honored)) = self.kitty_targeting.get(socket)
+            && at.elapsed() < KITTY_PROBE_TTL
+            && *cached == id
+        {
+            return *honored;
+        }
+        let honored = crate::kitty::targeting_works(cli, socket);
+        self.kitty_targeting.retain(|_, (at, _, _)| at.elapsed() < KITTY_PROBE_TTL);
+        self.kitty_targeting.insert(socket.to_string(), (std::time::Instant::now(), id, honored));
+        honored
     }
 
     /// App sessions that aren't running (Claude Desktop, Cowork, Codex app) from the last three
