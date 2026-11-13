@@ -1,10 +1,13 @@
 //! Replying to agents in WezTerm, and jumping to their panes.
 //!
 //! The agent's own WezTerm CLI addresses panes by id, and lists them with their ttys:
-//! `wezterm cli list --format json` (a stable schema: `pane_id`, `tty_name`, … —
-//! `wezterm/src/cli/list.rs`), `wezterm cli send-text --pane-id <id> --no-paste <text>`
-//! (raw bytes; `--no-paste` skips the bracketed paste — `wezterm/src/cli/send_text.rs`), and
-//! `wezterm cli activate-pane --pane-id <id>` (`wezterm/src/cli/activate_pane.rs`).
+//! `wezterm cli --no-auto-start list --format json` (a stable schema: `pane_id`, `tty_name`, … —
+//! `wezterm/src/cli/list.rs`), `wezterm cli --no-auto-start send-text --pane-id <id> --no-paste -- <text>`
+//! (raw bytes; `--no-paste` skips the bracketed paste, and `--` keeps text starting with a
+//! dash from being read as options — `wezterm/src/cli/send_text.rs`), and
+//! `wezterm cli --no-auto-start activate-pane --pane-id <id>` (`wezterm/src/cli/activate_pane.rs`).
+//! `--no-auto-start` keeps a failed connection from starting a background server Lantern didn't
+//! ask for.
 //!
 //! Every call runs the CLI from the agent's own app bundle against the agent's own instance
 //! (its `WEZTERM_UNIX_SOCKET`, set per command), so a second WezTerm process never receives the
@@ -79,28 +82,38 @@ fn argv(pane_id: u64, args: &[&str]) -> Vec<String> {
 
 fn run(cli: &Path, socket: &str, pane_id: u64, args: &[&str], typing: bool) -> Result<std::process::Output> {
     let full = argv(pane_id, args);
+    run_full(cli, socket, &full, args[0], typing)
+}
+
+fn run_full(cli: &Path, socket: &str, full: &[String], label: &str, typing: bool) -> Result<std::process::Output> {
     let refs: Vec<&str> = full.iter().map(String::as_str).collect();
     let out = crate::deliver::output_within(&mut command(cli, socket, &refs), crate::deliver::SEND_LIMIT, typing)?;
     if !out.status.success() {
-        bail!("wezterm {} failed: {}", args[0], String::from_utf8_lossy(&out.stderr).trim());
+        bail!("wezterm {label} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(out)
+}
+
+/// The `send-text` call for one payload. `--` before the payload is part of the contract here,
+/// not at each call site, so text starting with a dash is typed, never read as options.
+fn send_payload_argv(pane_id: u64, payload: &str) -> Vec<String> {
+    argv(pane_id, &["send-text", "--no-paste", "--", payload])
 }
 
 /// Type `text` into the pane and press Enter (one line; a newline would submit early).
 pub fn send_text(cli: &Path, socket: &str, pane_id: u64, text: &str) -> Result<()> {
     let line = text.replace(['\r', '\n'], " ");
-    run(cli, socket, pane_id, &["send-text", "--no-paste", "--", &line], true)?;
+    run_full(cli, socket, &send_payload_argv(pane_id, &line), "send-text", true)?;
     // Give the TUI a moment to take the text before Enter.
     std::thread::sleep(Duration::from_millis(60));
-    run(cli, socket, pane_id, &["send-text", "--no-paste", "--", "\r"], true)
+    run_full(cli, socket, &send_payload_argv(pane_id, "\r"), "send-text", true)
         .map(|_| ())
         .map_err(|e| crate::deliver::Uncertain(format!("the text went in but Enter didn't ({e:#})")).into())
 }
 
 /// Press one key: Escape, Tab, Enter or a single character.
 pub fn send_key(cli: &Path, socket: &str, pane_id: u64, key: &str) -> Result<()> {
-    run(cli, socket, pane_id, &["send-text", "--no-paste", "--", key], true).map(|_| ())
+    run_full(cli, socket, &send_payload_argv(pane_id, key), "send-text", true).map(|_| ())
 }
 
 /// Bring the pane's tab to the front (the app activates WezTerm afterwards).
@@ -146,8 +159,10 @@ mod tests {
     const SOCKET: &str = "/Users/you/.local/share/wezterm/gui-sock-1234";
 
     /// The built command for one payload, as plain strings plus the socket it carries.
+    /// Goes through the same production builder `send_text` and `send_key` use, so the
+    /// separator test would fail if production lost it.
     fn built(payload: &str) -> (Vec<String>, Option<String>) {
-        let full = argv(3, &["send-text", "--no-paste", "--", payload]);
+        let full = send_payload_argv(3, payload);
         let refs: Vec<&str> = full.iter().map(String::as_str).collect();
         let cmd = command(Path::new("/Applications/WezTerm.app/Contents/MacOS/wezterm"), SOCKET, &refs);
         let args = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
