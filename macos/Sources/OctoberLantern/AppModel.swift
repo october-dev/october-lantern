@@ -78,6 +78,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var launching = false
     /// Models each agent can start with, by kind, once the engine has listed them.
     @Published private(set) var models: [String: EngineMessage.ModelList] = [:]
+    /// `--snapshot` loaded sample state: the engine isn't running, so views must not ask it.
+    private var snapshotMode = false
     /// Why the last start failed, shown in the New Session form.
     @Published private(set) var launchError: String?
     private var launchingKind = ""
@@ -650,6 +652,8 @@ final class AppModel: ObservableObject {
     /// `screenshot`: a saved screenshot (ScreenCapture.save) the agent gets with its first message.
     /// Asks the engine which models `kind` offers (it answers from a cache after the first time).
     func loadModels(_ kind: AgentKind) {
+        // Snapshots seed `models` (no engine to ask); the seeded catalogue stays.
+        guard !snapshotMode else { return }
         models.removeValue(forKey: kind.rawValue)
         if !engine.models(kind: kind) {
             models[kind.rawValue] = EngineMessage.ModelList(requestId: "", kind: kind, choosable: true, models: [], error: "Lantern's engine isn't available. Retry when it reconnects.")
@@ -1173,6 +1177,93 @@ final class AppModel: ObservableObject {
         closeChat()
         PhoneModel.shared.reset()
         show(unsure.isEmpty ? message : "\(message) Check \(names): what was being sent may or may not have gone in.")
+    }
+}
+
+// MARK: Snapshots
+
+/// Fixed sample state for `--snapshot`, mirroring the desktop fixtures
+/// (`desktop/fixtures/panel-*.json`) so CI renders populated panels on a bare runner with
+/// no engine, network or downloads. Each panel job reloads it (jobs share one model, and
+/// switching panels clears the chat), so every shot renders from the same state.
+@MainActor
+extension AppModel {
+    func loadSnapshotSample() {
+        engineHealth = .ready
+        snapshotMode = true
+        installedKinds = [.claude, .codex, AgentKind(rawValue: "gemini"), AgentKind(rawValue: "opencode"), AgentKind(rawValue: "pi"), .october]
+        harness = EngineMessage.HarnessStatus(status: "ready", source: "path", version: nil, message: nil)
+        // Claude Code picks its own model, like the Linux new-session fixture.
+        models = ["claude": EngineMessage.ModelList(requestId: "", kind: .claude, choosable: false, models: [], error: nil)]
+        let now = Date().timeIntervalSince1970 * 1000
+        func agent(_ id: String, _ kind: AgentKind, _ handle: String, state: AgentState, minutesAgo: Double,
+                   project: String? = nil, title: String? = nil, lastMessage: String? = nil) -> Agent {
+            Agent(
+                id: id, kind: kind, handle: handle, pid: 2101, tty: nil, cwd: nil,
+                project: project, title: title, sessionId: nil,
+                state: state, stateSince: now - minutesAgo * 60 * 1000,
+                lastMessage: lastMessage, question: nil, questionKind: nil, questionDetail: nil,
+                promptId: nil, choices: nil, busId: nil, sessionMatch: nil, source: "cmux",
+                live: nil, host: nil, tmux: nil, canReply: true, route: nil, stateSource: "hook"
+            )
+        }
+        agents = [
+            agent(
+                "claude:24:1", .claude, "claude-24", state: .waiting, minutesAgo: 38,
+                project: "october-leader", title: "October-leader universal agent bar",
+                lastMessage: """
+                    When you start a session in Lantern, its chat now opens immediately. The new build is running, so you can try it now.
+
+                    **What you'll see:**
+                    - The conversation opens beside the pill.
+                    - Your prompt is shown while the agent starts.
+                    - Reply once the conversation is ready, or use Open to see its terminal.
+                    """
+            ),
+            agent(
+                "codex:9:1", .codex, "codex-9", state: .waiting, minutesAgo: 56,
+                project: "october-desktop", title: "how many PRs are opens, and their date",
+                lastMessage: """
+                    Fixed and merged [PR #228](https://example.com/pr/228). A leftover connection was preventing Core from releasing storage during restart.
+
+                    The updated app is running:
+                    - Core and storage are healthy; the error banner is gone.
+                    - The connection now closes when the session ends.
+                    - All the checks pass; the changes are ready for review.
+                    """
+            ),
+            agent(
+                "codex:7:1", .codex, "codex-7", state: .waiting, minutesAgo: 57,
+                project: "Wega-Labs", lastMessage: "The changes are ready for review."
+            ),
+            agent(
+                "claude:1:1", .claude, "claude-1", state: .working, minutesAgo: 5,
+                title: "Find my passport scan"
+            ),
+            agent("pi:4:1", AgentKind(rawValue: "pi"), "pi-4", state: .idle, minutesAgo: 120),
+        ]
+        // The first waits; the rest sit under Earlier, like the Linux inbox fixture.
+        seen = Set(inbox.dropFirst().map(\.turnKey))
+    }
+
+    /// Opens the sample conversation (the working agent's passport search), mirroring
+    /// `panel-chat.json`. `openChat` can't be used: it asks the engine for history.
+    func loadSnapshotChat() {
+        guard let agent = agents.first(where: { $0.state == .working }) else { return }
+        chatAgentId = agent.id
+        targetId = agent.id
+        chatLoading = false
+        chatSupported = true
+        chatMessages = [
+            ChatMessage(role: .user, text: "Find my passport scan and tell me where it is.\n\n(Started from October Lantern on macOS.)", at: nil),
+            ChatMessage(role: .agent, text: "I'll look in your Documents folder and check likely filenames.", at: nil),
+            ChatMessage(role: .tool, text: "Searching Documents for passport scans", at: nil),
+            ChatMessage(
+                role: .agent,
+                text: "## Found it\n\nYour scan is in `Documents/Travel/passport.pdf`.\n\n- It is a PDF.\n- The filename matches your request.\n\n```text\n/Users/you/Documents/Travel/passport.pdf\n```",
+                at: nil
+            ),
+        ]
     }
 }
 

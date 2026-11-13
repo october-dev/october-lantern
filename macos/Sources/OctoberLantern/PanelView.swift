@@ -5,6 +5,8 @@ struct PanelView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var dictation: Dictation
     @ObservedObject var assistant = Assistant.shared
+    /// A stand-in account for Ask Lantern (snapshots render signed-in); otherwise the shared one.
+    var account: OctoberAccount? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -28,7 +30,7 @@ struct PanelView: View {
                 PanelTitle(title: "Connections", model: model)
                 OctoberView()
             case .assistant:
-                AssistantHome(model: model)
+                if let account { AssistantHome(model: model, account: account) } else { AssistantHome(model: model) }
             default:
                 if let preview = model.launchPreview {
                     StartingChatView(preview: preview, model: model)

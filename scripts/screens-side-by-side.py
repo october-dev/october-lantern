@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Mac and Linux screens side by side (#23).
 
-The two UIs render the same surfaces with the existing renderers (no engine or
-network on the Linux side; the Mac side starts its engine for live agent rows):
+Both sides render saved sample state (no engine or network on either side):
   Mac:   OctoberLantern --snapshot <dir>            -> welcome-*.png, settings-*.png, panel-*.png, ...
   Linux: october-lantern --fixture <surface>.json --out <png> --scale 2
 
   scripts/screens-side-by-side.py render <binary> <out-dir>
       renders every paired Linux fixture (run under xvfb-run; needs a display)
   scripts/screens-side-by-side.py page <mac-dir> <linux-dir> <out-dir>
-      writes <out-dir>/index.html with each pair side by side
+      writes <out-dir>/index.html with each pair side by side (fails when an
+      image is missing, so a renamed snapshot can't pass silently)
 
-A pixel diff isn't the goal (fonts differ, and the Mac side shows live state
-while Linux shows saved fixtures); the page is for a ten-second parity scan.
+A pixel diff isn't the goal (fonts differ); the page is for a ten-second parity
+scan of layout, spacing and wording.
 """
 import shutil
 import subprocess
@@ -76,6 +76,7 @@ def cmd_page(mac_dir, linux_dir, out_dir):
     mac_dir, linux_dir, out_dir = Path(mac_dir), Path(linux_dir), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
+    missing = []
     for group, pairs in PAIRS:
         rows.append(f"<h2>{group}</h2>")
         for mac_stem, _ in pairs:
@@ -87,10 +88,14 @@ def cmd_page(mac_dir, linux_dir, out_dir):
                     shutil.copyfile(src, out_dir / dest)
                     cells.append(f'<td><div class="cap">{side}</div><img src="{dest}" alt="{mac_stem} on {side}"></td>')
                 else:
+                    missing.append(str(src))
                     cells.append(f'<td><div class="cap">{side}</div><div class="missing">missing: {mac_stem}.png</div></td>')
             rows.append(f'<h3>{mac_stem}</h3><table><tr>{"".join(cells)}</tr></table>')
     (out_dir / "index.html").write_text(PAGE.format(body="\n".join(rows)))
     print(f"wrote {out_dir / 'index.html'}", flush=True)
+    if missing:
+        print("missing images:", *missing, sep="\n  ", file=sys.stderr)
+        raise SystemExit(1)
 
 
 PAGE = """<!DOCTYPE html>
@@ -107,15 +112,14 @@ p.note {{ color: #999; max-width: 70ch; }}
 table {{ border-collapse: collapse; margin-bottom: 12px; }}
 td {{ vertical-align: top; padding: 0 16px 8px 0; }}
 .cap {{ color: #999; font-size: 12px; margin-bottom: 4px; }}
-img {{ max-width: 520px; border: 1px solid #333; border-radius: 8px; background: #000; }}
+img {{ width: 520px; border: 1px solid #333; border-radius: 8px; background: #000; }}
 .missing {{ color: #c66; font-size: 13px; }}
 </style>
 </head>
 <body>
 <h1>Lantern screens: Mac vs Linux</h1>
-<p class="note">The same surfaces on both UIs. Fonts differ, and the Mac side
-shows live state while Linux shows saved fixtures, so compare layout, spacing
-and wording — not pixels or content.</p>
+<p class="note">The same surfaces on both UIs, each in the same kind of state.
+Fonts differ, so compare layout, spacing and wording — not pixels.</p>
 {body}
 </body>
 </html>

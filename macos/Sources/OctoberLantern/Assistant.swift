@@ -656,6 +656,14 @@ final class Assistant: ObservableObject {
         turns = thread ? [turn] : []
     }
 
+    /// For snapshots: the home with no chats, like the Linux home fixture. Nothing is saved.
+    func demoEmpty() {
+        restoring = true
+        defer { restoring = false }
+        conversations = []
+        turns = []
+    }
+
     // MARK: Saved conversations
 
     private static var file: URL {
@@ -1255,6 +1263,7 @@ struct AssistantThread: View {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain).help("Close")
+                .accessibilityLabel("Close")
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1685,7 +1694,8 @@ struct AskBox: View {
                                     Button { assistant.removeAttachment(url) } label: {
                                         Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.white, .black.opacity(0.7))
                                     }
-                                    .buttonStyle(.plain).help("Remove this image").offset(x: 4, y: -4)
+                                    .buttonStyle(.plain).help("Remove this image")
+                                    .accessibilityLabel("Remove this image").offset(x: 4, y: -4)
                                 }
                             }
                         }
@@ -1744,6 +1754,7 @@ struct AskBox: View {
                     .foregroundStyle(Theme.muted).frame(width: 28, height: 28)
             }
             .buttonStyle(.plain).help("Add images (you can also paste or drop them here)")
+            .accessibilityLabel("Add images")
             Button {
                 if dictation.isActive { dictation.stop() } else { dictation.start(prefix: assistant.text, owner: "assistant") }
             } label: {
@@ -1751,6 +1762,7 @@ struct AskBox: View {
                     .foregroundStyle(dictation.isRecording ? Theme.red : Theme.muted).frame(width: 28, height: 28)
             }
             .buttonStyle(.plain).help(dictation.isRecording ? "Stop listening" : "Speak")
+            .accessibilityLabel(dictation.isRecording ? "Stop listening" : "Speak")
             AIChoiceMenu()
             Spacer(minLength: 8)
             if showsStop {
@@ -1760,6 +1772,7 @@ struct AskBox: View {
                         .background(Circle().fill(Theme.amber))
                 }
                 .buttonStyle(.plain).help(assistant.asking ? "Stop Lantern's answer" : "Stop @\(assistant.activeAgent?.handle ?? "the agent")")
+                .accessibilityLabel("Stop")
             } else {
                 Button { assistant.submit() } label: {
                     Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
@@ -1767,6 +1780,7 @@ struct AskBox: View {
                         .background(Circle().fill(canSubmit ? Theme.amber : Theme.amber.opacity(0.35)))
                 }
                 .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
+                .accessibilityLabel("Ask")
             }
         }
     }
