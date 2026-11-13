@@ -1,0 +1,77 @@
+name: Screens
+
+# #23: every PR touching the Mac or desktop UI gets a `screens` artifact with the
+# same surfaces rendered on both, side by side, for a ten-second parity scan.
+# A pixel diff isn't the goal (fonts differ); layout, spacing and wording are.
+on:
+  pull_request:
+    paths:
+      - 'macos/**'
+      - 'desktop/**'
+
+jobs:
+  mac:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine
+      - name: Select the newest Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+      - name: Build the engine and the app
+        run: |
+          cargo build --locked --manifest-path engine/Cargo.toml
+          (cd macos && swift build)
+      - name: Render the Mac screens
+        run: |
+          BIN="$(cd macos && swift build --show-bin-path)/OctoberLantern"
+          "$BIN" --snapshot "${{ github.workspace }}/screens-mac"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screens-mac
+          path: screens-mac/
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/build/target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop -> ../build/target
+      - name: Install runtime dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libxkbcommon0 libwayland-client0 xvfb
+      - name: Build the desktop app
+        run: cargo build --locked --manifest-path desktop/Cargo.toml
+      - name: Render the Linux screens
+        run: xvfb-run -a -s '-screen 0 1600x2400x24' python3 scripts/screens-side-by-side.py render "$CARGO_TARGET_DIR/debug/lantern-desktop" screens-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screens-linux
+          path: screens-linux/
+          if-no-files-found: error
+
+  side-by-side:
+    needs: [mac, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: screens-mac
+          path: screens-mac
+      - uses: actions/download-artifact@v4
+        with:
+          name: screens-linux
+          path: screens-linux
+      - name: Build the side-by-side page
+        run: python3 scripts/screens-side-by-side.py page screens-mac screens-linux screens
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: screens/

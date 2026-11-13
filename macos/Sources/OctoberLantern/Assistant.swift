@@ -1805,6 +1805,9 @@ struct AssistantHome: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        // One item for VoiceOver, named like its desktop twin (assistant.rs).
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(c.title)
                         .contextMenu { Button("Delete", role: .destructive) { assistant.delete(c) } }
                     }
                 }
@@ -1827,6 +1830,7 @@ struct AssistantHome: View {
                             Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 22, height: 22)
                         }
                         .buttonStyle(.plain).keyboardShortcut(.cancelAction).help("Close")
+                        .accessibilityLabel("Close")
                     }
                     if account.signedIn {
                         Text("Ask anything, or tell Lantern what to do and an agent gets on it.")

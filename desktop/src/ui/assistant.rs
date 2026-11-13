@@ -490,6 +490,8 @@ fn ai_menu(ui: &mut Ui, cx: &mut Ctx) {
     let color = if tier == OctoberTier::Pro { t::GREEN } else { t::MUTED };
     let button =
         ui.add(egui::Button::new(c::text(format!("{} ▾", tier.label()), 11.0, Weight::Medium, color)).corner_radius(12).fill(t::FAINT));
+    // Named like the Mac menu (Swift `AIChoiceMenu`): what the button shows, plus what it is.
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("AI: {}", tier.label())));
     let button = button.on_hover_text(tier.explanation());
     let email = cx.model.account.signed_in.as_ref().map(|a| a.email.trim()).filter(|e| e.contains('@'));
     let mut action = None;
