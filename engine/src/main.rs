@@ -135,9 +135,8 @@ fn main() -> Result<()> {
                 "grok" => {
                     let f = readers::grok::session_file(&cwd, start);
                     println!("file: {f:?}");
-                    let m = f.as_ref().and_then(|f| std::fs::metadata(f).ok()).map(|_| 0).unwrap_or(0);
                     (
-                        f.as_ref().map(|f| readers::grok::parse(f, m)),
+                        f.as_ref().map(|f| readers::grok::parse(f, 0)),
                         f.and_then(|f| readers::grok::history(&f)).unwrap_or_default().messages,
                     )
                 }
