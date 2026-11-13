@@ -702,7 +702,9 @@ impl Lantern {
     }
 
     /// Stop (Swift `Assistant.stop`): Lantern's answer ends where it is; a working agent gets
-    /// Escape, as in its terminal, and stays open for what you say next.
+    /// Escape, as in its terminal, and stays open for what you say next. Copilot has no
+    /// reliable interrupt through Lantern (one Escape only clears its input), so Stop sends
+    /// nothing there: it says so and brings the terminal forward instead of claiming it stopped.
     pub(super) fn stop_assistant(&mut self) {
         if self.model.assistant.asking {
             self.asking.generation.fetch_add(1, Ordering::SeqCst);
@@ -713,9 +715,21 @@ impl Lantern {
             }
             return;
         }
-        let Some(agent_id) = self.model.assistant_agent().filter(|a| a.state == AgentState::Working).map(|a| a.id.clone()) else {
+        let Some(agent) = self.model.assistant_agent().filter(|a| a.state == AgentState::Working) else {
             return;
         };
+        if agent.kind.as_str() == AgentKind::COPILOT {
+            let terminal = agent.host.as_ref().map(|h| h.app.clone()).unwrap_or_else(|| "its terminal".into());
+            let handle = agent.handle.clone();
+            let agent_id = agent.id.clone();
+            self.show(format!("Stop @{handle} in {terminal} with Ctrl-C"));
+            crate::os::allow_focus(self.engine.pid());
+            if let Some(id) = self.request(json!({"type": "focus", "agentId": agent_id})) {
+                self.pending.insert(id, Pending::Focus { agent_id });
+            }
+            return;
+        }
+        let agent_id = agent.id.clone();
         if let Some(id) = self.request(json!({"type": "keys", "agentId": agent_id, "keys": ["Escape"]})) {
             self.pending.insert(id, Pending::Stop { agent_id });
         }
@@ -1175,10 +1189,14 @@ mod tests {
     }
 
     fn running(id: &str, session: &str) -> Agent {
+        running_as(id, session, "claude", "claude-1")
+    }
+
+    fn running_as(id: &str, session: &str, kind: &str, handle: &str) -> Agent {
         Agent {
             id: id.into(),
-            kind: AgentKind::new("claude"),
-            handle: "claude-1".into(),
+            kind: AgentKind::new(kind),
+            handle: handle.into(),
             state: AgentState::Working,
             can_reply: true,
             tmux: Some(crate::model::TmuxPane { target: format!("{session}:0.0"), ..Default::default() }),
@@ -1328,6 +1346,27 @@ mod tests {
         let id = lantern.pending.iter().find(|(_, p)| matches!(p, Pending::Stop { .. })).map(|(id, _)| id.clone()).unwrap();
         lantern.engine_event(json!({"type": "replyResult", "requestId": id, "ok": true}));
         assert_eq!(lantern.model.toast.as_ref().map(|t| t.text.as_str()), Some("Stopped @claude-1"));
+    }
+
+    #[test]
+    fn stop_points_a_working_copilot_at_its_terminal_instead_of_escape() {
+        let mut lantern = lantern(&["copilot"]);
+        lantern.set_panel(Some(PanelMode::Assistant));
+        let (generation, turn) = with_turn(&mut lantern);
+        lantern.assistant_piece(
+            generation,
+            turn,
+            Piece::Task { prompt: "x".into(), agent: Some("copilot".into()), project: None, to: None },
+        );
+        lantern.assistant_done(generation, turn, None);
+        lantern.start_pending_task();
+        answer_launch(&mut lantern, true, Some("copilot-x-1"));
+        lantern.engine_event(json!({"type": "snapshot", "agents": [running_as("copilot:9:9", "copilot-x-1", "copilot", "copilot-1")]}));
+        lantern.stop_assistant();
+        assert!(lantern.pending.values().all(|p| !matches!(p, Pending::Stop { .. })), "no Escape for Copilot");
+        let focuses = lantern.pending.values().filter(|p| matches!(p, Pending::Focus { agent_id } if agent_id == "copilot:9:9")).count();
+        assert_eq!(focuses, 1, "its terminal comes forward");
+        assert_eq!(lantern.model.toast.as_ref().map(|t| t.text.as_str()), Some("Stop @copilot-1 in its terminal with Ctrl-C"));
     }
 
     #[test]

@@ -2140,4 +2140,48 @@ fn classifies_copilot_launch_shapes() {
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "version"])), None);
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-p", "hi"])), None);
     assert_eq!(scanner::classify(&proc(&["node", "/x/node_modules/@github/copilot/npm-loader.js", "-p", "hi"])), None);
+    // AWS takes options before its command; those stay rejected...
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--name=web", "deploy"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--name", "web", "deploy"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-nweb", "deploy"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--unknown", "deploy"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "run", "local"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "completion", "bash"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "help", "deploy"])), None);
+    // ...while GitHub's own option values that read as AWS words stay visible: `--yolo`
+    // takes no value and `-n`/`--name` takes one, so `deploy` is the session's name.
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--yolo"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--yolo", "-n", "deploy"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-n", "deploy"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--name", "deploy"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-nweb"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--name=my feature"])), Some(Kind::Copilot));
+    // Other interactive launch forms: values consumed (`-i`, `-C`, `--model`), optional
+    // values (`-r`, `--resume`, `--share`), greedy values (`--allow-tool`), combined
+    // shorts (`-sn`), and flags the list predates.
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-i", "fix it"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-C", "/tmp", "--model", "gpt-6-sol"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--resume", "abc"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-r", "abc"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--resume", "--model", "x", "--yolo"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--allow-tool", "bash", "read"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-sn", "my feature"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--future-flag"])), Some(Kind::Copilot));
+    // Words after `--` are never subcommands (GitHub errors on them).
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--", "deploy"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--", "sessions"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--"])), Some(Kind::Copilot));
+    // One-shot and server modes stay out, native and npm alike.
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--prompt=fix it"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--prompt", "fix it"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--acp"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--server"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--headless"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--help"])), None);
+    assert_eq!(scanner::classify(&proc(&["node", "/x/node_modules/@github/copilot/npm-loader.js", "--prompt=fix it"])), None);
+    assert_eq!(scanner::classify(&proc(&["node", "/x/node_modules/@github/copilot/npm-loader.js", "--acp"])), None);
+    assert_eq!(
+        scanner::classify(&proc(&["node", "/x/node_modules/@github/copilot/npm-loader.js", "--yolo", "-n", "deploy"])),
+        Some(Kind::Copilot)
+    );
 }

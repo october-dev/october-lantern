@@ -52,9 +52,18 @@ fn is_helper(kind: Kind, args: &[String]) -> bool {
         Kind::Claude => (&["daemon", "mcp"], &["--bg-pty-host", "--bg-spare", "--chrome-native-host", "-p", "--print"]),
         Kind::Codex => (&["exec", "e", "mcp", "mcp-server", "app-server", "login", "logout", "proto"], &[]),
         Kind::Opencode => (&["serve", "run", "mcp"], &[]),
+        // GitHub Copilot's one-shot and server modes (`--prompt=PROMPT` is a documented
+        // spelling; `--server`/`--headless`/`--remote` are legacy SDK server startup, not
+        // interactive). This runs for native and npm launches alike.
+        Kind::Copilot => (
+            &["mcp", "serve", "exec", "run", "login"],
+            &["-p", "--print", "--prompt", "--acp", "--server", "--headless", "--remote", "-h", "--help", "-v", "--version"],
+        ),
         _ => (&["mcp", "serve", "exec", "run", "login"], &["-p", "--print", "--prompt"]),
     };
-    args.first().is_some_and(|a| subcommands.contains(&a.as_str())) || args.iter().any(|a| flags.contains(&a.as_str()))
+    // `--flag=value` spells the same flag.
+    args.first().is_some_and(|a| subcommands.contains(&a.as_str()))
+        || args.iter().any(|a| flags.contains(&a.split('=').next().unwrap_or(a.as_str())))
 }
 
 const INTERPRETERS: [&str; 5] = ["node", "bun", "deno", "python", "uv"];
@@ -88,9 +97,79 @@ fn script_program(script: &str) -> &str {
     basename(script)
 }
 
-/// Whether a native `copilot` is GitHub's CLI: its platform install, its flags, or one of
-/// its own subcommands. Anything else (AWS's deploy tool, one-shot helpers) isn't an
-/// interactive agent Lantern shows.
+/// AWS Copilot's top-level commands, from its root command definition. AWS ended support
+/// in June 2026, so this list no longer changes. (`run` is the `run local` command's name;
+/// `help` is added by its parser.)
+const AWS_COMMANDS: [&str; 15] =
+    ["app", "completion", "deploy", "docs", "env", "help", "init", "job", "pipeline", "run", "secret", "storage", "svc", "task", "version"];
+
+/// GitHub Copilot CLI options that take a value, from `copilot --help` (1.0.110, unchanged in
+/// 1.0.111): `--name value` and `--name=value` alike. `--config-dir` (deprecated) and
+/// `--worktree`/`-w` come from the current command reference, which is newer than either
+/// binary; listing them keeps newer launches visible, and a wrong guess here only ever shows a
+/// process that exits at once (both CLIs reject a misparsed line immediately).
+const COPILOT_VALUE_OPTS: [&str; 29] = [
+    "add-dir",
+    "add-github-mcp-tool",
+    "add-github-mcp-toolset",
+    "additional-mcp-config",
+    "agent",
+    "attachment",
+    "auto-tier",
+    "config-dir",
+    "context",
+    "disable-mcp-server",
+    "dynamic-retrieval",
+    "enable-mcp-server",
+    "extension-sdk-path",
+    "interactive",
+    "log-dir",
+    "log-level",
+    "max-ai-credits",
+    "max-autopilot-continues",
+    "mcp-github-auth",
+    "mode",
+    "model",
+    "name",
+    "output-format",
+    "plugin-dir",
+    "prompt",
+    "reasoning-effort",
+    "session-id",
+    "stream",
+    "usage-output-file",
+];
+
+/// GitHub Copilot CLI options that take an optional single value (`--resume sessions` resumes
+/// the session named `sessions`; `--resume --model x` leaves `--model` alone).
+const COPILOT_OPTIONAL_OPTS: [&str; 7] = ["bash-env", "connect", "mouse", "resume", "share", "sync-session", "worktree"];
+
+/// GitHub Copilot CLI options that take any number of values, up to the next option
+/// (`--allow-tool a b sessions` consumes all three).
+const COPILOT_GREEDY_OPTS: [&str; 7] =
+    ["allow-tool", "allow-url", "available-tools", "deny-tool", "deny-url", "excluded-tools", "secret-env-vars"];
+
+/// GitHub Copilot CLI short options: `-nweb` and `-n web` alike, `-sn foo` combined.
+const COPILOT_VALUE_SHORTS: [char; 4] = ['C', 'i', 'n', 'p'];
+const COPILOT_OPTIONAL_SHORTS: [char; 2] = ['r', 'w'];
+
+/// GitHub's own subcommands that Lantern recognizes (its one-shots and anything unknown stay
+/// unrecognized).
+const COPILOT_SUBCOMMANDS: [&str; 9] = ["config", "sessions", "plugin", "sandbox", "skill", "workflow", "memories", "instruction", "lsp"];
+
+/// Whether the next argument is taken as an option's value: anything but another option or `--`.
+/// A lone `-` is a value (both parsers read it as one); on its own it is a word neither CLI
+/// accepts.
+fn takes_value(next: Option<&&str>) -> bool {
+    next.is_some_and(|n| !n.starts_with('-') || *n == "-")
+}
+
+/// Whether a native `copilot` is GitHub's CLI in an interactive form: bare, flags only, or one
+/// of its own subcommands. AWS's deploy tool shares the name and takes options before its
+/// command (`copilot --name web deploy`), so the first word left after GitHub's own options is
+/// checked against AWS's frozen command list first; a session named `deploy`
+/// (`copilot --yolo -n deploy`) is consumed as `--name`'s value and stays visible. One-shot and
+/// server modes are filtered by `is_helper`, not here.
 fn is_github_copilot_native(p: &Proc) -> bool {
     let exe = p.exe.as_ref().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     let argv0 = p.cmd.first().map(|a| a.to_ascii_lowercase()).unwrap_or_default();
@@ -103,56 +182,72 @@ fn is_github_copilot_native(p: &Proc) -> bool {
         // Bare `copilot` starts GitHub's interactive session (AWS's prints help and exits).
         return true;
     }
-    const FLAGS: [&str; 40] = [
-        "-p",
-        "--prompt",
-        "-i",
-        "--interactive",
-        "-r",
-        "--resume",
-        "--continue",
-        "-C",
-        "--trust",
-        "--allow-all",
-        "--allow-all-tools",
-        "--allow-all-paths",
-        "--allow-all-urls",
-        "--allow-tool",
-        "--allow-url",
-        "--deny-tool",
-        "--deny-url",
-        "--agent",
-        "--add-dir",
-        "--additional-mcp-config",
-        "--add-github-mcp-tool",
-        "--add-github-mcp-toolset",
-        "--acp",
-        "--autopilot",
-        "--fleet",
-        "--plan",
-        "--mode",
-        "--model",
-        "--no-ask-user",
-        "--banner",
-        "--log-level",
-        "--silent",
-        "--output-format",
-        "--max-ai-credits",
-        "--auto-tier",
-        "--reasoning-effort",
-        "--screen-reader",
-        "--experimental",
-        "--enable-memory",
-        "--plugin-dir",
-    ];
-    // `--flag=value` spells the same flag (`--resume=<id>`, as the CLI prints it).
-    if args.iter().any(|a| FLAGS.contains(&a.split('=').next().unwrap_or(a))) {
-        return true;
+    let mut first_word: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if a == "--" {
+            // Words after `--` are never subcommands (GitHub errors on them); a bare `--`
+            // is neutral.
+            if i + 1 < args.len() {
+                return false;
+            }
+            break;
+        }
+        if let Some(name) = a.strip_prefix("--") {
+            let (opt, attached) = match name.split_once('=') {
+                Some((o, _)) => (o, true),
+                None => (name, false),
+            };
+            if !attached {
+                if COPILOT_VALUE_OPTS.contains(&opt) || COPILOT_OPTIONAL_OPTS.contains(&opt) {
+                    if takes_value(args.get(i + 1)) {
+                        i += 1;
+                    }
+                } else if COPILOT_GREEDY_OPTS.contains(&opt) {
+                    while takes_value(args.get(i + 1)) {
+                        i += 1;
+                    }
+                }
+                // Anything else takes no value (`--yolo` is a plain flag; an unknown option
+                // errors in GitHub, so a flags-only line carrying one is at most a flash).
+            }
+            i += 1;
+            continue;
+        }
+        if a.len() > 1 && a.starts_with('-') {
+            // A short cluster (`-sn foo`): booleans chain, a value short ends it.
+            let rest = &a[1..];
+            let bytes = rest.as_bytes();
+            let mut j = 0;
+            while j < bytes.len() {
+                let c = bytes[j] as char;
+                if COPILOT_VALUE_SHORTS.contains(&c) || COPILOT_OPTIONAL_SHORTS.contains(&c) {
+                    if j + 1 == bytes.len() && takes_value(args.get(i + 1)) {
+                        i += 1;
+                    }
+                    break;
+                }
+                if c != 'h' && c != 's' && c != 'v' {
+                    // Unknown short: the whole token is an unknown option.
+                    break;
+                }
+                j += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if first_word.is_none() {
+            first_word = Some(a);
+        }
+        i += 1;
     }
-    // GitHub's own subcommands (one-shots like `init`, `app`, `update`, `version` and
-    // anything unknown stay unrecognized).
-    const SUBCOMMANDS: [&str; 9] = ["config", "sessions", "plugin", "sandbox", "skill", "workflow", "memories", "instruction", "lsp"];
-    SUBCOMMANDS.contains(&args[0])
+    match first_word {
+        None => true,
+        Some(w) if AWS_COMMANDS.contains(&w) => false,
+        Some(w) if COPILOT_SUBCOMMANDS.contains(&w) => true,
+        Some(_) => false,
+    }
 }
 
 /// Classifies a process from argv. `node /path/to/codex ...` counts as codex.
@@ -687,7 +782,7 @@ impl Scanner {
                     .and_then(|l| l.session_id.as_deref())
                     .filter(|id| looks_like_id(id))
                     .and_then(|id| self.transcripts.claude_path_for_session(id));
-                let from_args = arg_after(args, &["--session-id", "--resume", "-r"])
+                let from_args = arg_after(args, &["session-id", "resume", "-r"])
                     .filter(|id| looks_like_id(id))
                     .and_then(|id| self.transcripts.claude_path_for_session(id));
                 let found_path = match from_hook.or(from_live).or(from_args) {

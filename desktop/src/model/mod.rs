@@ -28,6 +28,7 @@ impl AgentKind {
     pub const OCTOBER: &str = "october";
     pub const CLAUDE: &str = "claude";
     pub const CODEX: &str = "codex";
+    pub const COPILOT: &str = "copilot";
     /// Every agent Lantern supports, in the order New Session lists them.
     pub const SUPPORTED: [&str; 18] = [
         "claude", "codex", "gemini", "opencode", "pi", "october", "grok", "cursor", "copilot", "qwen", "goose", "aider", "amp", "kimi",

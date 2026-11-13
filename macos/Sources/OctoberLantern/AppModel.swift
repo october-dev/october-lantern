@@ -614,6 +614,13 @@ final class AppModel: ObservableObject {
         track(id, .keys(agentId: agent.id), sent: engine.keys(requestId: id, agentId: agent.id, keys: ["Escape"], promptId: nil))
     }
 
+    /// Copilot can't be stopped from here (Escape doesn't interrupt it): say so and bring its
+    /// terminal forward instead of claiming it stopped.
+    func stopInTerminal(_ agent: Agent) {
+        show("Stop @\(agent.handle) in \(agent.host?.app ?? "its terminal") with Ctrl-C")
+        open(agent)
+    }
+
     func send() {
         guard let agent = target, !sending else { return }
         // Lock the recipient (a fallback target becomes the chosen one) before taking the ticket.

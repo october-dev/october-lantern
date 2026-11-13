@@ -399,7 +399,8 @@ final class Assistant: ObservableObject {
     }
 
     /// Stop: Lantern's answer ends where it is; a working agent gets Escape and stays open for
-    /// what you say next.
+    /// what you say next. Copilot has no reliable interrupt through Lantern (one Escape only
+    /// clears its input), so Stop sends nothing there and points at its terminal instead.
     func stop() {
         if asking {
             task?.cancel()
@@ -409,7 +410,11 @@ final class Assistant: ObservableObject {
                 turns[i].answer += turns[i].answer.isEmpty ? "Stopped." : "\n\n(Stopped.)"
             }
         } else if let agent = activeAgent, agent.state == .working {
-            model?.interrupt(agent)
+            if agent.kind == .copilot {
+                model?.stopInTerminal(agent)
+            } else {
+                model?.interrupt(agent)
+            }
         }
     }
 
@@ -1759,7 +1764,7 @@ struct AskBox: View {
                         .frame(width: 28, height: 28)
                         .background(Circle().fill(Theme.amber))
                 }
-                .buttonStyle(.plain).help(assistant.asking ? "Stop Lantern's answer" : "Stop @\(assistant.activeAgent?.handle ?? "the agent")")
+                .buttonStyle(.plain).help(stopHelp)
             } else {
                 Button { assistant.submit() } label: {
                     Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
@@ -1777,6 +1782,15 @@ struct AskBox: View {
     /// box, Send stays, so you can tell a working agent more.
     private var showsStop: Bool {
         assistant.stoppable && assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && assistant.attachments.isEmpty
+    }
+
+    /// What the Stop button does: Lantern's own answer, a working agent, or — for Copilot,
+    /// which Lantern can't interrupt — its terminal.
+    private var stopHelp: String {
+        if assistant.asking { return "Stop Lantern's answer" }
+        guard let agent = assistant.activeAgent else { return "Stop the agent" }
+        if agent.kind == .copilot { return "Stop @\(agent.handle) in its terminal" }
+        return "Stop @\(agent.handle)"
     }
 
     private var placeholder: String {
