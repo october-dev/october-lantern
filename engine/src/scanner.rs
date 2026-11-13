@@ -106,9 +106,8 @@ const AWS_COMMANDS: [&str; 15] =
 /// GitHub Copilot CLI options that take a value, from `copilot --help` (1.0.110, unchanged in
 /// 1.0.111): `--name value` and `--name=value` alike. `--config-dir` (deprecated) and
 /// `--worktree`/`-w` come from the current command reference, which is newer than either
-/// binary; listing them keeps newer launches visible, and a wrong guess here only ever shows a
-/// process that exits at once (both CLIs reject a misparsed line immediately).
-const COPILOT_VALUE_OPTS: [&str; 29] = [
+/// binary. These tables describe GitHub's option values; they do not establish executable identity.
+const COPILOT_VALUE_OPTS: [&str; 30] = [
     "add-dir",
     "add-github-mcp-tool",
     "add-github-mcp-toolset",
@@ -120,6 +119,7 @@ const COPILOT_VALUE_OPTS: [&str; 29] = [
     "context",
     "disable-mcp-server",
     "dynamic-retrieval",
+    "effort",
     "enable-mcp-server",
     "extension-sdk-path",
     "interactive",
@@ -245,7 +245,8 @@ fn is_github_copilot_native(p: &Proc) -> bool {
     match first_word {
         None => true,
         Some(w) if AWS_COMMANDS.contains(&w) => false,
-        Some(w) if COPILOT_SUBCOMMANDS.contains(&w) => true,
+        // A later word may be an AWS option's value, not a GitHub subcommand.
+        Some(w) if COPILOT_SUBCOMMANDS.contains(&w) => args.first().copied() == Some(w),
         Some(_) => false,
     }
 }
@@ -271,6 +272,11 @@ pub fn classify(p: &Proc) -> Option<Kind> {
 
 fn arg_after<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
     args.iter().position(|a| names.contains(&a.as_str())).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
+/// The session id on a Claude Code command line: `--session-id <id>`, `--resume <id>` or `-r <id>`.
+pub(crate) fn claude_session_arg(args: &[String]) -> Option<&str> {
+    arg_after(args, &["--session-id", "--resume", "-r"]).filter(|id| looks_like_id(id))
 }
 
 /// On Windows, an agent with a console of its own can be typed into through it (console.rs).
@@ -782,9 +788,7 @@ impl Scanner {
                     .and_then(|l| l.session_id.as_deref())
                     .filter(|id| looks_like_id(id))
                     .and_then(|id| self.transcripts.claude_path_for_session(id));
-                let from_args = arg_after(args, &["session-id", "resume", "-r"])
-                    .filter(|id| looks_like_id(id))
-                    .and_then(|id| self.transcripts.claude_path_for_session(id));
+                let from_args = claude_session_arg(args).and_then(|id| self.transcripts.claude_path_for_session(id));
                 let found_path = match from_hook.or(from_live).or(from_args) {
                     Some(path) => Some((path, true)),
                     None => match self.claude_paths.get(&p.pid).filter(|(p, _)| p.exists()) {

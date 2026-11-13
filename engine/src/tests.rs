@@ -81,6 +81,19 @@ fn classifies_agents_and_skips_helpers() {
     assert_eq!(scanner::classify(&proc(&["/bin/zsh"])), None);
 }
 
+/// Claude Code's session id is read from its own option names (Lantern starts Claude with
+/// `--session-id`).
+#[test]
+fn claude_session_ids_come_from_the_command_line() {
+    let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<String>>();
+    let id = "0199aaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    assert_eq!(scanner::claude_session_arg(&args(&["--session-id", id])), Some(id));
+    assert_eq!(scanner::claude_session_arg(&args(&["--model", "opus", "--resume", id])), Some(id));
+    assert_eq!(scanner::claude_session_arg(&args(&["-r", id])), Some(id));
+    assert_eq!(scanner::claude_session_arg(&args(&["--resume", "not-an-id"])), None);
+    assert_eq!(scanner::claude_session_arg(&args(&["session-id", id])), None);
+}
+
 #[test]
 fn claude_transcript_states() {
     let dir = temp_dir("claude");
@@ -2148,6 +2161,14 @@ fn classifies_copilot_launch_shapes() {
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "run", "local"])), None);
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "completion", "bash"])), None);
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "help", "deploy"])), None);
+    // An AWS option value can look like a GitHub management command.
+    for args in [
+        ["/usr/local/bin/copilot", "--app", "config", "deploy"],
+        ["/usr/local/bin/copilot", "-a", "config", "deploy"],
+        ["/usr/local/bin/copilot", "--profile", "sessions", "deploy"],
+    ] {
+        assert_eq!(scanner::classify(&proc(&args)), None);
+    }
     // ...while GitHub's own option values that read as AWS words stay visible: `--yolo`
     // takes no value and `-n`/`--name` takes one, so `deploy` is the session's name.
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--yolo"])), Some(Kind::Copilot));
@@ -2161,6 +2182,7 @@ fn classifies_copilot_launch_shapes() {
     // shorts (`-sn`), and flags the list predates.
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-i", "fix it"])), Some(Kind::Copilot));
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-C", "/tmp", "--model", "gpt-6-sol"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--effort", "high"])), Some(Kind::Copilot));
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--resume", "abc"])), Some(Kind::Copilot));
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-r", "abc"])), Some(Kind::Copilot));
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--resume", "--model", "x", "--yolo"])), Some(Kind::Copilot));
