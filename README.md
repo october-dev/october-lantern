@@ -80,11 +80,11 @@ Optional hooks add completion updates for Codex and permission requests for Clau
 
 | Platform | Reply from Lantern |
 |---|---|
-| **Mac** | Direct replies through cmux, Terminal, iTerm2 and tmux, including background sessions Lantern starts. Other terminals use copy and paste. |
+| **Mac** | Direct replies through cmux, Terminal, iTerm2, tmux and kitty (kitty needs [remote control turned on](docs/PRODUCT.md#supported-terminals)), including background sessions Lantern starts. Other terminals use copy and paste. |
 | **Linux** | Direct replies to tmux sessions, including those Lantern starts. Other terminals use the clipboard. |
 | **Windows (preview)** | Direct replies to sessions Lantern starts and to agents in their own console (Windows Terminal, VS Code, console windows). |
 
-Claude Code's hook-based **Allow / Deny** buttons work in cmux, iTerm2 and tmux; Mac Terminal supports text replies. See the [compatibility guide](docs/PRODUCT.md#supported-terminals) and [platform notes](docs/BUILDING.md) for details.
+Claude Code's hook-based **Allow / Deny** buttons work in cmux, iTerm2, tmux and kitty; Mac Terminal supports text replies. See the [compatibility guide](docs/PRODUCT.md#supported-terminals) and [platform notes](docs/BUILDING.md) for details.
 
 ## Privacy and permissions
 

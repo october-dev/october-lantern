@@ -77,12 +77,12 @@ struct TmuxPane: Codable, Hashable {
     let paneId: String
 }
 
-/// How Lantern types into an agent: "tmux", "cmux", "terminal", "iterm", "october" or "none".
+/// How Lantern types into an agent: "tmux", "cmux", "terminal", "iterm", "kitty", "october" or "none".
 struct Route: Codable, Hashable {
     let via: String
 
     /// Whether single keys (e.g. "1" to allow a permission prompt) can be sent without Enter.
-    var sendsKeys: Bool { via == "tmux" || via == "cmux" || via == "iterm" }
+    var sendsKeys: Bool { via == "tmux" || via == "cmux" || via == "iterm" || via == "kitty" }
 }
 
 /// What an agent's question offers (engine `Choices`).

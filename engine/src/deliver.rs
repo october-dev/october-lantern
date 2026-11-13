@@ -6,6 +6,9 @@
 //!   the agent's environment
 //! - Terminal and iTerm2: their AppleScript, finding the tab by its tty (asks the user once for
 //!   Automation permission)
+//! - kitty: `kitty @`, through the window id and socket in the agent's environment (see kitty.rs;
+//!   needs `allow_remote_control` plus `listen_on`, on kitty 0.50.0 or newer — older releases get
+//!   no route, so replies stay copy and paste)
 //! - Lantern's own sessions on Windows: the session's host, which runs only the agent (pty.rs)
 //!
 //! Every send first checks that the terminal still belongs to the agent Lantern saw: the same
@@ -31,7 +34,7 @@ use crate::tmux;
 pub const CMUX: &str = "/Applications/cmux.app/Contents/Resources/bin/cmux";
 
 /// How long one send (text + Enter) may take once it has started.
-const SEND_LIMIT: Duration = Duration::from_secs(10);
+pub(crate) const SEND_LIMIT: Duration = Duration::from_secs(10);
 
 /// A single keypress, for answering prompts without Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,12 +156,16 @@ fn verify_pane(agent: &Agent, pane: &TmuxPane) -> Result<()> {
     Ok(())
 }
 
-/// Asks the terminal app for Automation permission (and waits while the person answers the
-/// dialog) without typing anything, so the check before typing happens after the wait.
+/// Finishes anything that can wait before the final checks run: asks the terminal app for
+/// Automation permission (and waits while the person answers the dialog) without typing
+/// anything, so the check before typing happens after the wait; re-probes the running kitty's
+/// targeting support for the same reason. Every kitty send and Open goes through here first
+/// (see actions.rs), so the low-level input functions must not probe again after validation.
 pub fn prepare(agent: &Agent, limit: Duration) -> Result<()> {
     match &agent.route {
         Route::Terminal { .. } => osascript("tell application \"Terminal\" to count windows", &[], limit, false).map(|_| ()),
         Route::Iterm { .. } => osascript("tell application id \"com.googlecode.iterm2\" to count windows", &[], limit, false).map(|_| ()),
+        Route::Kitty { socket, cli, .. } => crate::kitty::verify_targeting(cli, socket),
         _ => Ok(()),
     }
 }
@@ -189,6 +196,10 @@ pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
         Route::October { .. } => bail!("replies to October's agents go through October"),
         Route::Terminal { tty } => osascript(TERMINAL_SEND, &[tty, &line], SEND_LIMIT, true).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_SEND, &[tty, &line, "yes"], SEND_LIMIT, true).map(|_| ()),
+        Route::Kitty { window, socket, cli } => {
+            crate::kitty::verify_window(cli, socket, window, agent)?;
+            crate::kitty::send_text(cli, socket, window, &line)
+        }
         Route::Pty { session } => crate::pty::send_text(session, &line),
         Route::Console { .. } => crate::console::send(agent, "text", &line),
         Route::None => bail!("Lantern can't type into {} yet", host_name(agent)),
@@ -219,6 +230,10 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
         (Route::Iterm { tty }, Key::Tab) => osascript(ITERM_SEND, &[tty, "\t", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Enter) => osascript(ITERM_SEND, &[tty, "\r", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Char(c)) => osascript(ITERM_SEND, &[tty, &c.to_string(), "no"], SEND_LIMIT, true).map(|_| ()),
+        (Route::Kitty { window, socket, cli }, key) => {
+            crate::kitty::verify_window(cli, socket, window, agent)?;
+            crate::kitty::send_key(cli, socket, window, key)
+        }
         (Route::Pty { session }, Key::Escape) => crate::pty::send_bytes(session, "\u{1b}"),
         (Route::Pty { session }, Key::Tab) => crate::pty::send_bytes(session, "\t"),
         (Route::Pty { session }, Key::Enter) => crate::pty::send_bytes(session, "\r"),
@@ -257,6 +272,7 @@ pub fn focus(agent: &Agent) -> Result<()> {
         Route::Cmux { workspace, .. } => cmux(&["select-workspace", "--workspace", workspace]),
         Route::Terminal { tty } => osascript(TERMINAL_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
+        Route::Kitty { window, socket, cli } => crate::kitty::activate(cli, socket, window),
         Route::Pty { session } => focus_session(session),
         #[cfg(windows)]
         Route::Console { .. } => crate::platform::focus_window(agent.host.as_ref().map_or(0, |h| h.pid)),

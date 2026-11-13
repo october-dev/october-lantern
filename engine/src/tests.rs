@@ -449,6 +449,28 @@ fn stalled_deliveries_are_canceled_not_typed_later() {
     assert!(!t.cancel());
 }
 
+/// The kitty capability probe runs in preparation, before the process and prompt checks: a
+/// kitty-routed agent whose process is gone and whose CLI is missing fails with the probe's
+/// refusal, not with the process check's "has exited".
+#[test]
+fn kitty_probe_runs_before_process_validation() {
+    use crate::actions::{Op, Outcome, Ticket, perform};
+    let mut a = agent_for(u32::MAX, 1, Some("ttys004"));
+    a.route = Route::Kitty {
+        window: "3".into(),
+        socket: "unix:/tmp/kitty-test-missing".into(),
+        cli: PathBuf::from("/nonexistent/kitty-test-missing"),
+    };
+    assert!(crate::procs::live(u32::MAX).is_none(), "the test pid must not exist");
+    let link = crate::october_link::detached();
+    let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let o = perform(&a, Op::Text("hello".into()), far, &Ticket::new(), &link);
+    let Outcome::Failed { code, message } = o else { panic!("the probe must refuse, nothing may be typed: {o:?}") };
+    assert_eq!(code, "send_failed");
+    assert!(message.contains("targeted input"), "the probe's refusal, not a later check: {message}");
+    assert!(!message.contains("exited"), "preparation runs before process validation: {message}");
+}
+
 #[test]
 fn permission_keys_must_name_the_current_prompt() {
     use crate::deliver::Key;
