@@ -45,7 +45,7 @@ jobs:
         with:
           workspaces: desktop -> ../build/target
       - name: Install runtime dependencies
-        run: sudo apt-get update && sudo apt-get install -y libgl1 libxkbcommon0 libwayland-client0 xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgl1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 xvfb
       - name: Build the desktop app
         run: cargo build --locked --manifest-path desktop/Cargo.toml
       - name: Render the Linux screens
