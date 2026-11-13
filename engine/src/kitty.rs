@@ -1,21 +1,31 @@
 //! Replying to agents in kitty, and jumping to their windows.
 //!
-//! kitty's remote control addresses windows by id: `kitty @ --to <socket> send-text
-//! --match id:<id> -- <text>` and `kitty @ --to <socket> focus-window --match id:<id>`.
+//! kitty's remote control addresses windows by id: `kitty @ --to <socket> action --match
+//! id:<id> send_text all <text>` and `kitty @ --to <socket> focus-window --match id:<id>`.
 //! kitty exports the window id (`KITTY_WINDOW_ID`) in every child's environment, and the
-//! control socket (`KITTY_LISTEN_ON`) only when remote control is fully on: `kitty.conf` needs
-//! both `allow_remote_control` (`yes`, `socket` or `socket-only`, the tightest that works) and
-//! `listen_on unix:/tmp/kitty` (or `kitty --listen-on`), then a restart. The scanner reads both
-//! from the agent's own environment (see scanner.rs); a kitty without them simply has no route.
+//! control socket (`KITTY_LISTEN_ON`) when a control socket exists: `kitty.conf` needs
+//! `listen_on unix:/tmp/kitty` (or `kitty --listen-on`) with `allow_remote_control` set to
+//! `yes`, `socket`, `socket-only` or `password`, then a restart. Lantern sends no password, so
+//! `socket-only` is the setup to use; a kitty without a socket simply has no route. The scanner
+//! reads both values from the agent's own environment (see scanner.rs).
 //!
-//! `send-text` always reports success even when nothing arrived, so every reply and key first
-//! checks the window is still the agent's: `kitty @ ls` lists each window with the pids in its
-//! foreground, and the send is refused unless the agent's pid is in its own window's list. That
-//! keeps "Sent" honest, stops typing into whatever sits between kitty and the agent (Neovim's
-//! `:terminal`), and catches a kitty upgraded while running.
+//! Every reply and key first checks the window is still the agent's: `kitty @ ls` lists each
+//! window with the pids in its foreground, and the send is refused unless the agent's pid is in
+//! its own window's list. That stops typing into whatever sits between kitty and the agent
+//! (Neovim's `:terminal`).
 //!
-//! `send-text` reads Python-style backslash escapes, so user text goes in with its backslashes
-//! doubled, and keys go as the bytes the terminal would deliver (`\e`, `\t`, `\r`).
+//! The check only proves the destination; the write itself goes through `action`, which waits
+//! for kitty's answer (unlike `send-text`, which always reports success even when nothing
+//! arrived). A denied or unhandled write fails, so Lantern keeps the draft instead of saying
+//! Sent — including a setup that allows listing windows but denies input. Each write is
+//! acknowledged on its own: text, then Enter, then the key. After a partial delivery (the text
+//! went in but Enter didn't) or a timeout, the outcome is uncertain, never success.
+//!
+//! The `send_text` action takes a keyboard mode and the text (`all` matches any mode); its
+//! parser expands ANSI-C escapes server-side and drops the whitespace between the mode and the
+//! text, and around the whole action. So user text goes in with its backslashes doubled and its
+//! leading/trailing whitespace as escapes, and keys go as the bytes the terminal would deliver
+//! (`\e`, `\t`, `\r`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,10 +59,11 @@ fn argv(socket: &str, subcommand: &str, window: &str, rest: &[&str]) -> Vec<Stri
     full
 }
 
-/// The `send-text` argv for one payload: `--` sits immediately before it, so text starting with
-/// a dash is typed, not read as options.
-fn send_argv(socket: &str, window: &str, payload: &str) -> Vec<String> {
-    argv(socket, "send-text", window, &["--", payload])
+/// The `action` argv for one acknowledged write. `send_text` is the first positional, so what
+/// follows it (however dash-prefixed) is action text, never options — and no `--`: it would join
+/// into the action string itself.
+fn action_argv(socket: &str, window: &str, payload: &str) -> Vec<String> {
+    argv(socket, "action", window, &["send_text", "all", payload])
 }
 
 fn subcommand(argv: &[String]) -> &str {
@@ -61,8 +72,14 @@ fn subcommand(argv: &[String]) -> &str {
 
 fn run(cli: &Path, argv: Vec<String>, typing: bool) -> Result<()> {
     let out = crate::deliver::output_within(Command::new(cli).args(&argv), crate::deliver::SEND_LIMIT, typing)?;
+    check_action(&argv, &out)
+}
+
+/// `kitty @ action` waits for kitty's answer, so a failure here (a denied write, an unhandled
+/// action) is a refusal: nothing was typed, the draft stays, no Sent is shown.
+fn check_action(argv: &[String], out: &std::process::Output) -> Result<()> {
     if !out.status.success() {
-        bail!("kitty {} failed: {}", subcommand(&argv), String::from_utf8_lossy(&out.stderr).trim());
+        bail!("kitty {} failed: {}", subcommand(argv), String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(())
 }
@@ -107,7 +124,7 @@ fn check_ls(os_windows: &[LsOsWindow], window: u64, pid: u32, handle: &str) -> R
 }
 
 /// The send-time check: the agent's window still exists on its own instance with the agent's
-/// pid in its foreground. Refuses when `ls` errors, so a "Sent" is never a guess.
+/// pid in its foreground. Refuses when `ls` errors.
 pub fn verify_window(cli: &Path, socket: &str, window: &str, agent: &crate::model::Agent) -> Result<()> {
     let Ok(id) = window.parse::<u64>() else { bail!("@{}'s kitty window isn't one Lantern understands", agent.handle) };
     let out = crate::deliver::output_within(Command::new(cli).args(argv(socket, "ls", window, &[])), LS_LIMIT, false)?;
@@ -119,35 +136,86 @@ pub fn verify_window(cli: &Path, socket: &str, window: &str, agent: &crate::mode
     check_ls(&os_windows, id, agent.pid, &agent.handle)
 }
 
-/// User text with its backslashes doubled, so `send-text` takes it literally.
-fn literal(text: &str) -> String {
-    text.replace('\\', "\\\\")
+/// Whitespace (or anything control-like) at the edge of the text, as an ANSI-C escape: the
+/// action parser would otherwise drop it with the whitespace around the mode and the action.
+/// `\x20` always carries exactly two hex digits, so whatever follows can't join it.
+fn escape_edge(c: char) -> String {
+    match c {
+        ' ' => "\\x20".to_string(),
+        '\t' => "\\t".to_string(),
+        c if (c as u32) <= 0xffff => format!("\\u{:04x}", c as u32),
+        c => format!("\\U{:08x}", c as u32),
+    }
 }
 
-/// Type `text` into the window and press Enter (one line; a newline would submit early).
+fn is_edge(c: char) -> bool {
+    c.is_whitespace() || c.is_control()
+}
+
+/// User text as the `send_text` action takes it: backslashes doubled (the parser expands
+/// ANSI-C escapes), and leading/trailing whitespace as escapes (the parser drops it). The
+/// middle goes through untouched: dashes, quotes, Unicode, inner spacing.
+fn encode(text: &str) -> String {
+    let leading_len = text.chars().take_while(|c| is_edge(*c)).map(char::len_utf8).sum::<usize>();
+    let (leading, rest) = text.split_at(leading_len);
+    let trailing_len = rest.chars().rev().take_while(|c| is_edge(*c)).map(char::len_utf8).sum::<usize>();
+    let (middle, trailing) = rest.split_at(rest.len() - trailing_len);
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in leading.chars() {
+        out.push_str(&escape_edge(c));
+    }
+    for c in middle.chars() {
+        if c == '\\' {
+            out.push_str("\\\\");
+        } else {
+            out.push(c);
+        }
+    }
+    for c in trailing.chars() {
+        out.push_str(&escape_edge(c));
+    }
+    out
+}
+
+/// Enter as its `send_text` payload.
+const ENTER: &str = "\\r";
+
+/// Type `text` into the window and press Enter (one line; a newline would submit early), each
+/// write acknowledged by kitty. Empty text only presses Enter.
 pub fn send_text(cli: &Path, socket: &str, window: &str, text: &str) -> Result<()> {
+    send_text_with(text, &mut |payload: &str| run(cli, action_argv(socket, window, payload), true))
+}
+
+/// The text→Enter sequence over any action runner: Enter only goes in after the text was
+/// acknowledged, and an Enter kitty never confirmed is uncertainty (the text is already in) —
+/// unless no text went in, which is a plain refusal.
+fn send_text_with(text: &str, act: &mut dyn FnMut(&str) -> Result<()>) -> Result<()> {
     let line = text.replace(['\r', '\n'], " ");
-    run(cli, send_argv(socket, window, &literal(&line)), true)?;
+    if !line.is_empty() {
+        act(&encode(&line))?;
+    }
     // Give the TUI a moment to take the text before Enter.
     std::thread::sleep(Duration::from_millis(60));
-    run(cli, send_argv(socket, window, "\\r"), true)
-        .map_err(|e| crate::deliver::Uncertain(format!("the text went in but Enter didn't ({e:#})")).into())
+    act(ENTER).map_err(|e| {
+        if line.is_empty() { e } else { crate::deliver::Uncertain(format!("the text went in but Enter didn't ({e:#})")).into() }
+    })
 }
 
-/// One key as the bytes the terminal would deliver for it.
+/// One key as its `send_text` payload: the bytes the terminal would deliver for it.
 fn stroke(key: crate::deliver::Key) -> String {
     match key {
         crate::deliver::Key::Escape => "\\e".to_string(),
         crate::deliver::Key::Tab => "\\t".to_string(),
         crate::deliver::Key::Enter => "\\r".to_string(),
-        crate::deliver::Key::Char(c) => literal(&c.to_string()),
+        crate::deliver::Key::Char(c) => encode(&c.to_string()),
     }
 }
 
-/// Press one key: Escape, Tab, Enter or a single character.
+/// Press one key: Escape, Tab, Enter or a single character. A denied key is a refusal: nothing
+/// was typed.
 pub fn send_key(cli: &Path, socket: &str, window: &str, key: crate::deliver::Key) -> Result<()> {
     let stroke = stroke(key);
-    run(cli, send_argv(socket, window, &stroke), true)
+    run(cli, action_argv(socket, window, &stroke), true)
 }
 
 /// Bring the window's tab to the front (the app activates kitty afterwards).
@@ -162,8 +230,8 @@ mod tests {
     #[test]
     fn cli_commands_are_well_formed() {
         assert_eq!(
-            send_argv("unix:/tmp/kitty-123", "3", "hello"),
-            ["@", "--to", "unix:/tmp/kitty-123", "send-text", "--match", "id:3", "--", "hello"]
+            action_argv("unix:/tmp/kitty-123", "3", "hello"),
+            ["@", "--to", "unix:/tmp/kitty-123", "action", "--match", "id:3", "send_text", "all", "hello"]
         );
         assert_eq!(
             argv("unix:/tmp/kitty-123", "focus-window", "3", &[]),
@@ -175,17 +243,36 @@ mod tests {
     #[test]
     fn dash_payloads_are_typed_not_parsed() {
         for payload in ["-h hello", "--", "--from-file=/etc/hosts"] {
-            let full = send_argv("unix:/tmp/kitty-123", "3", payload);
-            let sep = full.iter().position(|a| a == "--").expect("a -- separator");
-            assert_eq!(full[sep + 1], payload, "the separator sits immediately before the payload");
+            let full = action_argv("unix:/tmp/kitty-123", "3", payload);
+            let action_at = full.iter().position(|a| a == "send_text").expect("the send_text action");
+            assert_eq!(&full[action_at..], ["send_text", "all", payload], "the payload rides after the first positional");
+            assert!(!full[..action_at].iter().any(|a| a == "--"), "no separator before the action");
         }
     }
 
     #[test]
     fn backslashes_stay_literal() {
-        assert_eq!(literal("plain"), "plain");
-        assert_eq!(literal("C:\\temp\\new"), "C:\\\\temp\\\\new");
-        assert_eq!(literal("\\e"), "\\\\e", "an escape-looking reply must not become Escape");
+        assert_eq!(encode("plain"), "plain");
+        assert_eq!(encode("C:\\temp\\new"), "C:\\\\temp\\\\new");
+        assert_eq!(encode("\\e"), "\\\\e", "an escape-looking reply must not become Escape");
+        assert_eq!(encode("\\n"), "\\\\n", "an escape-looking reply must not become a newline");
+    }
+
+    #[test]
+    fn edge_whitespace_survives_the_action_parser() {
+        assert_eq!(encode("  padded  "), "\\x20\\x20padded\\x20\\x20");
+        assert_eq!(encode("\tindented"), "\\tindented");
+        assert_eq!(encode("trailing\t"), "trailing\\t");
+        assert_eq!(encode("   "), "\\x20\\x20\\x20", "an all-space reply must still type something");
+        assert_eq!(encode("a  b"), "a  b", "inner spacing goes through untouched");
+        assert_eq!(encode(""), "", "empty text stays empty (the text step is skipped)");
+    }
+
+    #[test]
+    fn quotes_and_unicode_go_through_untouched() {
+        assert_eq!(encode(r#"say "hi" 'bye'"#), r#"say "hi" 'bye'"#);
+        assert_eq!(encode("héllo → ✓"), "héllo → ✓");
+        assert_eq!(encode("-1"), "-1");
     }
 
     #[test]
@@ -195,6 +282,78 @@ mod tests {
         assert_eq!(stroke(crate::deliver::Key::Enter), "\\r");
         assert_eq!(stroke(crate::deliver::Key::Char('1')), "1");
         assert_eq!(stroke(crate::deliver::Key::Char('\\')), "\\\\");
+        assert_eq!(stroke(crate::deliver::Key::Char(' ')), "\\x20", "a space key must survive the action parser");
+    }
+
+    #[test]
+    fn denied_write_is_failure_not_sent() {
+        let mut attempted = Vec::new();
+        let denied = send_text_with("hello", &mut |payload: &str| {
+            attempted.push(payload.to_string());
+            Err(anyhow::anyhow!("kitty action failed: not allowed"))
+        });
+        let e = denied.expect_err("a denied write must fail");
+        assert!(e.downcast_ref::<crate::deliver::Uncertain>().is_none(), "nothing was typed, so it is a refusal, not uncertainty");
+        assert_eq!(attempted, ["hello"], "Enter must not follow a denied text");
+    }
+
+    #[test]
+    fn unconfirmed_enter_is_uncertain() {
+        let mut attempted = Vec::new();
+        let outcome = send_text_with("hello", &mut |payload: &str| {
+            attempted.push(payload.to_string());
+            if payload == ENTER { Err(anyhow::anyhow!("kitty action failed: not allowed")) } else { Ok(()) }
+        });
+        let e = outcome.expect_err("an unconfirmed Enter must not report success");
+        assert!(e.downcast_ref::<crate::deliver::Uncertain>().is_some(), "the text is already in: uncertainty, not failure");
+        assert_eq!(attempted, ["hello", ENTER]);
+    }
+
+    #[test]
+    fn empty_text_only_presses_enter() {
+        let mut attempted = Vec::new();
+        send_text_with("", &mut |payload: &str| {
+            attempted.push(payload.to_string());
+            Ok(())
+        })
+        .expect("Enter still goes in");
+        assert_eq!(attempted, [ENTER], "no empty action (kitty would reject it as unknown)");
+    }
+
+    #[test]
+    fn empty_text_with_denied_enter_is_a_refusal() {
+        let outcome = send_text_with("", &mut |_| Err(anyhow::anyhow!("kitty action failed: not allowed")));
+        let e = outcome.expect_err("a denied Enter must fail");
+        assert!(e.downcast_ref::<crate::deliver::Uncertain>().is_none(), "no text went in, so it is a refusal");
+    }
+
+    #[cfg(unix)]
+    fn output_of(success: bool, stderr: &str) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(if success { 0 } else { 1 << 8 }),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(windows)]
+    fn output_of(success: bool, stderr: &str) -> std::process::Output {
+        use std::os::windows::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(if success { 0 } else { 1 }),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn action_denial_propagates() {
+        let argv = action_argv("unix:/tmp/kitty-123", "3", "hello");
+        check_action(&argv, &output_of(true, "")).expect("an acknowledged write succeeds");
+        let e = check_action(&argv, &output_of(false, "kitty: not allowed\n")).expect_err("a denied write fails");
+        assert!(format!("{e:#}").contains("not allowed"), "kitty's reason reaches the user: {e:#}");
+        check_action(&argv, &output_of(false, "")).expect_err("a bare failure still fails");
     }
 
     /// A trimmed `kitty @ ls` answer: the agent's window (id 3) with pid 4242 in its

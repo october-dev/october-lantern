@@ -124,7 +124,7 @@ Where Lantern only guesses an agent's session (by folder and start time: Pi, the
 - `prompt_changed`: the permission prompt was answered or replaced. Nothing was pressed.
 - `uncertain`: typing started, but Lantern can't tell whether it all went in (a helper ran out of time, or the text went in and Enter didn't). Sending again could repeat it.
 
-A reply is only `ok` after the text and Enter reached the terminal. Replies, keys and focus requests run on one worker per terminal, off the scan loop. Immediately before typing (after any Automation prompt has been answered), the engine checks that the terminal still belongs to the agent: the same process (pid and start time), still running the same program (a process that `exec`ed a shell is refused), on the same tty, and in the foreground of that tty, with the route's own terminal (tmux pane, Terminal/iTerm tab, kitty window) still on that tty. When the foreground is unknown it refuses.
+A reply is only `ok` after the text and Enter reached the terminal. Replies, keys and focus requests run on one worker per terminal, off the scan loop. Immediately before typing (after any Automation prompt has been answered), the engine checks that the terminal still belongs to the agent: the same process (pid and start time), still running the same program (a process that `exec`ed a shell is refused), on the same tty, and in the foreground of that tty, with the route's own terminal (tmux pane, Terminal/iTerm tab, kitty window) still on that tty; kitty acknowledges each write, so a denied write fails instead of reporting `ok`. When the foreground is unknown it refuses.
 
 ### `october`
 The connection to October Desktop, sent whenever it changes.

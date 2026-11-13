@@ -80,7 +80,7 @@ Optional hooks add completion updates for Codex and permission requests for Clau
 
 | Platform | Reply from Lantern |
 |---|---|
-| **Mac** | Direct replies through cmux, Terminal, iTerm2, tmux and kitty (kitty needs remote control turned on), including background sessions Lantern starts. Other terminals use copy and paste. |
+| **Mac** | Direct replies through cmux, Terminal, iTerm2, tmux and kitty (kitty needs [remote control turned on](docs/PRODUCT.md#supported-terminals)), including background sessions Lantern starts. Other terminals use copy and paste. |
 | **Linux** | Direct replies to tmux sessions, including those Lantern starts. Other terminals use the clipboard. |
 | **Windows (preview)** | Direct replies to sessions Lantern starts and to agents in their own console (Windows Terminal, VS Code, console windows). |
 
