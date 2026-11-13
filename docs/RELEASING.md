@@ -66,6 +66,7 @@ a newer self-updated copy. The flag keeps Lantern out of bulk upgrades for insta
 | `InstallerType: inno`, `Scope: user` | `windows/installer.iss` is Inno Setup with `PrivilegesRequired=lowest` |
 | `ProductCode` | `AppId` in `windows/installer.iss` (one `{`), followed by `_is1` |
 | `MinimumOSVersion` | `MinVersion` in `windows/installer.iss` |
+| `Dependencies` | `Microsoft.VCRedist.2015+.x64`, because `october-lantern.exe` and `lantern-engine.exe` import `VCRUNTIME140.dll` and a clean Windows doesn't have it. Drop it only after the build links the runtime statically and Lantern still starts on a Windows with no Visual C++ runtime |
 | `Publisher`, `PackageName` | `AppPublisher`, `AppName` in `windows/installer.iss` |
 | `Copyright`, `License` | `NOTICE`, `LICENSE` |
 | `ReleaseDate`, `ReleaseNotesUrl` | the release page |
