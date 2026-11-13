@@ -219,11 +219,14 @@ pub enum Route {
     Iterm {
         tty: String,
     },
-    /// kitty: `kitty @` (see kitty.rs), through the window id and control socket the agent
-    /// inherited; present only when kitty's remote control is on.
+    /// kitty: the agent's own `kitty @` against its own instance (see kitty.rs), through the
+    /// window id and control socket the agent inherited; present only when kitty's remote
+    /// control is fully on (`allow_remote_control` plus `listen_on`).
     Kitty {
         window: String,
         socket: String,
+        /// The CLI from the agent's own app bundle.
+        cli: std::path::PathBuf,
     },
     /// One of Lantern's own sessions on Windows (see pty.rs), by name.
     Pty {

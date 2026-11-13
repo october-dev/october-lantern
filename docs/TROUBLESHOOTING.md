@@ -16,7 +16,7 @@
 
 **What to do:**
 
-- **Mac:** Direct replies work in cmux, Terminal, iTerm2 and tmux. In other terminals, paste the copied reply. If macOS asks for Automation permission for Terminal or iTerm2, allow it; if you declined it earlier, turn it on in System Settings › Privacy & Security › Automation.
+- **Mac:** Direct replies work in cmux, Terminal, iTerm2, tmux and kitty. In other terminals, paste the copied reply. If macOS asks for Automation permission for Terminal or iTerm2, allow it; if you declined it earlier, turn it on in System Settings › Privacy & Security › Automation. If a reply to an agent in kitty didn't arrive, check its remote control is fully on: `allow_remote_control` and `listen_on` in `kitty.conf`, then restart kitty.
 - **Linux:** Direct replies work in tmux. In other terminals, paste the copied reply.
 - **Windows:** Direct replies work for sessions started by Lantern and for agents running in their own console (Windows Terminal, VS Code or a console window). If Lantern says something else is running in the agent's terminal, wait for it to finish or answer in that terminal.
 - If Lantern says it is unsure whether a reply went in, check the agent's terminal before trying again.
