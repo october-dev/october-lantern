@@ -735,7 +735,7 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                         // Stop takes Send's place while something runs and nothing is typed: with
                         // words in the box, Send stays, so you can tell a working agent more.
                         let empty = cx.inputs.assistant.trim().is_empty() && cx.model.assistant.attachments.is_empty();
-                        let working = agent.is_some_and(|a| a.state == AgentState::Working);
+                        let working = agent.is_some_and(|a| a.state == AgentState::Working && a.stoppable());
                         if empty && (cx.model.assistant.asking || working) {
                             let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(28.0), Sense::click());
                             ui.painter().circle_filled(rect.center(), 14.0, t::AMBER);
@@ -1208,6 +1208,52 @@ mod tests {
         model.assistant.asking = false;
         inputs.assistant = "and the PDF".into();
         assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Ask"), vec![UiAction::SubmitAssistant]);
+    }
+
+    #[test]
+    fn a_working_grok_keeps_send_while_claude_gets_stop() {
+        use crate::model::{Agent, AgentKind, AgentState, AssistantTurn, TaskLink};
+        let ctx = egui::Context::default();
+        t::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let mut fixture: crate::app::fixture::Fixture =
+            serde_json::from_str(include_str!("../../fixtures/panel-assistant-home.json")).unwrap();
+        let mut view = UiState::default();
+        let (model, inputs) = (&mut fixture.model, &mut fixture.inputs);
+        model.agents = vec![Agent {
+            id: "grok:9:9".into(),
+            kind: AgentKind::new("grok"),
+            handle: "grok-1".into(),
+            state: AgentState::Working,
+            ..Default::default()
+        }];
+        model.assistant.turns = vec![AssistantTurn {
+            id: 1,
+            task: Some(TaskLink { agent_id: Some("grok:9:9".into()), ..Default::default() }),
+            ..Default::default()
+        }];
+        model.assistant.asking = false;
+        inputs.assistant.clear();
+        let labels = |ctx: &egui::Context, model: &Model, inputs: &mut Inputs, view: &mut UiState| -> Vec<String> {
+            ctx.enable_accesskit();
+            let mut output = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 900.0))), ..Default::default() },
+                |ui| {
+                    let env = Env { now_ms: 1_790_000_000_000.0, reduce_motion: true, home: "/home/me".into() };
+                    let mut out = Vec::new();
+                    super::super::render_panel(ui, &mut Ctx { model, inputs, view, assets: &assets, out: &mut out, env: &env }, 900.0);
+                },
+            );
+            output.textures_delta.clear();
+            let update = output.platform_output.accesskit_update.expect("egui emits an accessibility tree when enabled");
+            update.nodes.iter().filter_map(|(_, node)| node.label().map(str::to_string)).collect()
+        };
+        let names = labels(&ctx, model, inputs, &mut view);
+        assert!(names.iter().any(|l| l == "Ask"), "Send stays for a working Grok: {names:?}");
+        assert!(!names.iter().any(|l| l == "Stop"), "no Stop for a working Grok: {names:?}");
+        model.agents[0].kind = AgentKind::new("claude");
+        let names = labels(&ctx, model, inputs, &mut view);
+        assert!(names.iter().any(|l| l == "Stop"), "a working Claude still gets Stop: {names:?}");
     }
 
     #[test]
