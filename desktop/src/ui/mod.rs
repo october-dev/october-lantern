@@ -274,6 +274,8 @@ pub enum UiAction {
     // Ask Lantern
     /// Asks Lantern, or replies to the conversation's running agent.
     SubmitAssistant,
+    /// Stop: Lantern's answer ends where it is, or the conversation's working agent gets Escape.
+    StopAssistant,
     /// "New chat": the current one stays in Recent.
     ClearAssistant,
     /// Opens one of Lantern's offers (`offer` "trial" or "lifetime", at `url`); `from` says where
