@@ -467,17 +467,13 @@ pub mod gemini {
 // ---------------------------------------------------------------------------------------------
 // Goose (Block): one SQLite database for every session, `sessions.db` under
 // `~/.local/share/goose/sessions/` (`%APPDATA%\Block\goose\data\sessions\` on Windows).
-// Goose versions its schema in a `schema_version` table (currently 18) and migrates on open;
-// this reader knows versions 1..=18 and skips anything newer, and probes for the columns each
-// version added rather than assuming them, so an old or new database is never misread.
+// Goose migrates its schema on open (version 18 at goose 1.59.0). This reader goes by the tables
+// and columns it finds, not the version number: the core ones are required, and the queries
+// adapt to the ones later versions added.
 
 pub mod goose {
     use super::*;
     use std::collections::HashSet;
-
-    /// The newest `schema_version` this reader understands (goose's `CURRENT_SCHEMA_VERSION`).
-    /// A database migrated past this is skipped: its columns may mean something else now.
-    const KNOWN_SCHEMA_VERSION: i64 = 18;
 
     /// `created_timestamp` is seconds, except in databases that wrote milliseconds; goose itself
     /// tells them apart with this threshold.
@@ -551,8 +547,7 @@ pub mod goose {
         )
     }
 
-    /// The layout of `db`, or `None` when it can't be read, is newer than the known versions, or
-    /// lacks the core tables and columns.
+    /// The layout of `db`, or `None` when it can't be read or lacks the core tables and columns.
     fn layout(db: &Path) -> Option<Layout> {
         if !db.exists() {
             return None;
@@ -563,13 +558,6 @@ pub mod goose {
             .collect();
         if !(tables.contains("sessions") && tables.contains("messages")) {
             return None;
-        }
-        // Before versioning the table is simply absent; that database is old, not unknown.
-        if tables.contains("schema_version") {
-            let version = query_in(db, "SELECT MAX(version) AS v FROM schema_version")?.first()?["v"].as_i64()?;
-            if !(1..=KNOWN_SCHEMA_VERSION).contains(&version) {
-                return None;
-            }
         }
         let sessions = columns(db, "sessions")?;
         let messages = columns(db, "messages")?;
@@ -612,7 +600,7 @@ pub mod goose {
     }
 
     /// The session there with the most recent activity, among those created or active since
-    /// `since_secs`. `None` when the database couldn't be read or isn't a known version.
+    /// `since_secs`. `None` when the database couldn't be read.
     fn session_since(db: &Path, layout: &Layout, cwd: &Path, since_secs: u64) -> Option<Option<(String, String)>> {
         let dir = session_dir(cwd);
         let name_col = if layout.name {
@@ -718,7 +706,7 @@ pub mod goose {
     }
 
     /// `status`, against the database at `db` (where a test puts its fixture). `None` when the
-    /// database couldn't be read or isn't a known version; an Idle status with no session when
+    /// database couldn't be read; an Idle status with no session when
     /// the lookup worked but this process has no session yet.
     pub(crate) fn status_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<SessionStatus> {
         let layout = layout(db)?;

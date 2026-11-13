@@ -1752,10 +1752,10 @@ fn goose_reads_an_old_database_without_the_new_columns() {
     assert_eq!(chat.messages[0].id.as_deref(), Some("1.0"), "no message_id column: the row is the id");
 }
 
-/// A database newer than the known schema versions is skipped, never misread; an unreadable one
-/// is a failed read; and a session from before the process started isn't its conversation.
+/// A database from a newer Goose is read as long as the tables and columns the reader needs are
+/// there; an unreadable one, or one without them, is a failed read.
 #[test]
-fn goose_skips_unknown_versions_and_unreadable_databases() {
+fn goose_reads_newer_versions_and_fails_on_unreadable_databases() {
     use crate::readers::goose;
     let dir = temp_dir("goose-unknown");
     let cwd = dir.join("work");
@@ -1774,8 +1774,10 @@ fn goose_skips_unknown_versions_and_unreadable_databases() {
     .unwrap();
     c.execute("INSERT INTO sessions VALUES('20261101_1','new',?1,'2026-11-01 00:00:00','user')", [cwd.to_string_lossy().into_owned()])
         .unwrap();
-    assert!(goose::status_in(&db, &cwd, 0).is_none(), "schema 99 is newer than the reader knows");
-    assert!(goose::history_in(&db, &cwd, 0).is_none());
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("20261101_1"), "schema 99 with the columns the reader needs is read");
+    assert_eq!(status.state, Some(State::Idle), "no messages yet");
+    assert!(goose::history_in(&db, &cwd, 0).is_some());
     drop(c);
 
     fs::write(&db, b"not a database").unwrap();
@@ -1890,7 +1892,7 @@ fn goose_failed_turns_are_waiting_with_the_error() {
 
     // An ordinary notification is not a finished turn: on its own it leaves the card Working,
     // as before, and never becomes the last message.
-    message("e7", "assistant", r#"[{"type":"systemNotification","notificationType":"progress","msg":"compacting"}]"#, t + 6);
+    message("e7", "assistant", r#"[{"type":"systemNotification","notificationType":"inlineMessage","msg":"compacting"}]"#, t + 6);
     let status = goose::status_in(&db, &cwd, 0).unwrap();
     assert_eq!(status.state, Some(State::Working));
     assert_eq!(status.last_message, None);
