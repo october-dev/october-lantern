@@ -1,8 +1,9 @@
-//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI and Muse.
-//! Like the Claude Code and Codex readers, these only read the agents' own files.
+//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI, Muse
+//! and GitHub Copilot CLI. Like the Claude Code and Codex readers, these only read the agents'
+//! own files.
 //!
-//! None of these three keeps its session file open, so a running process is matched to its
-//! session by working directory and start time.
+//! Muse and Copilot hold their session's marker open, so a running process is matched to its
+//! session exactly; the rest match by working directory and start time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -583,6 +584,318 @@ pub mod muse {
                     for (i, call) in ev["tool_calls"].as_array().into_iter().flatten().enumerate() {
                         let name = call["name"].as_str().unwrap_or("tool");
                         push(&mut out, Role::Tool, &describe_tool(name, &call["args"]), at, line_id(offset, i));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(Chat { messages: keep_recent(out), whole })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// GitHub Copilot CLI: one directory per session, `$COPILOT_HOME/session-state/<id>/`
+// (`~/.copilot` when unset), holding the session's append-only event log (`events.jsonl`)
+// and its metadata (`workspace.yaml`, with the session's working directory). A resumed
+// session appends to the same log, so one session is always one file. The running process
+// holds `inuse.<pid>.hold` in its session directory open and removes it on exit, so it's
+// matched exactly; otherwise the newest session for the process's folder is guessed.
+//
+// Each line is an event envelope, `{id, timestamp, parentId, type, data}` with an optional
+// `agentId` (a subagent's traffic: its parent's tool plumbing, skipped) and `ephemeral`
+// (never written to disk). The envelope is pinned by the `session-events.schema.json` the
+// CLI ships with every install; new event types arrive with releases, so anything outside
+// the few types read here is ignored. The CLI never persists its idle events
+// (`assistant.idle` and `session.idle` are const-`ephemeral` in that schema), so waiting is
+// read the way Goose reads it: a turn that ended with no tool call still open and the last
+// word a reply. An unanswered `permission.requested` is waiting on you instead.
+
+pub mod copilot {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// Where the CLI keeps its files: `$COPILOT_HOME` replaces the whole path when set (a
+    /// relative one resolves against the agent's working directory, as the CLI does).
+    pub fn root_for(cwd: &Path) -> PathBuf {
+        match std::env::var_os("COPILOT_HOME").map(PathBuf::from) {
+            Some(dir) if dir.is_absolute() => dir,
+            Some(dir) => cwd.join(dir),
+            None => home().join(".copilot"),
+        }
+    }
+
+    fn root() -> PathBuf {
+        root_for(&std::env::current_dir().unwrap_or_else(|_| home()))
+    }
+
+    /// The `workspace.yaml` keys this reader needs. The file is a flat `key: value` map.
+    pub(crate) struct Workspace {
+        pub(crate) cwd: Option<String>,
+        pub(crate) name: Option<String>,
+        pub(crate) updated_secs: u64,
+    }
+
+    pub(crate) fn read_workspace(path: &Path) -> Option<Workspace> {
+        let mut ws = Workspace { cwd: None, name: None, updated_secs: 0 };
+        for line in fs::read_to_string(path).ok()?.lines() {
+            let Some((key, value)) = line.split_once(':') else { continue };
+            let value = unquote(value.trim());
+            match key.trim() {
+                "cwd" => ws.cwd = Some(value),
+                "name" => ws.name = Some(value),
+                "updated_at" => ws.updated_secs = epoch_ms(&value).map(|ms| ms / 1000).unwrap_or(0),
+                _ => {}
+            }
+        }
+        Some(ws)
+    }
+
+    /// One pair of matching quotes off, when the value has them.
+    fn unquote(value: &str) -> String {
+        let quoted = value.len() >= 2 && value.starts_with(['\'', '"']) && value.ends_with(value.chars().next().unwrap_or('"'));
+        if quoted { value[1..value.len() - 1].to_string() } else { value.to_string() }
+    }
+
+    /// The session `pid` has open: the CLI holds `inuse.<pid>.hold` in its session directory
+    /// open while it runs. Several matches (a crashed run's leftover plus a live one after a
+    /// pid reuse) resolve to the most recently written log.
+    pub fn session_for_pid_in(root: &Path, pid: u32) -> Option<PathBuf> {
+        let want = format!("inuse.{pid}.hold");
+        let mut best: Option<(u64, PathBuf)> = None;
+        for entry in fs::read_dir(root.join("session-state")).ok()?.flatten() {
+            let log = entry.path().join("events.jsonl");
+            if entry.path().join(&want).exists() && log.is_file() {
+                let stamp = mtime_ms(&log).unwrap_or(0);
+                if best.as_ref().is_none_or(|(ms, _)| stamp >= *ms) {
+                    best = Some((stamp, log));
+                }
+            }
+        }
+        best.map(|(_, log)| log)
+    }
+
+    pub fn session_for_pid(pid: u32) -> Option<PathBuf> {
+        session_for_pid_in(&root(), pid)
+    }
+
+    /// The newest session for `cwd` with activity since the process started (a minute's
+    /// tolerance, like the other readers): the fallback where no in-use marker names the pid.
+    /// Recency comes from the log, whose appends outrun the metadata's `updated_at`.
+    pub fn session_file_in(root: &Path, cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        let want = resolved(cwd);
+        let since = started_secs.saturating_sub(60);
+        let mut best: Option<(u64, PathBuf)> = None;
+        for entry in fs::read_dir(root.join("session-state")).ok()?.flatten() {
+            let log = entry.path().join("events.jsonl");
+            if !log.is_file() {
+                continue;
+            }
+            let Some(ws) = read_workspace(&entry.path().join("workspace.yaml")) else { continue };
+            let Some(wd) = ws.cwd.as_deref() else { continue };
+            if resolved(Path::new(wd)) != want {
+                continue;
+            }
+            let stamp = mtime_ms(&log).unwrap_or(0);
+            if stamp / 1000 < since && ws.updated_secs < since {
+                continue;
+            }
+            if best.as_ref().is_none_or(|(ms, _)| stamp >= *ms) {
+                best = Some((stamp, log));
+            }
+        }
+        best.map(|(_, log)| log)
+    }
+
+    pub fn session_file(cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        session_file_in(&root_for(cwd), cwd, started_secs)
+    }
+
+    /// From the root agent (no `agentId`): a subagent's prompts and answers are the parent
+    /// turn's tool plumbing, not the conversation.
+    fn root_event(e: &Value) -> bool {
+        e.get("agentId").is_none_or(|v| v.is_null())
+    }
+
+    fn at_ms(e: &Value) -> Option<u64> {
+        e["timestamp"].as_str().and_then(epoch_ms)
+    }
+
+    /// What the pending permission prompt asks, from its request's kind.
+    fn permission_question(data: &Value) -> String {
+        let req = &data["permissionRequest"];
+        let what = match req["kind"].as_str() {
+            Some("shell") => req["fullCommandText"].as_str().unwrap_or("a command").to_string(),
+            Some("write") => format!("writing {}", req["fileName"].as_str().unwrap_or("a file")),
+            Some("read") => format!("reading {}", req["path"].as_str().unwrap_or("a file")),
+            Some("mcp") => req["toolName"].as_str().unwrap_or("a tool").to_string(),
+            Some("url") => req["url"].as_str().unwrap_or("a URL").to_string(),
+            _ => "this action".to_string(),
+        };
+        format!("Allow {}?", truncate(&what, 200))
+    }
+
+    /// A session's state from its event log: your prompt, a turn, or a tool call starting
+    /// means working; a turn ending with nothing open means waiting with the last reply; a
+    /// permission request with no answer yet means waiting on you. A log with no recognized
+    /// event (a format newer than this reader) is unknown, never misread.
+    pub fn parse(path: &Path, mtime: u64) -> SessionStatus {
+        let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
+        status.session_id = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
+        if let Some(dir) = path.parent()
+            && let Some(ws) = read_workspace(&dir.join("workspace.yaml"))
+            && let Some(name) = ws.name.filter(|n| !n.trim().is_empty())
+        {
+            status.title = Some(truncate(name.lines().next().unwrap_or(&name), 80));
+        }
+        if status.title.is_none()
+            && let Some(head) = read_range(path, false, 256 * 1024)
+        {
+            status.title = lines(&head)
+                .filter(|e| root_event(e) && e["type"] == "user.message")
+                .filter_map(|e| e["data"]["content"].as_str().map(String::from))
+                .next()
+                .map(|p| truncate(p.lines().next().unwrap_or(&p), 80));
+        }
+        let Some(text) = read_range(path, true, TAIL_BYTES) else { return status };
+        let mut state = State::Idle;
+        let mut reply: Option<String> = None;
+        let mut anchored = false;
+        let mut recognized = false;
+        let mut open: HashSet<String> = HashSet::new();
+        // Pending permission prompts: request id → (question, asked at).
+        let mut pending: HashMap<String, (String, u64)> = HashMap::new();
+        for e in lines(&text) {
+            if !root_event(&e) {
+                continue;
+            }
+            let data = &e["data"];
+            let at = at_ms(&e);
+            match e["type"].as_str() {
+                Some("user.message") => {
+                    recognized = true;
+                    state = State::Working;
+                    reply = None;
+                    anchored = false;
+                    status.since = at.or(status.since);
+                }
+                Some("assistant.message") => {
+                    recognized = true;
+                    if let Some(text) = data["content"].as_str().filter(|t| !t.trim().is_empty()) {
+                        reply = Some(text.to_string());
+                        status.since = at.or(status.since);
+                    }
+                    if data["toolRequests"].as_array().is_some_and(|r| !r.is_empty()) {
+                        state = State::Working;
+                        anchored = false;
+                        status.since = at.or(status.since);
+                    }
+                }
+                Some("assistant.turn_start") => {
+                    recognized = true;
+                    state = State::Working;
+                    anchored = false;
+                    status.since = at.or(status.since);
+                }
+                Some("assistant.turn_end") => {
+                    recognized = true;
+                    if open.is_empty() {
+                        state = State::Waiting;
+                        status.since = at.or(status.since);
+                    }
+                }
+                Some("tool.execution_start") => {
+                    recognized = true;
+                    if let Some(id) = data["toolCallId"].as_str() {
+                        open.insert(id.to_string());
+                    }
+                    state = State::Working;
+                    anchored = false;
+                    status.since = at.or(status.since);
+                }
+                Some("tool.execution_complete") => {
+                    recognized = true;
+                    if let Some(id) = data["toolCallId"].as_str() {
+                        open.remove(id);
+                    }
+                }
+                Some("permission.requested") => {
+                    recognized = true;
+                    if let Some(id) = data["requestId"].as_str() {
+                        pending.insert(id.to_string(), (permission_question(data), at.unwrap_or(0)));
+                    }
+                }
+                Some("permission.completed") => {
+                    recognized = true;
+                    if let Some(id) = data["requestId"].as_str() {
+                        pending.remove(id);
+                    }
+                }
+                Some("session.task_complete") => {
+                    recognized = true;
+                    if let Some(summary) = data["summary"].as_str().filter(|t| !t.trim().is_empty()) {
+                        reply = Some(summary.to_string());
+                    }
+                    if open.is_empty() {
+                        state = State::Waiting;
+                        anchored = true;
+                        status.since = at.or(status.since);
+                    }
+                }
+                // Lifecycle bookkeeping: recognized, but says nothing about this turn.
+                Some("session.start" | "session.resume" | "session.shutdown") => recognized = true,
+                _ => {}
+            }
+        }
+        if !recognized {
+            status.state = Some(State::Unknown);
+            return status;
+        }
+        if let Some((_, (question, asked))) = pending.iter().max_by_key(|(_, (_, at))| at) {
+            status.state = Some(State::NeedsInput);
+            status.question = Some(question.clone());
+            // Copilot's approval keys aren't Lantern's: answer it in its terminal.
+            status.question_kind = Some(crate::model::QuestionKind::Other);
+            status.since = Some(*asked).filter(|at| *at > 0).or(status.since);
+        } else if !open.is_empty() {
+            status.state = Some(State::Working);
+        } else {
+            // A turn that ended with no reply yet is about to say more (or the rest of it
+            // hasn't reached the log); a completed task with nothing to show still finished.
+            if state == State::Waiting && reply.as_ref().is_none_or(|r| r.trim().is_empty()) && !anchored {
+                state = State::Working;
+            }
+            if state == State::Waiting {
+                status.last_message = reply.map(|t| truncate(&t, MESSAGE_CHARS));
+            }
+            status.state = Some(state);
+        }
+        status
+    }
+
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (entries, whole) = tail_lines(path, crate::history::TAIL_BYTES)?;
+        let mut out = Vec::new();
+        for (offset, e) in entries {
+            if !root_event(&e) {
+                continue;
+            }
+            let at = at_ms(&e).map(crate::model::iso);
+            let at = at.as_deref();
+            let data = &e["data"];
+            match e["type"].as_str() {
+                // `content` is what was said; `transformedContent` wraps it for the model.
+                Some("user.message") => {
+                    if let Some(text) = data["content"].as_str().filter(|t| !t.trim().is_empty()) {
+                        push(&mut out, Role::User, text, at, line_id(offset, 0));
+                    }
+                }
+                Some("assistant.message") => {
+                    if let Some(text) = data["content"].as_str().filter(|t| !t.trim().is_empty()) {
+                        push(&mut out, Role::Agent, text, at, line_id(offset, 0));
+                    }
+                    for (i, call) in data["toolRequests"].as_array().into_iter().flatten().enumerate() {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        push(&mut out, Role::Tool, &describe_tool(name, &call["arguments"]), at, line_id(offset, i + 1));
                     }
                 }
                 _ => {}

@@ -487,6 +487,15 @@ impl Scanner {
                     .or_else(|| self.codex_paths.get(&agent.pid).map(|(p, _)| p.clone()))
                     .map(|p| (Kind::Codex, p)),
                 Kind::Muse => self.transcripts.muse_path_for_pid(agent.pid).map(|p| (Kind::Muse, p)),
+                Kind::Copilot => {
+                    let open = self.transcripts.copilot_path_for_pid(agent.pid);
+                    let guessed = open
+                        .is_none()
+                        .then(|| self.started.get(&agent.pid))
+                        .flatten()
+                        .and_then(|(cwd, start)| crate::readers::copilot::session_file(cwd, *start));
+                    open.or(guessed).map(|p| (Kind::Copilot, p))
+                }
                 Kind::Pi | Kind::October | Kind::Gemini => {
                     let (cwd, start) = self.started.get(&agent.pid)?;
                     let path = if agent.kind == Kind::Gemini {
@@ -539,6 +548,7 @@ impl Scanner {
             Kind::Pi | Kind::October => crate::readers::pi::history(&path),
             Kind::Gemini => crate::readers::gemini::history(&path),
             Kind::Muse => crate::readers::muse::history(&path),
+            Kind::Copilot => crate::readers::copilot::history(&path),
             _ => crate::history::claude(&path),
         };
         // A file that couldn't be read is no read, and isn't cached.
@@ -657,6 +667,18 @@ impl Scanner {
                 Some(path) => found(self.transcripts.cached(&path, crate::readers::muse::parse), SessionMatch::Exact),
                 None => (None, SessionMatch::None),
             },
+            Kind::Copilot => {
+                // Exact while the process holds its session's in-use marker; otherwise the
+                // newest session for its folder.
+                if let Some(path) = self.transcripts.copilot_path_for_pid(p.pid) {
+                    return found(self.transcripts.cached(&path, crate::readers::copilot::parse), SessionMatch::Exact);
+                }
+                let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };
+                match crate::readers::copilot::session_file(cwd, p.start_time) {
+                    Some(path) => found(self.transcripts.cached(&path, crate::readers::copilot::parse), SessionMatch::Guessed),
+                    None => (Some(idle()), SessionMatch::None),
+                }
+            }
             // No session file since the process started means nothing has happened yet.
             Kind::Pi | Kind::October => {
                 let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };

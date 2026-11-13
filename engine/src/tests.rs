@@ -1612,3 +1612,190 @@ fn an_unreadable_session_file_is_a_failed_read() {
     assert!(crate::readers::pi::history(&dir.join("missing.jsonl")).is_none());
     assert!(crate::readers::gemini::history(&dir.join("missing.jsonl")).is_none());
 }
+
+/// Copilot's event envelope, as its shipped `session-events.schema.json` pins it.
+fn copilot_ev(n: u64, typ: &str, data: serde_json::Value) -> String {
+    serde_json::json!({
+        "id": format!("00000000-0000-4000-8000-{n:012}"),
+        "timestamp": format!("2026-11-12T10:00:{n:02}.000Z"),
+        "parentId": if n == 0 { serde_json::Value::Null } else { format!("00000000-0000-4000-8000-{:012}", n - 1).into() },
+        "type": typ,
+        "data": data,
+    })
+    .to_string()
+}
+
+fn copilot_session(dir: &std::path::Path, id: &str, workspace: &str) -> PathBuf {
+    let session = dir.join("session-state").join(id);
+    fs::create_dir_all(&session).unwrap();
+    fs::write(session.join("workspace.yaml"), workspace).unwrap();
+    session.join("events.jsonl")
+}
+
+#[test]
+fn copilot_sessions_give_state_question_and_history() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-session");
+    let cwd = dir.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let log = copilot_session(&dir, "s1", &format!("id: s1\ncwd: {}\nupdated_at: 2026-11-12T10:00:00.000Z\n", cwd.display()));
+    let at = |n: u64| crate::model::epoch_ms(&format!("2026-11-12T10:00:{n:02}.000Z")).unwrap();
+    let mut events = vec![
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "refactor the parser\nplease"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "t1"})),
+        copilot_ev(
+            3,
+            "assistant.message",
+            serde_json::json!({"messageId": "m1", "content": "", "toolRequests": [{"toolCallId": "c1", "name": "bash", "arguments": {"command": "ls"}}]}),
+        ),
+        copilot_ev(4, "tool.execution_start", serde_json::json!({"toolCallId": "c1", "toolName": "bash"})),
+    ];
+    let write = |events: &[String]| fs::write(&log, events.join("\n") + "\n").unwrap();
+    write(&events);
+    // A tool call is open: working.
+    let s = copilot::parse(&log, 0);
+    assert_eq!(s.state, Some(State::Working));
+    assert_eq!((s.title.as_deref(), s.session_id.as_deref(), s.since), (Some("refactor the parser"), Some("s1"), Some(at(4))));
+
+    // Subagent traffic and future event types are not the conversation.
+    events.push(
+        serde_json::json!({"id": "sub-1", "timestamp": "2026-11-12T10:00:05.000Z", "parentId": null,
+            "type": "assistant.message", "agentId": "sub1", "data": {"messageId": "sm1", "content": "subagent reply"}})
+        .to_string(),
+    );
+    events.push(copilot_ev(6, "session.holo_deck", serde_json::json!({"on": true})));
+    events.push(copilot_ev(7, "tool.execution_complete", serde_json::json!({"toolCallId": "c1", "success": true})));
+    events.push(copilot_ev(8, "assistant.message", serde_json::json!({"messageId": "m2", "content": "Done."})));
+    write(&events);
+    // The turn hasn't ended: still working, with no last message yet.
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Working), None));
+
+    events.push(copilot_ev(9, "assistant.turn_end", serde_json::json!({"turnId": "t1"})));
+    write(&events);
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref(), s.since), (Some(State::Waiting), Some("Done."), Some(at(9))));
+
+    // A permission prompt is waiting on you, answered in its terminal.
+    events.push(copilot_ev(
+        10,
+        "permission.requested",
+        serde_json::json!({"requestId": "r1", "permissionRequest": {"kind": "shell", "fullCommandText": "rm -rf /tmp/x"}}),
+    ));
+    write(&events);
+    let s = copilot::parse(&log, 0);
+    assert_eq!(s.state, Some(State::NeedsInput));
+    assert_eq!(s.question.as_deref(), Some("Allow rm -rf /tmp/x?"));
+    assert_eq!((s.question_kind, s.since), (Some(QuestionKind::Other), Some(at(10))));
+
+    events.push(copilot_ev(11, "permission.completed", serde_json::json!({"requestId": "r1", "result": {"kind": "approved"}})));
+    write(&events);
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Waiting), Some("Done.")));
+
+    events.push(copilot_ev(12, "user.message", serde_json::json!({"content": "thanks"})));
+    write(&events);
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Working), None));
+
+    let h = copilot::history(&log).unwrap();
+    assert!(h.whole);
+    let roles: Vec<_> = h.messages.iter().map(|m| (format!("{:?}", m.role), m.text.as_str())).collect();
+    assert_eq!(
+        roles,
+        [
+            ("User".into(), "refactor the parser\nplease"),
+            ("Tool".into(), "bash · ls"),
+            ("Agent".into(), "Done."),
+            ("User".into(), "thanks")
+        ]
+    );
+}
+
+#[test]
+fn copilot_matches_by_in_use_marker_then_folder() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-match");
+    let cwd = dir.join("proj");
+    let other = dir.join("other");
+    fs::create_dir_all(&cwd).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    // Two sessions claim the pid (a crash leftover plus a live one): the newest log wins.
+    let old = copilot_session(&dir, "old", &format!("id: old\ncwd: {}\n", cwd.display()));
+    fs::write(&old, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "old"})) + "\n").unwrap();
+    fs::write(old.parent().unwrap().join("inuse.4242.hold"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(60));
+    let new = copilot_session(&dir, "new", &format!("id: new\ncwd: {}\n", cwd.display()));
+    fs::write(&new, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "new"})) + "\n").unwrap();
+    fs::write(new.parent().unwrap().join("inuse.4242.hold"), "").unwrap();
+    // A marker without a log is not a session.
+    let bare = dir.join("session-state").join("bare");
+    fs::create_dir_all(&bare).unwrap();
+    fs::write(bare.join("inuse.4242.hold"), "").unwrap();
+
+    assert_eq!(copilot::session_for_pid_in(&dir, 4242).as_deref(), Some(new.as_path()));
+    assert_eq!(copilot::session_for_pid_in(&dir, 9999), None);
+    assert_eq!(copilot::session_for_pid_in(&dir.join("missing"), 4242), None);
+
+    // Without the marker, the newest session for the folder since the process started.
+    assert_eq!(copilot::session_file_in(&dir, &cwd, 0).as_deref(), Some(new.as_path()));
+    assert_eq!(copilot::session_file_in(&dir, &other, 0), None, "no session for this folder");
+    let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
+    assert_eq!(copilot::session_file_in(&dir, &cwd, future), None, "both sessions predate the process");
+    assert_eq!(copilot::session_file_in(&dir.join("missing"), &cwd, 0), None);
+}
+
+#[test]
+fn copilot_tolerates_unknown_events_torn_tails_and_empty_logs() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-unknown");
+    let log = copilot_session(&dir, "s9", "id: s9\n");
+    // Only future event types: unknown, never misread — but still this session.
+    fs::write(&log, copilot_ev(0, "session.holo_deck", serde_json::json!({"on": true})) + "\n").unwrap();
+    let s = copilot::parse(&log, 7);
+    assert_eq!((s.state, s.session_id.as_deref(), s.since), (Some(State::Unknown), Some("s9"), Some(7)));
+    // A killed writer's torn final line keeps its prefix.
+    fs::write(&log, copilot_ev(1, "user.message", serde_json::json!({"content": "hi"})) + "\n{\"torn\": ").unwrap();
+    assert_eq!(copilot::parse(&log, 0).state, Some(State::Working));
+    // Nothing written yet.
+    fs::write(&log, "").unwrap();
+    assert_eq!(copilot::parse(&log, 0).state, Some(State::Unknown));
+    // A session that only started is idle.
+    fs::write(&log, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s9"})) + "\n").unwrap();
+    assert_eq!(copilot::parse(&log, 0).state, Some(State::Idle));
+    assert!(copilot::history(&dir.join("session-state").join("s9").join("missing.jsonl")).is_none());
+}
+
+#[test]
+fn copilot_reads_workspace_metadata_and_home_override() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-meta");
+    let yaml = dir.join("workspace.yaml");
+    fs::write(&yaml, "id: s1\ncwd: \"/tmp/my proj\"\nname: 'Fix the parser'\nupdated_at: 2026-11-12T10:00:00.000Z\n").unwrap();
+    let ws = copilot::read_workspace(&yaml).unwrap();
+    assert_eq!((ws.cwd.as_deref(), ws.name.as_deref()), (Some("/tmp/my proj"), Some("Fix the parser")));
+    assert_eq!(ws.updated_secs, crate::model::epoch_ms("2026-11-12T10:00:00.000Z").unwrap() / 1000);
+    assert!(copilot::read_workspace(&dir.join("missing.yaml")).is_none());
+
+    // A named session takes its title from the name, not the first prompt.
+    let log = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\nname: Fix the parser\n");
+    fs::write(&log, copilot_ev(1, "user.message", serde_json::json!({"content": "do it"})) + "\n").unwrap();
+    assert_eq!(copilot::parse(&log, 0).title.as_deref(), Some("Fix the parser"));
+
+    // `$COPILOT_HOME` replaces the whole path; a relative one joins the agent's folder.
+    let saved = std::env::var_os("COPILOT_HOME");
+    unsafe {
+        std::env::set_var("COPILOT_HOME", dir.as_path());
+        assert_eq!(copilot::root_for(dir.join("proj").as_path()).as_path(), dir.as_path());
+        std::env::set_var("COPILOT_HOME", ".copilot-rel");
+        assert_eq!(copilot::root_for(dir.join("proj").as_path()).as_path(), dir.join("proj").join(".copilot-rel").as_path());
+        std::env::remove_var("COPILOT_HOME");
+    }
+    assert_eq!(copilot::root_for(dir.as_path()), crate::transcripts::home().join(".copilot"));
+    unsafe {
+        if let Some(v) = saved {
+            std::env::set_var("COPILOT_HOME", v);
+        }
+    }
+}
