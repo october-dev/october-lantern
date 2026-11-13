@@ -144,7 +144,7 @@ Say you have six sessions running in cmux: two Claude Code, two Codex, one OpenC
 | October harness (`october`) | ✅ | ✅ | ✅ | October's own agent, built on Pi. Built in: installed on first use when it isn't on your PATH, and the default agent when no other agent is signed in to your own plan |
 | Gemini CLI | ✅ | ✅ | ✅ | |
 | Muse (Meta) | ✅ | ✅ | ✅ | Exact session matching. When Muse asks to approve a tool, the card shows what it wants; answer in its terminal |
-| Grok | ✅ | ✅ | ✅ | Reads Grok's session files |
+| Grok | ✅ | ✅ | ✅ | Reads Grok's session files. Taking back a prompt with Escape or Lantern's Stop before Grok starts responding can leave the card on *Working* until a later turn ends |
 | Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shown as *Running*; you can still reply and jump to them |
 
 Headless runs (for example `claude -p` or `codex exec` in a script) are ignored on purpose, because there's no one to answer them.

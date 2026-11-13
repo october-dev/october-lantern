@@ -640,6 +640,9 @@ pub mod grok {
         // and `turn_completed` keeps the turn's text. The reset is lazy — trailing bookkeeping
         // after the final text (a hook run, a tool update) must not wipe it. `turn_completed`
         // carries no text on normal turns — only errors fill `agent_result`.
+        // Cancel-rewind can take back a prompt before Grok's first activity. Its user chunk
+        // may already be on disk, but Grok records neither turn_completed nor rewind_marker
+        // for that cancellation. This transcript then reads Working until a later turn ends.
         let mut state: Option<State> = None;
         let mut reply = String::new();
         let mut last = String::new();
@@ -650,10 +653,9 @@ pub mod grok {
             // A hidden reminder is invisible to the reply (as in `history`): no new agent text.
             let hidden = su == Some("user_message_chunk") && u["_meta"]["hideFromScrollback"].as_bool() == Some(true);
             if su == Some("turn_completed") {
+                last = std::mem::take(&mut reply);
                 if let Some(result) = u["agent_result"].as_str().filter(|r| !r.trim().is_empty()) {
                     last = result.to_string();
-                } else {
-                    last = std::mem::take(&mut reply);
                 }
                 fresh = true;
             } else if su == Some("agent_message_chunk") {
@@ -723,6 +725,11 @@ pub mod grok {
                     let name = u["title"].as_str().unwrap_or("tool");
                     let input = u.get("rawInput").unwrap_or(&Value::Null);
                     push(&mut out, Role::Tool, &describe_tool(name, input), at, line_id(offset, 0));
+                }
+                Some("turn_completed") => {
+                    if let Some(result) = u["agent_result"].as_str() {
+                        push(&mut out, Role::Agent, result, at, line_id(offset, "result"));
+                    }
                 }
                 _ => {}
             }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Every harness Lantern can detect. Claude Code, Codex, OpenCode, Pi, the October harness,
-/// Gemini CLI and Grok have session readers (state, last message, history); the rest show as running.
+/// Gemini CLI, Grok and Muse have session readers (state, last message, history); the rest show as running.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {

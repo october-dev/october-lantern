@@ -283,6 +283,7 @@ fn gemini_replay_and_states() {
 
 #[test]
 fn grok_records_and_states() {
+    use crate::history::Role;
     use crate::readers::grok;
     let dir = temp_dir("grok");
     let path = dir.join("updates.jsonl");
@@ -296,12 +297,21 @@ fn grok_records_and_states() {
     let chunk1 = r#"{"timestamp":1787811160,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Renamed "}},"_meta":{"eventId":"g1-6","agentTimestampMs":1787811160000}}}"#;
     let chunk2 = r#"{"timestamp":1787811170,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"the file."}},"_meta":{"eventId":"g1-7","agentTimestampMs":1787811170000}}}"#;
     // Trailing bookkeeping after the final text: real turns run hooks before `turn_completed`.
-    let hook = r#"{"timestamp":1787811175,"method":"_x.ai/session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"hook_execution","event_name":"session_start","runs":[{"name":"global/settings:session_start[0].hooks[0]","status":{"status":"success","elapsed_ms":4}}]}},"_meta":{"eventId":"g1-8","agentTimestampMs":1787811175000}}}"#;
+    let hook = r#"{"timestamp":1787811175,"method":"_x.ai/session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"hook_execution","event_name":"session_start","runs":[{"name":"global/settings:session_start[0].hooks[0]","status":{"status":"success","elapsed_ms":4}}]},"_meta":{"eventId":"g1-8","agentTimestampMs":1787811175000}}}"#;
     let done = r#"{"timestamp":1787811180,"method":"_x.ai/session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"turn_completed","prompt_id":"p1","stop_reason":"end_turn","elapsed_ms":1000},"_meta":{"eventId":"g1-9","agentTimestampMs":1787811180000}}}"#;
     let failed = r#"{"timestamp":1787811190,"method":"_x.ai/session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"turn_completed","prompt_id":"p2","stop_reason":"error","agent_result":"API error (status 402): usage balance exhausted","elapsed_ms":621},"_meta":{"eventId":"g1-9","agentTimestampMs":1787811190000}}}"#;
     // A background-task completion: a `user_message_chunk` for the model only, which still
     // starts a turn (real sessions show the model's thoughts following it).
     let hidden = r#"{"timestamp":1787811200,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"<system-reminder>Background task \"watch\" completed (exit code: 0).</system-reminder>"},"_meta":{"modelId":"grok-4.5","promptIndex":8,"hideFromScrollback":true}},"_meta":{"eventId":"g1-10","agentTimestampMs":1787811200000}}}"#;
+    // A second prompt, stopped before Grok says anything: a completion with no text and no result.
+    let ask_again = r#"{"timestamp":1787811210,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"try again"},"_meta":{"modelId":"grok-4.5","promptIndex":1}},"_meta":{"eventId":"g1-11","agentTimestampMs":1787811210000}}}"#;
+    let cancelled = r#"{"timestamp":1787811220,"method":"_x.ai/session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"turn_completed","prompt_id":"p3","stop_reason":"cancelled","elapsed_ms":300},"_meta":{"eventId":"g1-12","agentTimestampMs":1787811220000}}}"#;
+    // The reader skips a line that isn't JSON, which would hide a broken fixture.
+    for line in [ask, thought, narrate, call, call_update, chunk1, chunk2, hook, done, failed, hidden, ask_again, cancelled] {
+        serde_json::from_str::<serde_json::Value>(line).unwrap();
+    }
+    let hook_json: serde_json::Value = serde_json::from_str(hook).unwrap();
+    assert_eq!(hook_json["params"]["update"]["sessionUpdate"], "hook_execution");
 
     // A reminder alone starts a turn: the model answers next.
     fs::write(&path, format!("{hidden}\n")).unwrap();
@@ -321,6 +331,20 @@ fn grok_records_and_states() {
     let s = grok::parse(&path, 0);
     assert_eq!(s.state, Some(State::Waiting));
     assert_eq!(s.last_message.as_deref(), Some("API error (status 402): usage balance exhausted"));
+    // The chat shows the error too, after the prompt, as its own entry.
+    let chat = grok::history(&path).expect("the fixture reads").messages;
+    assert_eq!(chat.len(), 2, "the prompt and the error: {chat:?}");
+    assert!(matches!(chat[0].role, Role::User));
+    assert!(matches!(chat[1].role, Role::Agent));
+    assert_eq!(chat[1].text, "API error (status 402): usage balance exhausted");
+    assert_eq!(chat[1].at, Some(crate::model::iso(1_787_811_190_000)));
+    assert_eq!(chat[1].id, Some(format!("{}.result", ask.len() + thought.len() + 2)));
+    // An error turn's own text never becomes a later turn's message: the next turn ends with
+    // nothing to say, so there is no last message.
+    fs::write(&path, format!("{ask}\n{narrate}\n{failed}\n{ask_again}\n{cancelled}\n")).unwrap();
+    let s = grok::parse(&path, 0);
+    assert_eq!(s.state, Some(State::Waiting));
+    assert_eq!(s.last_message, None, "not the earlier turn's narration");
     // A reminder after the turn starts the next one; the title stays the user's words.
     fs::write(&path, format!("{ask}\n{done}\n{hidden}\n")).unwrap();
     let s = grok::parse(&path, 0);
@@ -342,6 +366,9 @@ fn grok_history_joins_chunks_and_skips_hidden() {
     let chunk1 = r#"{"timestamp":1787811160,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Renamed "}},"_meta":{"eventId":"g1-6","agentTimestampMs":1787811160000}}}"#;
     let chunk2 = r#"{"timestamp":1787811170,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"the file."}},"_meta":{"eventId":"g1-7","agentTimestampMs":1787811170000}}}"#;
     let hidden = r#"{"timestamp":1787811190,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"<system-reminder>done</system-reminder>"},"_meta":{"hideFromScrollback":true}},"_meta":{"eventId":"g1-8","agentTimestampMs":1787811190000}}}"#;
+    for line in [ask, thought, call, read, call_update, chunk1, chunk2, hidden] {
+        serde_json::from_str::<serde_json::Value>(line).unwrap();
+    }
     fs::write(&path, format!("{ask}\n{thought}\n{call}\n{read}\n{call_update}\n{chunk1}\n{chunk2}\n{hidden}\n")).unwrap();
     let chat = grok::history(&path).expect("the fixture reads");
     assert!(chat.whole);
@@ -374,7 +401,8 @@ fn grok_session_file_skips_hidden_and_matches_cwd() {
     fs::create_dir_all(&sessions).unwrap();
     fs::write(sessions.join("session_search.sqlite"), b"not a directory").unwrap();
     let bucket = sessions.join(grok::encode(&cwd));
-    let line = r#"{"timestamp":1787811120,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"}}}}}"#;
+    let line = r#"{"timestamp":1787811120,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"}}}}"#;
+    serde_json::from_str::<serde_json::Value>(line).unwrap();
     // Serialized, not interpolated: a Windows cwd's backslashes are JSON escapes.
     let summary = |id: &str, cwd: &str| serde_json::json!({"info": {"id": id, "cwd": cwd}}).to_string();
     let child_summary = |id: &str, cwd: &str| serde_json::json!({"info": {"id": id, "cwd": cwd}, "session_kind": "subagent"}).to_string();
