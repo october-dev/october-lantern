@@ -281,6 +281,114 @@ fn gemini_replay_and_states() {
     assert_eq!(gemini::parse(&path, 0).state, Some(State::Working));
 }
 
+#[test]
+fn grok_records_and_states() {
+    use crate::readers::grok;
+    let dir = temp_dir("grok");
+    let path = dir.join("updates.jsonl");
+    let ask = r#"{"timestamp":1787811120,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"rename the file"}},"_meta":{"eventId":"g1-1","agentTimestampMs":1787811120000}}}"#;
+    let thought = r#"{"timestamp":1787811130,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"planning the rename"}},"_meta":{"eventId":"g1-2","agentTimestampMs":1787811130000}}}"#;
+    let call = r#"{"timestamp":1787811140,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"tool_call","title":"run_terminal_command","raw_input":{"command":"mv a b"}},"_meta":{"eventId":"g1-3","agentTimestampMs":1787811140000}}}"#;
+    let call_update = r#"{"timestamp":1787811150,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"tool_call_update","status":"completed"},"_meta":{"eventId":"g1-4","agentTimestampMs":1787811150000}}}"#;
+    let chunk1 = r#"{"timestamp":1787811160,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Renamed "}},"_meta":{"eventId":"g1-5","agentTimestampMs":1787811160000}}}"#;
+    let chunk2 = r#"{"timestamp":1787811170,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"the file."}},"_meta":{"eventId":"g1-6","agentTimestampMs":1787811170000}}}"#;
+    let done = r#"{"timestamp":1787811180,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"turn_completed"},"_meta":{"eventId":"g1-7","agentTimestampMs":1787811180000}}}"#;
+    // A background-task completion: a `user_message_chunk` for the model only, not a prompt.
+    let hidden = r#"{"timestamp":1787811190,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"<system-reminder>Background task \"watch\" completed (exit code: 0).</system-reminder>"},"_meta":{"modelId":"grok-4.5","promptIndex":8,"hideFromScrollback":true}},"_meta":{"eventId":"g1-8","agentTimestampMs":1787811190000}}}"#;
+
+    fs::write(&path, format!("{hidden}\n")).unwrap();
+    assert_eq!(grok::parse(&path, 0).state, Some(State::Idle));
+    fs::write(&path, format!("{ask}\n{thought}\n{call}\n{call_update}\n")).unwrap();
+    assert_eq!(grok::parse(&path, 0).state, Some(State::Working));
+    fs::write(&path, format!("{ask}\n{thought}\n{call}\n{call_update}\n{chunk1}\n{chunk2}\n{done}\n")).unwrap();
+    let s = grok::parse(&path, 0);
+    assert_eq!(s.state, Some(State::Waiting));
+    assert_eq!(s.last_message.as_deref(), Some("Renamed the file."));
+    assert_eq!(s.title.as_deref(), Some("rename the file"));
+    assert_eq!(s.session_id.as_deref(), Some("g1"));
+    assert_eq!(s.since, Some(1_787_811_180_000));
+    fs::write(&path, format!("{ask}\n{thought}\n{call}\n{call_update}\n{chunk1}\n{chunk2}\n{done}\n{hidden}\n")).unwrap();
+    assert_eq!(grok::parse(&path, 0).state, Some(State::Waiting));
+}
+
+#[test]
+fn grok_history_joins_chunks_and_skips_hidden() {
+    use crate::history::Role;
+    use crate::readers::grok;
+    let dir = temp_dir("grok-history");
+    let path = dir.join("updates.jsonl");
+    let ask = r#"{"timestamp":1787811120,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"rename the file"}},"_meta":{"eventId":"g1-1","agentTimestampMs":1787811120000}}}"#;
+    let thought = r#"{"timestamp":1787811130,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"planning"}},"_meta":{"eventId":"g1-2","agentTimestampMs":1787811130000}}}"#;
+    let call = r#"{"timestamp":1787811140,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"tool_call","title":"run_terminal_command","raw_input":{"command":"mv a b"}},"_meta":{"eventId":"g1-3","agentTimestampMs":1787811140000}}}"#;
+    let call_update = r#"{"timestamp":1787811150,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"tool_call_update","status":"completed"},"_meta":{"eventId":"g1-4","agentTimestampMs":1787811150000}}}"#;
+    let chunk1 = r#"{"timestamp":1787811160,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Renamed "}},"_meta":{"eventId":"g1-5","agentTimestampMs":1787811160000}}}"#;
+    let chunk2 = r#"{"timestamp":1787811170,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"the file."}},"_meta":{"eventId":"g1-6","agentTimestampMs":1787811170000}}}"#;
+    let hidden = r#"{"timestamp":1787811190,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"<system-reminder>done</system-reminder>"},"_meta":{"hideFromScrollback":true}},"_meta":{"eventId":"g1-8","agentTimestampMs":1787811190000}}}"#;
+    fs::write(&path, format!("{ask}\n{thought}\n{call}\n{call_update}\n{chunk1}\n{chunk2}\n{hidden}\n")).unwrap();
+    let chat = grok::history(&path).expect("the fixture reads");
+    assert!(chat.whole);
+    assert_eq!(chat.messages.len(), 3, "prompt, tool call and one joined reply: {:?}", chat.messages);
+    assert!(matches!(chat.messages[0].role, Role::User));
+    assert_eq!(chat.messages[0].text, "rename the file");
+    assert_eq!(chat.messages[0].id.as_deref(), Some("0.0"));
+    assert_eq!(chat.messages[0].at, Some(crate::model::iso(1_787_811_120_000)));
+    assert!(matches!(chat.messages[1].role, Role::Tool));
+    assert!(chat.messages[1].text.contains("run_terminal_command"), "the tool call is described: {}", chat.messages[1].text);
+    assert!(chat.messages[1].text.contains("mv a b"), "with its command: {}", chat.messages[1].text);
+    assert!(matches!(chat.messages[2].role, Role::Agent));
+    assert_eq!(chat.messages[2].text, "Renamed the file.");
+}
+
+#[test]
+fn grok_session_file_matches_encoded_cwd_with_fallback_scan() {
+    use crate::readers::grok;
+    let dir = temp_dir("grok-sessions");
+    let work = dir.join("work");
+    fs::create_dir_all(&work).unwrap();
+    let cwd = work.canonicalize().unwrap().to_string_lossy().into_owned();
+    let encoded: String = cwd
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') { (b as char).to_string() } else { format!("%{b:02X}") }
+        })
+        .collect();
+    let sessions = dir.join("sessions");
+    // The search index at the root is not a session directory.
+    fs::create_dir_all(&sessions).unwrap();
+    fs::write(sessions.join("session_search.sqlite"), b"not a directory").unwrap();
+    let live_dir = sessions.join(&encoded).join("11111111-1111-1111-1111-111111111111");
+    fs::create_dir_all(&live_dir).unwrap();
+    let live = live_dir.join("updates.jsonl");
+    let line = r#"{"timestamp":1787811120,"method":"session/update","params":{"sessionId":"g1","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"hi"}}}}}"#;
+    fs::write(&live, format!("{line}\n")).unwrap();
+    fs::write(live_dir.join("summary.json"), format!("{{\"id\":\"11111111-1111-1111-1111-111111111111\",\"cwd\":\"{cwd}\"}}")).unwrap();
+    // Same bucket, but its summary names another cwd: never a match, however new.
+    let other_dir = sessions.join(&encoded).join("22222222-2222-2222-2222-222222222222");
+    fs::create_dir_all(&other_dir).unwrap();
+    fs::write(other_dir.join("updates.jsonl"), format!("{line}\n")).unwrap();
+    fs::write(other_dir.join("summary.json"), r#"{"id":"22222222-2222-2222-2222-222222222222","cwd":"/elsewhere"}"#).unwrap();
+
+    // SAFETY: no other test reads `GROK_HOME`, and the old value is restored below.
+    let old = std::env::var_os("GROK_HOME");
+    unsafe { std::env::set_var("GROK_HOME", dir.as_path()) };
+    let found = grok::session_file(&work, 0);
+    // The encoded folder gone (a cwd Grok saw before a symlink changed): a session elsewhere
+    // still matches by its own cwd.
+    fs::remove_dir_all(sessions.join(&encoded)).unwrap();
+    let stray_dir = sessions.join("stale-bucket").join("33333333-3333-3333-3333-333333333333");
+    fs::create_dir_all(&stray_dir).unwrap();
+    let stray = stray_dir.join("updates.jsonl");
+    fs::write(&stray, format!("{line}\n")).unwrap();
+    fs::write(stray_dir.join("summary.json"), format!("{{\"id\":\"33333333-3333-3333-3333-333333333333\",\"cwd\":\"{cwd}\"}}")).unwrap();
+    let fallback = grok::session_file(&work, 0);
+    match old {
+        Some(v) => unsafe { std::env::set_var("GROK_HOME", v) },
+        None => unsafe { std::env::remove_var("GROK_HOME") },
+    }
+    assert_eq!(found.as_deref(), Some(live.as_path()), "only the live session on this cwd matches");
+    assert_eq!(fallback.as_deref(), Some(stray.as_path()), "the fallback scan matches by the summary's cwd");
+}
+
 pub(crate) fn agent_for(pid: u32, start_time: u64, tty: Option<&str>) -> Agent {
     Agent {
         id: format!("claude:{pid}:{start_time}"),
@@ -1611,4 +1719,5 @@ fn an_unreadable_session_file_is_a_failed_read() {
     assert!(history::claude(&dir.join("missing.jsonl")).is_none());
     assert!(crate::readers::pi::history(&dir.join("missing.jsonl")).is_none());
     assert!(crate::readers::gemini::history(&dir.join("missing.jsonl")).is_none());
+    assert!(crate::readers::grok::history(&dir.join("missing.jsonl")).is_none());
 }

@@ -487,10 +487,12 @@ impl Scanner {
                     .or_else(|| self.codex_paths.get(&agent.pid).map(|(p, _)| p.clone()))
                     .map(|p| (Kind::Codex, p)),
                 Kind::Muse => self.transcripts.muse_path_for_pid(agent.pid).map(|p| (Kind::Muse, p)),
-                Kind::Pi | Kind::October | Kind::Gemini => {
+                Kind::Pi | Kind::October | Kind::Gemini | Kind::Grok => {
                     let (cwd, start) = self.started.get(&agent.pid)?;
                     let path = if agent.kind == Kind::Gemini {
                         crate::readers::gemini::session_file(cwd, *start)
+                    } else if agent.kind == Kind::Grok {
+                        crate::readers::grok::session_file(cwd, *start)
                     } else {
                         crate::readers::pi::session_file(cwd, *start, agent.kind == Kind::October)
                     };
@@ -538,6 +540,7 @@ impl Scanner {
             Kind::Codex => crate::history::codex(&path),
             Kind::Pi | Kind::October => crate::readers::pi::history(&path),
             Kind::Gemini => crate::readers::gemini::history(&path),
+            Kind::Grok => crate::readers::grok::history(&path),
             Kind::Muse => crate::readers::muse::history(&path),
             _ => crate::history::claude(&path),
         };
@@ -669,6 +672,13 @@ impl Scanner {
                 let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };
                 match crate::readers::gemini::session_file(cwd, p.start_time) {
                     Some(path) => found(self.transcripts.cached(&path, crate::readers::gemini::parse), SessionMatch::Guessed),
+                    None => (Some(idle()), SessionMatch::None),
+                }
+            }
+            Kind::Grok => {
+                let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };
+                match crate::readers::grok::session_file(cwd, p.start_time) {
+                    Some(path) => found(self.transcripts.cached(&path, crate::readers::grok::parse), SessionMatch::Guessed),
                     None => (Some(idle()), SessionMatch::None),
                 }
             }

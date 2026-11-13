@@ -1,8 +1,8 @@
-//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI and Muse.
-//! Like the Claude Code and Codex readers, these only read the agents' own files.
+//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI, Grok
+//! and Muse. Like the Claude Code and Codex readers, these only read the agents' own files.
 //!
-//! None of these three keeps its session file open, so a running process is matched to its
-//! session by working directory and start time.
+//! None of these keeps its session file open, so a running process is matched to its session by
+//! working directory and start time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -460,6 +460,210 @@ pub mod gemini {
                 _ => {}
             }
         }
+        Some(Chat { messages: keep_recent(out), whole })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Grok Build: one directory per session,
+// `$GROK_HOME/sessions/<percent-encoded cwd>/<sessionId>/` (default `~/.grok/sessions`).
+// `updates.jsonl` is the authoritative transcript, an ACP `session/update` stream (a turn's
+// prompt, the reply's chunks, its tool calls, then `turn_completed`); `summary.json` names the
+// session's own `cwd`, which is the match.
+
+pub mod grok {
+    use super::*;
+
+    fn root() -> PathBuf {
+        std::env::var_os("GROK_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".grok")).join("sessions")
+    }
+
+    /// The working directory as Grok names its session folder: percent-encoded (`/` → `%2F`,
+    /// `:` → `%3A`); letters, digits and `-_.~` stay as they are.
+    fn encode(cwd: &str) -> String {
+        let mut out = String::with_capacity(cwd.len());
+        for b in cwd.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    }
+
+    /// The `cwd` the session's `summary.json` claims (the source of truth for the match).
+    fn summary_cwd(session: &Path) -> Option<String> {
+        let bytes = fs::read(session.join("summary.json")).ok()?;
+        serde_json::from_slice::<Value>(&bytes).ok()?.get("cwd")?.as_str().map(String::from)
+    }
+
+    pub fn session_file(cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        let raw = cwd.to_string_lossy().into_owned();
+        let want = resolved(cwd).to_string_lossy().into_owned();
+        let sessions = root();
+        // The encoded directory first, then every directory (a symlinked cwd may not encode to
+        // what's on disk); the session's own `cwd` decides.
+        let mut dirs = vec![sessions.join(encode(&want))];
+        if let Ok(rd) = fs::read_dir(&sessions) {
+            dirs.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        }
+        let started_ms = started_secs.saturating_sub(60) * 1000;
+        let mut found: Vec<(u64, PathBuf)> = Vec::new();
+        for dir in dirs {
+            let Ok(rd) = fs::read_dir(&dir) else { continue };
+            for session in rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()) {
+                let log = session.join("updates.jsonl");
+                let Some(m) = mtime_ms(&log) else { continue };
+                if m < started_ms || summary_cwd(&session).is_none_or(|c| c != want && c != raw) {
+                    continue;
+                }
+                found.push((m, log));
+            }
+        }
+        found.into_iter().max_by_key(|(m, _)| *m).map(|(_, p)| p)
+    }
+
+    /// `params.update` of a session-update line: `session/update`, or Grok's own `_x.ai`
+    /// extension updates (`task_completed`, `plan`, …).
+    fn update(e: &Value) -> Option<&Value> {
+        if !matches!(e["method"].as_str(), Some("session/update" | "_x.ai/session/update")) {
+            return None;
+        }
+        let u = &e["params"]["update"];
+        u.is_object().then_some(u)
+    }
+
+    /// When the line happened, in epoch ms: the agent's own clock first, else the line's own
+    /// seconds.
+    fn at_ms(e: &Value) -> Option<u64> {
+        e["params"]["update"]["_meta"]["agentTimestampMs"]
+            .as_u64()
+            .or_else(|| e["params"]["_meta"]["agentTimestampMs"].as_u64())
+            .or_else(|| e["timestamp"].as_u64().map(|s| s.saturating_mul(1000)))
+    }
+
+    /// Text of a message chunk: usually one `{"type": "text", "text": …}` block.
+    fn chunk_text(update: &Value) -> String {
+        let content = &update["content"];
+        if let Some(blocks) = content.as_array() {
+            blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")
+        } else if content["type"] == "text" {
+            content["text"].as_str().unwrap_or_default().to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// A real prompt: the user's own words. Background-task completions arrive as
+    /// `user_message_chunk` too, marked `hideFromScrollback`, for the model only.
+    fn is_real_prompt(e: &Value) -> bool {
+        let Some(u) = update(e) else { return false };
+        if u["sessionUpdate"] != "user_message_chunk" || u["_meta"]["hideFromScrollback"].as_bool() == Some(true) {
+            return false;
+        }
+        !chunk_text(u).trim().is_empty()
+    }
+
+    pub fn parse(path: &Path, mtime: u64) -> SessionStatus {
+        let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
+        if let Some(head) = read_range(path, false, 128 * 1024) {
+            for e in lines(&head) {
+                if status.session_id.is_none()
+                    && let Some(id) = e["params"]["sessionId"].as_str()
+                {
+                    status.session_id = Some(id.to_string());
+                }
+                if status.title.is_none()
+                    && is_real_prompt(&e)
+                    && let Some(u) = update(&e)
+                {
+                    status.title = Some(truncate(chunk_text(u).lines().next().unwrap_or(""), 80));
+                }
+                if status.session_id.is_some() && status.title.is_some() {
+                    break;
+                }
+            }
+        }
+        // The session id is its directory's name.
+        if status.session_id.is_none() {
+            status.session_id = path.parent().and_then(|d| d.file_name()).and_then(|s| s.to_str()).map(String::from);
+        }
+        let Some(tail) = read_range(path, true, TAIL_BYTES) else { return status };
+        // A turn ends with `turn_completed`; anything after it is the next turn starting. A
+        // reply streams as many chunks, which join into the one message.
+        let mut state: Option<State> = None;
+        let mut reply = String::new();
+        for e in lines(&tail) {
+            let Some(u) = update(&e) else { continue };
+            let next = match u["sessionUpdate"].as_str() {
+                Some("user_message_chunk") if u["_meta"]["hideFromScrollback"].as_bool() != Some(true) => {
+                    reply.clear();
+                    Some(State::Working)
+                }
+                Some("agent_message_chunk") => {
+                    reply.push_str(&chunk_text(u));
+                    Some(State::Working)
+                }
+                Some("tool_call") => Some(State::Working),
+                Some("turn_completed") => Some(State::Waiting),
+                _ => None,
+            };
+            if let Some(s) = next {
+                state = Some(s);
+                status.since = at_ms(&e).or(status.since);
+            }
+        }
+        status.state = Some(state.unwrap_or(State::Idle));
+        if status.state == Some(State::Waiting) {
+            status.last_message = Some(truncate(&reply, MESSAGE_CHARS)).filter(|t| !t.is_empty());
+        }
+        status
+    }
+
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (entries, whole) = tail_lines(path, crate::history::TAIL_BYTES)?;
+        let mut out = Vec::new();
+        // One reply streams as many `agent_message_chunk` lines; they read as one message.
+        let mut agent: Option<(String, Option<String>, Option<String>)> = None;
+        let flush = |out: &mut Vec<crate::history::ChatMessage>, agent: &mut Option<(String, Option<String>, Option<String>)>| {
+            if let Some((text, at, id)) = agent.take() {
+                push(out, Role::Agent, &text, at.as_deref(), id);
+            }
+        };
+        for (offset, e) in entries {
+            let Some(u) = update(&e) else { continue };
+            if u["sessionUpdate"] != "agent_message_chunk" {
+                flush(&mut out, &mut agent);
+            }
+            let at = at_ms(&e).map(crate::model::iso);
+            let at = at.as_deref();
+            match u["sessionUpdate"].as_str() {
+                Some("user_message_chunk") => {
+                    if u["_meta"]["hideFromScrollback"].as_bool() == Some(true) {
+                        continue;
+                    }
+                    push(&mut out, Role::User, &chunk_text(u), at, line_id(offset, 0));
+                }
+                Some("agent_message_chunk") => {
+                    let t = chunk_text(u);
+                    if t.trim().is_empty() {
+                        continue;
+                    }
+                    match agent.as_mut() {
+                        Some(a) => a.0.push_str(&t),
+                        None => agent = Some((t, at.map(String::from), line_id(offset, 0))),
+                    }
+                }
+                Some("tool_call") => {
+                    let name = u["title"].as_str().or_else(|| u["name"].as_str()).or_else(|| u["tool_name"].as_str()).unwrap_or("tool");
+                    let input = u.get("raw_input").or_else(|| u.get("input")).or_else(|| u.get("arguments")).unwrap_or(&Value::Null);
+                    push(&mut out, Role::Tool, &describe_tool(name, input), at, line_id(offset, 0));
+                }
+                _ => {}
+            }
+        }
+        flush(&mut out, &mut agent);
         Some(Chat { messages: keep_recent(out), whole })
     }
 }

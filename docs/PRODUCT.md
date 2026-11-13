@@ -144,7 +144,8 @@ Say you have six sessions running in cmux: two Claude Code, two Codex, one OpenC
 | October harness (`october`) | ✅ | ✅ | ✅ | October's own agent, built on Pi. Built in: installed on first use when it isn't on your PATH, and the default agent when no other agent is signed in to your own plan |
 | Gemini CLI | ✅ | ✅ | ✅ | |
 | Muse (Meta) | ✅ | ✅ | ✅ | Exact session matching. When Muse asks to approve a tool, the card shows what it wants; answer in its terminal |
-| Grok, Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shown as *Running*; you can still reply and jump to them |
+| Grok | ✅ | ✅ | ✅ | Reads Grok's session files |
+| Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shown as *Running*; you can still reply and jump to them |
 
 Headless runs (for example `claude -p` or `codex exec` in a script) are ignored on purpose, because there's no one to answer them.
 
@@ -168,7 +169,7 @@ Lantern is in **beta (v0.6.21)**.
 | macOS app (macOS 14+, Apple silicon and Intel), signed and notarized | ✅ |
 | Automatic updates | ✅ |
 | Finds agents in any terminal | ✅ |
-| Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI, Muse |
+| Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI, Grok, Muse |
 | Reply from Lantern | ✅ cmux, Terminal, iTerm2, tmux. Other terminals: copy and paste. |
 | Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2 and tmux. The card shows the tool and the full command being approved. The key is only pressed if that prompt is still the one on screen. |
 | Cards: an agent Lantern started asks you a question or hands you a step, shows its progress and its result | ✅ Claude Code, Codex and October started from Lantern (with or without October Bus and Cua Driver). An answer goes only to a question the agent is still waiting on (up to 25 minutes); otherwise the card says it closed, and nothing is typed in later. Proven end to end with Claude Code and Codex on macOS; October's own model turn and Windows/Linux not yet. |
@@ -261,7 +262,7 @@ Lantern doesn't need Full Disk Access.
 
 1. **Prove the October connections live:** a real phone pairing, reply and revoke, and a real October Desktop pairing.
 2. **Replies in more terminals:** Ghostty, VS Code and Warp.
-3. **Status for more agents:** Grok, Cursor, Qwen, Goose and others.
+3. **Status for more agents:** Cursor, Qwen, Goose and others.
 4. **Automatic routing.** Say "tell the backend agent to use Postgres" and Lantern picks the agent.
 5. **Windows.**
 
