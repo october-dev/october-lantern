@@ -47,7 +47,7 @@ Sent when anything changes, and at least every 10 seconds.
 | `host` | `{ "app": string, "pid": number, "bundlePath": string }?` | The GUI app the agent runs inside (Terminal, iTerm2, Ghostty, cmux, ...) |
 | `tmux` | `{ "socket": string?, "target": string, "paneId": string }?` | Present when the agent runs inside a tmux pane |
 | `canReply` | bool | `true` when the engine can type a reply into the agent (`route.via` isn't `none`) |
-| `route` | object | How replies reach the agent. `{"via":"tmux"}`, `{"via":"cmux","workspace":"…","surface":"…"}`, `{"via":"terminal","tty":"/dev/ttys004"}`, `{"via":"iterm","tty":"…"}`, `{"via":"october","canvasId":"…","nodeId":"…"}` (through October Desktop, when Lantern is connected to it), `{"via":"pty","session":"…"}` (one of Lantern's own sessions on Windows) or `{"via":"none"}`. Single keys (`keys`) work for tmux, cmux, iterm and pty. |
+| `route` | object | How replies reach the agent. `{"via":"tmux"}`, `{"via":"cmux","workspace":"…","surface":"…"}`, `{"via":"terminal","tty":"/dev/ttys004"}`, `{"via":"iterm","tty":"…"}`, `{"via":"kitty","window":"…","socket":"…"}` (the window id and control socket from the agent's environment, through `kitty @`), `{"via":"october","canvasId":"…","nodeId":"…"}` (through October Desktop, when Lantern is connected to it), `{"via":"pty","session":"…"}` (one of Lantern's own sessions on Windows) or `{"via":"none"}`. Single keys (`keys`) work for tmux, cmux, iterm, kitty and pty. |
 | `stateSource` | `"hook" \| "transcript" \| "none"` | Where the state came from ("transcript" covers every session reader) |
 
 ### `installed`

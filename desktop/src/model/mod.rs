@@ -148,8 +148,8 @@ pub struct TmuxPane {
     pub pane_id: String,
 }
 
-/// How Lantern types into an agent: tmux, cmux, terminal, iterm, october, pty (Lantern's own
-/// session on Windows) or none.
+/// How Lantern types into an agent: tmux, cmux, terminal, iterm, kitty, october, pty
+/// (Lantern's own session on Windows) or none.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Route {
@@ -161,7 +161,7 @@ pub struct Route {
 impl Route {
     /// Single keys (e.g. "1" to allow a permission prompt) can be sent without Enter.
     pub fn sends_keys(&self) -> bool {
-        matches!(self.via.as_str(), "tmux" | "cmux" | "iterm" | "pty" | "console")
+        matches!(self.via.as_str(), "tmux" | "cmux" | "iterm" | "kitty" | "pty" | "console")
     }
 }
 

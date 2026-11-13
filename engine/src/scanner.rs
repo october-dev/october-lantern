@@ -386,6 +386,10 @@ impl Scanner {
             },
             "Terminal" => dev_tty.map(|tty| Route::Terminal { tty }).unwrap_or(Route::None),
             "iTerm" | "iTerm2" => dev_tty.map(|tty| Route::Iterm { tty }).unwrap_or(Route::None),
+            "kitty" if tty.is_some() && crate::kitty::cli_available() => match (env("KITTY_WINDOW_ID"), env("KITTY_LISTEN_ON")) {
+                (Some(window), Some(socket)) => Route::Kitty { window, socket },
+                _ => Route::None,
+            },
             _ => Route::None,
         }
     }

@@ -22,6 +22,7 @@ mod environment;
 mod harness;
 mod history;
 mod hooks;
+mod kitty;
 mod launch;
 mod mobile;
 mod model;
