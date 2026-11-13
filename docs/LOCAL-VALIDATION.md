@@ -43,6 +43,14 @@ The owner explicitly removed protected sign-in/isolation from this beta on 27 Oc
 
 QA logs, screenshots and fixture data are private under `/private/tmp/lantern-qa` and `/private/tmp/lantern-*.log`. They are not committed. The original `cards` checkout and existing `show-me` worktree were preserved.
 
+## Cua Driver pin qualification — 12 November 2026
+
+`engine/cua.json` moves from 0.38.0 to [Cua Driver 0.44.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.44.0), the version 0.38.0's own update check offers. Since 0.38.0 it batches `type_text` key events (0.43.2) and can encode `get_window_state` screenshots as JPEG (0.39.0). Like 0.38.0 it carries GitHub's "Pre-release" label; nightlies were excluded.
+
+- All five binary archives match the release's `checksums.txt`; the macOS archive keeps the `cua-driver` and `cua-cursor-theme` names Lantern installs.
+- Against 0.38.0, `mcp`, `call`, `status` and `stop` help output is unchanged, `serve` still takes `--embedded` and `--host-bundle-id`, and `list-tools` names the same tools.
+- A private metadata-only daemon (its own socket under `/tmp`, permissions gate off) passed `status`, MCP initialization and tool listing (62 tools), `stop`, process exit and socket release. No Lantern engine, desktop capture, input or model was started, so desktop permissions and a real agent journey on 0.44.0 are not qualified by this.
+
 ## Cua Driver pin qualification — 1 November 2026
 
 The update branch `chore/cua-driver-update`, based on main `ef282f7`, changes `engine/cua.json` from 0.36.0 to [Cua Driver 0.38.0](https://github.com/trycua/cua/releases/tag/cua-driver-rs-v0.38.0). This is a regular Driver release; upstream explicitly uses GitHub's “Pre-release” label to avoid moving the monorepo's shared Latest pointer. Nightlies and Cua Spaces releases were excluded. The release includes input-targeting, retry-outcome and capture fixes, plus the eMudhra certificate-trust correction. This updates the next build's download pin; it does not update an installed driver or publish an installer by itself.

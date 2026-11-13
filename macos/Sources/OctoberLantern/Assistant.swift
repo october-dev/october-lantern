@@ -391,6 +391,28 @@ final class Assistant: ObservableObject {
         return agent(for: link).flatMap { $0.isLive ? $0 : nil }
     }
 
+    /// What Stop would stop: Lantern's own answer while it comes in, else the conversation's agent
+    /// while it works.
+    var stoppable: Bool {
+        if asking { return true }
+        return activeAgent?.state == .working
+    }
+
+    /// Stop: Lantern's answer ends where it is; a working agent gets Escape and stays open for
+    /// what you say next.
+    func stop() {
+        if asking {
+            task?.cancel()
+            cancelTask()
+            asking = false
+            if let i = turns.indices.last {
+                turns[i].answer += turns[i].answer.isEmpty ? "Stopped." : "\n\n(Stopped.)"
+            }
+        } else if let agent = activeAgent, agent.state == .working {
+            model?.interrupt(agent)
+        }
+    }
+
     /// The agent a task started, once it's up: by id once known, else by its tmux session.
     func agent(for link: TaskLink) -> Agent? {
         guard let model else { return nil }
@@ -1731,16 +1753,31 @@ struct AskBox: View {
             .buttonStyle(.plain).help(dictation.isRecording ? "Stop listening" : "Speak")
             AIChoiceMenu()
             Spacer(minLength: 8)
-            Button { assistant.submit() } label: {
-                Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
-                    .frame(width: 28, height: 28)
-                    .background(Circle().fill(canSubmit ? Theme.amber : Theme.amber.opacity(0.35)))
+            if showsStop {
+                Button { assistant.stop() } label: {
+                    Image(systemName: "stop.fill").font(.system(size: 10, weight: .bold)).foregroundStyle(.black.opacity(0.85))
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Theme.amber))
+                }
+                .buttonStyle(.plain).help(assistant.asking ? "Stop Lantern's answer" : "Stop @\(assistant.activeAgent?.handle ?? "the agent")")
+            } else {
+                Button { assistant.submit() } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(canSubmit ? Theme.amber : Theme.amber.opacity(0.35)))
+                }
+                .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
             }
-            .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
         }
     }
 
     private var replying: Bool { assistant.activeAgent != nil && !assistant.askLanternInstead }
+
+    /// Stop takes Send's place while something runs and there's nothing typed: with words in the
+    /// box, Send stays, so you can tell a working agent more.
+    private var showsStop: Bool {
+        assistant.stoppable && assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && assistant.attachments.isEmpty
+    }
 
     private var placeholder: String {
         if dictation.isRecording { return "Listening…" }

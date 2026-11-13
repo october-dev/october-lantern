@@ -186,14 +186,24 @@ pub fn note(has_tools: bool) -> Option<String> {
              '{{\"pid\":123,\"window_id\":456}}' --screenshot-out-file /tmp/w.png` saves a screenshot)."
         )
     };
+    let open = if cfg!(windows) {
+        "`start \"\" \"https://example.com\"`"
+    } else if cfg!(target_os = "macos") {
+        "`open \"https://example.com\"` (or `open -a \"Google Chrome\" \"https://example.com\"`)"
+    } else {
+        "`xdg-open \"https://example.com\"`"
+    };
     Some(format!(
         "You can also use the apps on this computer through Cua Driver, with your own cursor, without taking over the user's \
-         mouse or keyboard. {how} Work in the foreground by default, so the user can watch: before you work in an app, bring \
-         its window to the front with bring_to_front (its pid and window_id), including apps you open with launch_app, which \
-         opens them behind other windows. Leave apps in the background only when the user asks for that (for example \
-         \"in the background\" or \"don't interrupt me\"). Prefer files, the terminal and APIs when they can do the job; \
-         use the apps when the task needs them (a website in the user's browser, a form, a desktop app). After each action, \
-         look at the window again to check what happened."
+         mouse or keyboard. {how} Prefer files, the terminal and APIs when they can do the job; use the apps when the task \
+         needs them (a website in the user's browser, a form, a desktop app). Be quick, since each step makes the user wait: \
+         open a website or app from the shell in one step, for example {open}, rather than through the browser's address bar, \
+         and don't list every app and window first when you already know which one you want. Work in the foreground by \
+         default, so the user can watch: before you work in an app, bring its window to the front with bring_to_front (its \
+         pid and window_id), including apps you open with launch_app, which opens them behind other windows. Leave apps in the \
+         background only when the user asks for that (for example \"in the background\" or \"don't interrupt me\"). Look at \
+         the window when your next step depends on what's on screen (after the page loads, before you click), not after every \
+         keystroke."
     ))
 }
 
@@ -547,6 +557,7 @@ mod tests {
     fn agents_work_in_front_of_the_user_unless_asked_not_to() {
         let note = note(true).unwrap();
         assert!(note.contains("Work in the foreground by default") && note.contains("bring_to_front"), "{note}");
+        assert!(note.contains("from the shell in one step") && !note.contains("After each action"), "{note}");
         assert!(note.contains("only when the user asks"), "{note}");
     }
 

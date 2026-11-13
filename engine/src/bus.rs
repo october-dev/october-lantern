@@ -342,8 +342,10 @@ pub fn attach(kind: Kind, id: &str, name: &str, on_bus: bool, computer: Option<&
             crate::hooks::write_atomic(file, &serde_json::to_vec_pretty(&v)?)?;
             Ok(())
         };
+    // Claude Code: Lantern's own servers load with the session (`alwaysLoad`), so using the
+    // computer or a card doesn't first cost a tool-search turn.
     let stdio = |v: &mut serde_json::Value, server: &str, (command, args): &Server| {
-        v["mcpServers"][server] = serde_json::json!({"type": "stdio", "command": command, "args": args});
+        v["mcpServers"][server] = serde_json::json!({"type": "stdio", "command": command, "args": args, "alwaysLoad": true});
         if server == CARDS {
             v["mcpServers"][server]["timeout"] = wait_ms.into();
         }
@@ -730,6 +732,7 @@ mod computer_tests {
         let file: serde_json::Value = serde_json::from_slice(&std::fs::read(claude.args[1].trim_matches('\'')).unwrap()).unwrap();
         assert_eq!(file["mcpServers"]["lantern"]["args"][0], "cards-mcp");
         assert_eq!(file["mcpServers"]["lantern"]["timeout"], wait);
+        assert_eq!(file["mcpServers"]["lantern"]["alwaysLoad"], true, "no tool-search turn before the first card");
 
         let codex = attach(Kind::Codex, "cards-codex", "Codex · p", false, None, Some(&cards)).unwrap().args.join(" ");
         assert!(codex.contains("mcp_servers.lantern.command=") && codex.contains(&format!("tool_timeout_sec={}", wait / 1000)), "{codex}");

@@ -249,6 +249,14 @@ impl Lantern {
                 let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());
                 self.show(format!("@{handle}: {}", text(event, "message").unwrap_or_else(|| "not sent".into())));
             }
+            Some(Pending::Stop { agent_id }) => {
+                let handle = self.model.agent(&agent_id).map_or("agent".to_string(), |agent| agent.handle.clone());
+                self.show(if ok {
+                    format!("Stopped @{handle}")
+                } else {
+                    format!("Couldn't stop @{handle}: {}", text(event, "message").unwrap_or_else(|| "unknown error".into()))
+                });
+            }
             Some(Pending::Keys { prompt_id: Some(prompt_id), .. }) if ok => {
                 self.model.answer_delivery.insert(prompt_id, crate::model::AnswerDelivery::Sent);
             }
