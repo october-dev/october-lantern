@@ -6,6 +6,7 @@
 //!   the agent's environment
 //! - Terminal and iTerm2: their AppleScript, finding the tab by its tty (asks the user once for
 //!   Automation permission)
+//! - WezTerm: `wezterm cli`, finding the pane by its tty (see wezterm.rs)
 //! - Lantern's own sessions on Windows: the session's host, which runs only the agent (pty.rs)
 //!
 //! Every send first checks that the terminal still belongs to the agent Lantern saw: the same
@@ -31,7 +32,7 @@ use crate::tmux;
 pub const CMUX: &str = "/Applications/cmux.app/Contents/Resources/bin/cmux";
 
 /// How long one send (text + Enter) may take once it has started.
-const SEND_LIMIT: Duration = Duration::from_secs(10);
+pub(crate) const SEND_LIMIT: Duration = Duration::from_secs(10);
 
 /// A single keypress, for answering prompts without Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +190,10 @@ pub fn send_text(agent: &Agent, text: &str) -> Result<()> {
         Route::October { .. } => bail!("replies to October's agents go through October"),
         Route::Terminal { tty } => osascript(TERMINAL_SEND, &[tty, &line], SEND_LIMIT, true).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_SEND, &[tty, &line, "yes"], SEND_LIMIT, true).map(|_| ()),
+        Route::Wezterm { socket, cli } => {
+            let tty = agent.tty.as_deref().with_context(|| format!("@{} has no terminal Lantern can type into", agent.handle))?;
+            crate::wezterm::send_text(cli, socket, crate::wezterm::pane_for(cli, socket, tty)?, &line)
+        }
         Route::Pty { session } => crate::pty::send_text(session, &line),
         Route::Console { .. } => crate::console::send(agent, "text", &line),
         Route::None => bail!("Lantern can't type into {} yet", host_name(agent)),
@@ -219,6 +224,16 @@ pub fn send_key(agent: &Agent, key: Key) -> Result<()> {
         (Route::Iterm { tty }, Key::Tab) => osascript(ITERM_SEND, &[tty, "\t", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Enter) => osascript(ITERM_SEND, &[tty, "\r", "no"], SEND_LIMIT, true).map(|_| ()),
         (Route::Iterm { tty }, Key::Char(c)) => osascript(ITERM_SEND, &[tty, &c.to_string(), "no"], SEND_LIMIT, true).map(|_| ()),
+        (Route::Wezterm { socket, cli }, key) => {
+            let tty = agent.tty.as_deref().with_context(|| format!("@{} has no terminal Lantern can type into", agent.handle))?;
+            let stroke = match key {
+                Key::Escape => "\u{1b}".to_string(),
+                Key::Tab => "\t".to_string(),
+                Key::Enter => "\r".to_string(),
+                Key::Char(c) => c.to_string(),
+            };
+            crate::wezterm::send_key(cli, socket, crate::wezterm::pane_for(cli, socket, tty)?, &stroke)
+        }
         (Route::Pty { session }, Key::Escape) => crate::pty::send_bytes(session, "\u{1b}"),
         (Route::Pty { session }, Key::Tab) => crate::pty::send_bytes(session, "\t"),
         (Route::Pty { session }, Key::Enter) => crate::pty::send_bytes(session, "\r"),
@@ -257,6 +272,10 @@ pub fn focus(agent: &Agent) -> Result<()> {
         Route::Cmux { workspace, .. } => cmux(&["select-workspace", "--workspace", workspace]),
         Route::Terminal { tty } => osascript(TERMINAL_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
         Route::Iterm { tty } => osascript(ITERM_FOCUS, &[tty], SEND_LIMIT, false).map(|_| ()),
+        Route::Wezterm { socket, cli } => {
+            let tty = agent.tty.as_deref().context("agent has no terminal to focus")?;
+            crate::wezterm::activate(cli, socket, crate::wezterm::pane_for(cli, socket, tty)?)
+        }
         Route::Pty { session } => focus_session(session),
         #[cfg(windows)]
         Route::Console { .. } => crate::platform::focus_window(agent.host.as_ref().map_or(0, |h| h.pid)),
