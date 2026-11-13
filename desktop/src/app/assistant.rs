@@ -701,6 +701,26 @@ impl Lantern {
         self.track_tasks();
     }
 
+    /// Stop (Swift `Assistant.stop`): Lantern's answer ends where it is; a working agent gets
+    /// Escape, as in its terminal, and stays open for what you say next.
+    pub(super) fn stop_assistant(&mut self) {
+        if self.model.assistant.asking {
+            self.asking.generation.fetch_add(1, Ordering::SeqCst);
+            self.cancel_assistant_task();
+            self.model.assistant.asking = false;
+            if let Some(turn) = self.model.assistant.turns.last_mut() {
+                turn.answer.push_str(if turn.answer.is_empty() { "Stopped." } else { "\n\n(Stopped.)" });
+            }
+            return;
+        }
+        let Some(agent_id) = self.model.assistant_agent().filter(|a| a.state == AgentState::Working).map(|a| a.id.clone()) else {
+            return;
+        };
+        if let Some(id) = self.request(json!({"type": "keys", "agentId": agent_id, "keys": ["Escape"]})) {
+            self.pending.insert(id, Pending::Stop { agent_id });
+        }
+    }
+
     /// New chat: stops the answer and any pending task; the conversation stays in Recent.
     pub(super) fn clear_assistant(&mut self) {
         self.asking.generation.fetch_add(1, Ordering::SeqCst);
@@ -1287,6 +1307,27 @@ mod tests {
         assert!(t.task.as_ref().unwrap().in_terminal);
         assert_eq!(t.started.as_deref().map(|s| s.starts_with("Started Claude Code in")), Some(true));
         assert_ne!(lantern.model.panel, Some(PanelMode::Agents));
+    }
+
+    #[test]
+    fn stop_ends_lantern_s_answer_or_sends_the_working_agent_escape() {
+        let mut answering = lantern(&["claude"]);
+        let (generation, turn) = with_turn(&mut answering);
+        answering.assistant_piece(generation, turn, Piece::Text("Looking".into()));
+        answering.stop_assistant();
+        assert!(!answering.model.assistant.asking);
+        assert_eq!(answering.model.assistant.turns[0].answer, "Looking\n\n(Stopped.)");
+        answering.assistant_piece(generation, turn, Piece::Text(" more".into()));
+        assert_eq!(answering.model.assistant.turns[0].answer, "Looking\n\n(Stopped.)", "nothing more of the answer comes in");
+
+        let mut lantern = lantern(&["claude"]);
+        with_running_task(&mut lantern);
+        lantern.stop_assistant();
+        let stops = lantern.pending.values().filter(|p| matches!(p, Pending::Stop { agent_id } if agent_id == "claude:9:9")).count();
+        assert_eq!(stops, 1, "Escape for the working agent");
+        let id = lantern.pending.iter().find(|(_, p)| matches!(p, Pending::Stop { .. })).map(|(id, _)| id.clone()).unwrap();
+        lantern.engine_event(json!({"type": "replyResult", "requestId": id, "ok": true}));
+        assert_eq!(lantern.model.toast.as_ref().map(|t| t.text.as_str()), Some("Stopped @claude-1"));
     }
 
     #[test]
