@@ -484,9 +484,6 @@ pub mod goose {
     const MS_THRESHOLD: i64 = 10_000_000_000;
 
     fn db() -> PathBuf {
-        if let Some(path) = std::env::var_os("GOOSE_DB") {
-            return PathBuf::from(path);
-        }
         // Goose's own override: an absolute root whose `data` holds the sessions.
         if let Some(root) = std::env::var_os("GOOSE_PATH_ROOT").map(PathBuf::from).filter(|p| p.is_absolute()) {
             return root.join("data").join("sessions").join("sessions.db");
@@ -603,25 +600,21 @@ pub mod goose {
         u64::try_from(if ts > MS_THRESHOLD { ts / 1000 } else { ts }).unwrap_or(0)
     }
 
-    /// A `sessions.created_at` (`YYYY-MM-DD HH:MM:SS` UTC) in epoch seconds.
-    fn stamp_secs(s: &str) -> Option<u64> {
-        let format = time::format_description::parse_borrowed::<2>("[year]-[month]-[day] [hour]:[minute]:[second]").ok()?;
-        let t = time::PrimitiveDateTime::parse(s, &format).ok()?.assume_utc();
-        u64::try_from(t.unix_timestamp()).ok()
-    }
-
-    /// The session a process in `cwd` is working in, from the database at `db` (where a test
-    /// puts its fixture): the top-level, unarchived `user` session there with the most recent
-    /// activity, preferring ones active since the process started.
-    pub(crate) fn session_for_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<(String, String)> {
-        session_since(db, cwd, started_secs.saturating_sub(60)).flatten()
+    /// The folder to match `sessions.working_dir` against. Goose stores its process's folder
+    /// unchanged, which on Windows is never the canonicalized (`\\?\…`) form, so only Unix
+    /// canonicalizes the query side.
+    fn session_dir(cwd: &Path) -> String {
+        #[cfg(windows)]
+        let dir = cwd.to_path_buf();
+        #[cfg(not(windows))]
+        let dir = resolved(cwd);
+        dir.to_string_lossy().into_owned()
     }
 
     /// The session there with the most recent activity, among those created or active since
     /// `since_secs`. `None` when the database couldn't be read or isn't a known version.
-    fn session_since(db: &Path, cwd: &Path, since_secs: u64) -> Option<Option<(String, String)>> {
-        let layout = layout(db)?;
-        let dir = resolved(cwd).to_string_lossy().into_owned();
+    fn session_since(db: &Path, layout: &Layout, cwd: &Path, since_secs: u64) -> Option<Option<(String, String)>> {
+        let dir = session_dir(cwd);
         let name_col = if layout.name {
             "s.name"
         } else if layout.description {
@@ -640,35 +633,45 @@ pub mod goose {
         if layout.parent {
             filters.push_str(" AND s.parent_session_id IS NULL");
         }
+        // Effective activity: the newest message's clock normalized to seconds (goose itself
+        // tells seconds from milliseconds with this same threshold), or the session's creation
+        // when it has no messages yet. Filtered and ordered in SQL, so a folder of older
+        // millisecond-dated sessions can't crowd out a current seconds-dated one before Rust
+        // ever sees it.
         let rows = query_in(
             db,
             &format!(
-                "SELECT s.id AS id, {name_col} AS name, {created_col} AS created, MAX(m.created_timestamp) AS last \
+                "SELECT s.id AS id, {name_col} AS name, \
+                 MAX(COALESCE(MAX(CASE WHEN m.created_timestamp > {MS_THRESHOLD} THEN m.created_timestamp / 1000 \
+                                       ELSE m.created_timestamp END), 0), \
+                     COALESCE(unixepoch({created_col}), 0)) AS active \
                  FROM sessions s LEFT JOIN messages m ON m.session_id = s.id \
-                 WHERE s.working_dir = {} {filters} GROUP BY s.id ORDER BY last DESC LIMIT 10",
+                 WHERE s.working_dir = {} {filters} GROUP BY s.id HAVING active >= {since_secs} \
+                 ORDER BY active DESC, s.rowid DESC LIMIT 1",
                 sql_str(&dir)
             ),
         )?;
         // A process with no session activity since it started hasn't begun one yet (or continued an
         // old one without writing): don't show a stale session. `started_secs == 0` means "any".
-        // A session with no messages yet counts by its creation, like its first write to come.
-        let pick = rows.iter().find(|r| {
-            let last = r["last"].as_i64().map(normalized).unwrap_or(0);
-            let created = r["created"].as_str().and_then(stamp_secs).unwrap_or(0);
-            last.max(created) >= since_secs
-        });
-        Some(pick.and_then(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str().unwrap_or("").to_string()))))
+        Some(rows.first().and_then(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str().unwrap_or("").to_string()))))
     }
 
-    /// The text blocks of a message's `content_json` (a JSON array of `{type, …}` blocks).
+    /// The readable blocks of a message's `content_json` (a JSON array of `{type, …}` blocks):
+    /// text, a failed turn's `error.message` (provider failures, the turn limit), and the
+    /// out-of-credits notification's `msg`. Other notifications (progress and the like) are not
+    /// conversation.
     fn texts(content_json: &str) -> Vec<String> {
         let Ok(content) = serde_json::from_str::<Value>(content_json) else { return Vec::new() };
         content
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str().map(String::from))
+            .filter_map(|b| match b["type"].as_str() {
+                Some("text") => b["text"].as_str().map(String::from),
+                Some("error") => b["message"].as_str().map(String::from),
+                Some("systemNotification") if b["notificationType"] == "creditsExhausted" => b["msg"].as_str().map(String::from),
+                _ => None,
+            })
             .collect()
     }
 
@@ -678,23 +681,53 @@ pub mod goose {
         content.as_array().is_some_and(|blocks| blocks.iter().any(|b| b["type"] == "toolRequest"))
     }
 
-    fn first_user_text(db: &Path, session: &str) -> Option<String> {
+    /// Whether the message ends its turn in failure: an `error` block or the out-of-credits
+    /// notification. A failed turn is your turn, with the error as its last message.
+    fn has_terminal_error(content_json: &str) -> bool {
+        let Ok(content) = serde_json::from_str::<Value>(content_json) else { return false };
+        content.as_array().is_some_and(|blocks| {
+            blocks
+                .iter()
+                .any(|b| b["type"] == "error" || (b["type"] == "systemNotification" && b["notificationType"] == "creditsExhausted"))
+        })
+    }
+
+    /// The first prompt you can see: `CLI Session` is goose's placeholder name, and an empty or
+    /// hidden message isn't a title.
+    fn first_user_text(db: &Path, session: &str, metadata: bool) -> Option<String> {
+        let meta_col = if metadata { "metadata_json" } else { "NULL" };
         let rows = query_in(
             db,
-            &format!("SELECT content_json FROM messages WHERE session_id = {} AND role = 'user' ORDER BY id LIMIT 5", sql_str(session)),
+            &format!(
+                "SELECT content_json, {meta_col} AS meta FROM messages WHERE session_id = {} AND role = 'user' ORDER BY id LIMIT 5",
+                sql_str(session)
+            ),
         )?;
         rows.iter()
+            .filter(|r| {
+                r["meta"]
+                    .as_str()
+                    .and_then(|m| serde_json::from_str::<Value>(m).ok())
+                    .and_then(|v| v.get("userVisible").and_then(Value::as_bool))
+                    != Some(false)
+            })
             .filter_map(|r| r["content_json"].as_str())
             .flat_map(texts)
             .find(|t| !t.trim().is_empty())
             .map(|t| truncate(t.lines().next().unwrap_or(&t), 80))
     }
 
-    /// `status`, against the database at `db` (where a test puts its fixture).
+    /// `status`, against the database at `db` (where a test puts its fixture). `None` when the
+    /// database couldn't be read or isn't a known version; an Idle status with no session when
+    /// the lookup worked but this process has no session yet.
     pub(crate) fn status_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<SessionStatus> {
-        let (session, title) = session_for_in(db, cwd, started_secs)?;
+        let layout = layout(db)?;
+        let Some((session, title)) = session_since(db, &layout, cwd, started_secs.saturating_sub(60))? else {
+            return Some(SessionStatus { state: Some(State::Idle), ..Default::default() });
+        };
         let mut status = SessionStatus { session_id: Some(session.clone()), ..Default::default() };
-        status.title = if title.trim().is_empty() { first_user_text(db, &session) } else { Some(title) };
+        status.title =
+            if title.trim().is_empty() || title == "CLI Session" { first_user_text(db, &session, layout.metadata) } else { Some(title) };
 
         // The newest few, so the newest by the clock wins even where seconds and milliseconds mix.
         let rows = query_in(
@@ -713,7 +746,8 @@ pub mod goose {
         status.since = last["created_timestamp"].as_i64().map(|t| normalized(t).saturating_mul(1000));
         let content = last["content_json"].as_str().unwrap_or("");
         // An assistant message with a tool call is mid-turn; one with only text is its reply.
-        let done = last["role"] == "assistant" && !has_tool_request(content);
+        // A failed turn ends the same way, with the error as its last message.
+        let done = last["role"] == "assistant" && (has_terminal_error(content) || !has_tool_request(content));
         status.state = Some(if done { State::Waiting } else { State::Working });
         if done {
             status.last_message = Some(truncate(&texts(content).join("\n"), MESSAGE_CHARS)).filter(|t| !t.is_empty());
@@ -742,7 +776,7 @@ pub mod goose {
 
     pub(crate) fn history_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<crate::history::History> {
         let layout = layout(db)?;
-        let Some((session, _)) = session_since(db, cwd, started_secs)? else { return Some(Default::default()) };
+        let Some((session, _)) = session_since(db, &layout, cwd, started_secs)? else { return Some(Default::default()) };
         let s = sql_str(&session);
         let id_col = if layout.message_id { "message_id" } else { "NULL AS message_id" };
         let meta_col = if layout.metadata { "metadata_json" } else { "NULL AS metadata_json" };
@@ -778,6 +812,10 @@ pub mod goose {
                 match (r["role"].as_str(), b["type"].as_str()) {
                     (Some("user"), Some("text")) => push(&mut out, Role::User, b["text"].as_str().unwrap_or(""), at, id(i)),
                     (Some("assistant"), Some("text")) => push(&mut out, Role::Agent, b["text"].as_str().unwrap_or(""), at, id(i)),
+                    (Some("assistant"), Some("error")) => push(&mut out, Role::Agent, b["message"].as_str().unwrap_or(""), at, id(i)),
+                    (Some("assistant"), Some("systemNotification")) if b["notificationType"] == "creditsExhausted" => {
+                        push(&mut out, Role::Agent, b["msg"].as_str().unwrap_or(""), at, id(i))
+                    }
                     (Some("assistant"), Some("toolRequest")) => {
                         let call = &b["toolCall"]["value"];
                         let name = call["name"].as_str().unwrap_or("tool");

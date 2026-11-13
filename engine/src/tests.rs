@@ -1684,17 +1684,30 @@ fn goose_status_and_history_from_a_current_database() {
     // A new prompt is working again; a tool call mid-turn is working too.
     message("20261101_1", "msg_a_5", "user", r#"[{"type":"text","text":"and again"}]"#, t + 4, "{}");
     assert_eq!(goose::status_in(&db, &cwd, 0).unwrap().state, Some(State::Working));
-    message(
-        "20261101_1",
-        "msg_a_6",
-        "assistant",
-        r#"[{"type":"text","text":"on it"},{"type":"toolRequest","id":"r2","toolCall":{"status":"success","value":{"name":"shell","arguments":{}}}}}]"#,
-        t + 5,
-        "{}",
-    );
+    // Built as JSON, so a stray brace can't silently void the tool call again.
+    let tool_reply = serde_json::json!([
+        {"type": "text", "text": "on it"},
+        {"type": "toolRequest", "id": "r2", "toolCall": {"status": "success", "value": {"name": "shell", "arguments": {}}}},
+    ])
+    .to_string();
+    message("20261101_1", "msg_a_6", "assistant", &tool_reply, t + 5, "{}");
     let status = goose::status_in(&db, &cwd, 0).unwrap();
     assert_eq!(status.state, Some(State::Working), "a tool call means mid-turn, even with text");
     assert_eq!(status.last_message, None);
+    // The tool call is parsed, not dropped as malformed JSON: it shows in the chat.
+    let chat = goose::history_in(&db, &cwd, 0).unwrap();
+    assert!(
+        chat.messages
+            .iter()
+            .any(|m| m.id.as_deref() == Some("msg_a_6.1") && matches!(m.role, history::Role::Tool) && m.text.contains("shell")),
+        "the tool call is parsed and appears in history: {:?}",
+        chat.messages.iter().map(|m| &m.id).collect::<Vec<_>>()
+    );
+
+    // A message goose itself hides stays out of the chat.
+    message("20261101_1", "msg_a_7", "user", r#"[{"type":"text","text":"hidden context"}]"#, t + 6, r#"{"userVisible":false}"#);
+    let chat = goose::history_in(&db, &cwd, 0).unwrap();
+    assert!(!chat.messages.iter().any(|m| m.text.contains("hidden context")), "userVisible:false is not conversation");
 }
 
 /// An old Goose database: no `schema_version`, none of the newer columns, millisecond clocks.
@@ -1800,13 +1813,225 @@ fn goose_matches_only_sessions_active_since_the_process_started() {
         [r#"[{"type":"text","text":"yesterday"}]"#],
     )
     .unwrap();
-    assert!(goose::status_in(&db, &cwd, 1_800_000_000).is_none(), "nothing since the process started: no session");
+    // A clean lookup with no session for this process is Idle, not a failed read.
+    let status = goose::status_in(&db, &cwd, 1_800_000_000).unwrap();
+    assert_eq!(status.session_id, None, "nothing since the process started: no session");
+    assert_eq!(status.state, Some(State::Idle));
     assert!(goose::history_in(&db, &cwd, 1_800_000_000).unwrap().messages.is_empty());
 
     c.execute("INSERT INTO sessions VALUES('new','',?1,'2026-11-12 00:00:01','user')", [cwd.to_string_lossy().into_owned()]).unwrap();
     let status = goose::status_in(&db, &cwd, 1_794_441_600).unwrap();
     assert_eq!(status.session_id.as_deref(), Some("new"));
     assert_eq!(status.state, Some(State::Idle), "created but nothing written yet");
+}
+
+/// A failed turn is your turn, with the error as its last message: a provider error, the
+/// turn-limit error, and exhausted credits. Ordinary notifications stay as they are.
+#[test]
+fn goose_failed_turns_are_waiting_with_the_error() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-errors");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version VALUES(18);
+         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT,
+           role TEXT, content_json TEXT, created_timestamp INTEGER, metadata_json TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO sessions VALUES('s1','main',?1,'2026-11-01 00:00:00','user')", [cwd.to_string_lossy().into_owned()]).unwrap();
+    let message = |mid: &str, role: &str, content: &str, at: i64| {
+        c.execute(
+            "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+             VALUES(?1,'s1',?2,?3,?4,'{}')",
+            rusqlite::params![mid, role, content, at],
+        )
+        .unwrap();
+    };
+    let t = 1_791_000_000i64;
+    message("e1", "user", r#"[{"type":"text","text":"go"}]"#, t);
+
+    // A provider failure ends the turn.
+    message("e2", "assistant", r#"[{"type":"error","message":"Provider error: connection reset"}]"#, t + 1);
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.state, Some(State::Waiting));
+    assert_eq!(status.last_message.as_deref(), Some("Provider error: connection reset"));
+
+    // So does the turn limit.
+    message("e3", "user", r#"[{"type":"text","text":"again"}]"#, t + 2);
+    message("e4", "assistant", r#"[{"type":"error","message":"Maximum turns reached"}]"#, t + 3);
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.state, Some(State::Waiting));
+    assert_eq!(status.last_message.as_deref(), Some("Maximum turns reached"));
+
+    // And exhausted credits, which goose saves as a system notification.
+    message("e5", "user", r#"[{"type":"text","text":"once more"}]"#, t + 4);
+    message(
+        "e6",
+        "assistant",
+        r#"[{"type":"systemNotification","notificationType":"creditsExhausted","msg":"Out of credits for today"}]"#,
+        t + 5,
+    );
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.state, Some(State::Waiting));
+    assert_eq!(status.last_message.as_deref(), Some("Out of credits for today"));
+
+    // The errors are conversation: they show in the chat.
+    let chat = goose::history_in(&db, &cwd, 0).unwrap();
+    let agent_texts: Vec<&str> = chat.messages.iter().filter(|m| matches!(m.role, history::Role::Agent)).map(|m| m.text.as_str()).collect();
+    assert!(agent_texts.contains(&"Provider error: connection reset"), "{agent_texts:?}");
+    assert!(agent_texts.contains(&"Maximum turns reached"), "{agent_texts:?}");
+    assert!(agent_texts.contains(&"Out of credits for today"), "{agent_texts:?}");
+
+    // An ordinary notification is not a finished turn: on its own it leaves the card Working,
+    // as before, and never becomes the last message.
+    message("e7", "assistant", r#"[{"type":"systemNotification","notificationType":"progress","msg":"compacting"}]"#, t + 6);
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.state, Some(State::Working));
+    assert_eq!(status.last_message, None);
+}
+
+/// Ten older millisecond-dated sessions must not crowd out a current seconds-dated one: the
+/// clock is normalized before the pick, in both status and history.
+#[test]
+fn goose_picks_the_active_session_across_mixed_clocks() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-clocks");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version VALUES(18);
+         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT,
+           role TEXT, content_json TEXT, created_timestamp INTEGER, metadata_json TEXT);",
+    )
+    .unwrap();
+    let dir_s = cwd.to_string_lossy().into_owned();
+    // Ten older sessions dated in milliseconds: raw, each dwarfs any seconds clock.
+    for i in 0..10 {
+        c.execute(
+            "INSERT INTO sessions(id, name, working_dir, created_at, session_type) VALUES(?1,'old',?2,'2026-01-01 00:00:00','user')",
+            rusqlite::params![format!("old_{i}"), dir_s],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+             VALUES(?1,?2,'assistant',?3,1767225600000,'{}')",
+            rusqlite::params![format!("old_{i}_m"), format!("old_{i}"), r#"[{"type":"text","text":"old"}]"#],
+        )
+        .unwrap();
+    }
+    // One current session dated in seconds.
+    c.execute("INSERT INTO sessions VALUES('now','current',?1,'2026-11-12 00:00:00','user')", [&dir_s]).unwrap();
+    c.execute(
+        "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+         VALUES('now_u','now','user',?1,1795000000,'{}')",
+        [r#"[{"type":"text","text":"current prompt"}]"#],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+         VALUES('now_a','now','assistant',?1,1795000001,'{}')",
+        [r#"[{"type":"text","text":"current reply"}]"#],
+    )
+    .unwrap();
+
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("now"));
+    assert_eq!(status.state, Some(State::Waiting));
+    assert_eq!(status.last_message.as_deref(), Some("current reply"));
+
+    let chat = goose::history_in(&db, &cwd, 0).unwrap();
+    assert_eq!(chat.messages.len(), 2);
+    assert_eq!(chat.messages[0].text, "current prompt");
+    assert_eq!(chat.messages[1].text, "current reply");
+}
+
+/// `CLI Session` is goose's placeholder name: the card shows the first prompt you can see
+/// instead, never a hidden message.
+#[test]
+fn goose_titles_an_unnamed_session_from_its_first_visible_prompt() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-title");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version VALUES(18);
+         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT,
+           role TEXT, content_json TEXT, created_timestamp INTEGER, metadata_json TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO sessions VALUES('s1','CLI Session',?1,'2026-11-01 00:00:00','user')", [cwd.to_string_lossy().into_owned()])
+        .unwrap();
+    let message = |mid: &str, role: &str, content: &str, at: i64, meta: &str| {
+        c.execute(
+            "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+             VALUES(?1,'s1',?2,?3,?4,?5)",
+            rusqlite::params![mid, role, content, at, meta],
+        )
+        .unwrap();
+    };
+    let t = 1_791_000_000i64;
+    message("t1", "user", r#"[{"type":"text","text":"hidden context"}]"#, t, r#"{"userVisible":false}"#);
+    message("t2", "user", r#"[{"type":"text","text":"visible prompt\nsecond line"}]"#, t + 1, "{}");
+    message("t3", "assistant", r#"[{"type":"text","text":"reply"}]"#, t + 2, "{}");
+
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.title.as_deref(), Some("visible prompt"));
+}
+
+/// On Windows goose stores the plain folder, never the canonicalized (`\\?\…`) form, so the
+/// reader matches the folder as given. (Unix keeps canonicalizing both sides.)
+#[test]
+#[cfg(windows)]
+fn goose_matches_the_plain_folder_on_windows() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-winpath");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    // Deliberately not canonicalized: this is the form goose writes.
+    assert!(!cwd.to_string_lossy().starts_with(r"\\?\"), "the test needs a plain path to prove anything");
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version VALUES(18);
+         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT,
+           role TEXT, content_json TEXT, created_timestamp INTEGER, metadata_json TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO sessions VALUES('s1','main',?1,'2026-11-01 00:00:00','user')", [cwd.to_string_lossy().into_owned()]).unwrap();
+    c.execute(
+        "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+         VALUES('w1','s1','user',?1,1791000000,'{}')",
+        [r#"[{"type":"text","text":"hi"}]"#],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) \
+         VALUES('w2','s1','assistant',?1,1791000001,'{}')",
+        [r#"[{"type":"text","text":"hello"}]"#],
+    )
+    .unwrap();
+
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("s1"));
+    assert_eq!(status.state, Some(State::Waiting));
 }
 
 /// A session file that can't be read is a failed read, which isn't cached as an empty one.

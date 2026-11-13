@@ -718,7 +718,11 @@ impl Scanner {
                     let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
                     return (Some(status.clone()), m);
                 }
-                let status = crate::readers::goose::status(cwd, p.start_time).unwrap_or_else(idle);
+                // A failed read is no transcript status (shown as Running), and isn't cached:
+                // only a successful lookup — a session, or a clean Idle with none — is.
+                let Some(status) = crate::readers::goose::status(cwd, p.start_time) else {
+                    return (None, SessionMatch::None);
+                };
                 self.goose_cache.insert(p.pid, (stamp, status.clone()));
                 let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
                 (Some(status), m)
