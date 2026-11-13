@@ -1604,6 +1604,211 @@ fn opencode_history_coverage_holds_while_opencode_writes() {
     assert_eq!(partial.messages.last().map(|m| m.text.as_str()), Some("m80"));
 }
 
+/// Goose status and history from a current database: the session is matched by its own
+/// `working_dir`, archived, scheduled and child sessions are excluded even when newer, an
+/// assistant reply is your turn, and anything after it is working again.
+#[test]
+fn goose_status_and_history_from_a_current_database() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-current");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version VALUES(18);
+         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, description TEXT, working_dir TEXT,
+           created_at TIMESTAMP, session_type TEXT DEFAULT 'user', archived_at TIMESTAMP, parent_session_id TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT,
+           role TEXT, content_json TEXT, created_timestamp INTEGER, metadata_json TEXT);",
+    )
+    .unwrap();
+    let dir_s = cwd.to_string_lossy().into_owned();
+    let session = |id: &str, dir: &str, kind: &str, archived: Option<&str>, parent: Option<&str>| {
+        c.execute(
+            "INSERT INTO sessions(id, name, description, working_dir, created_at, session_type, archived_at, parent_session_id) \
+             VALUES(?1, 'main', '', ?2, '2026-11-01 00:00:00', ?3, ?4, ?5)",
+            rusqlite::params![id, dir, kind, archived, parent],
+        )
+        .unwrap();
+    };
+    // Each decoy is newer than the real session, and each is excluded for its own reason.
+    session("20261101_1", &dir_s, "user", None, None);
+    session("20261101_2", &dir_s, "user", Some("2026-11-02 00:00:00"), None);
+    session("20261101_3", &dir_s, "scheduled", None, None);
+    session("20261101_4", &dir_s, "user", None, Some("20261101_1"));
+    session("20261101_5", "/elsewhere", "user", None, None);
+    let message = |session: &str, mid: &str, role: &str, content: &str, at: i64, meta: &str| {
+        c.execute(
+            "INSERT INTO messages(message_id, session_id, role, content_json, created_timestamp, metadata_json) VALUES(?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![mid, session, role, content, at, meta],
+        )
+        .unwrap();
+    };
+    let t = 1_791_000_000i64;
+    message("20261101_1", "msg_a_1", "user", r#"[{"type":"text","text":"list the files"}]"#, t, "{}");
+    message(
+        "20261101_1",
+        "msg_a_2",
+        "assistant",
+        r#"[{"type":"toolRequest","id":"r1","toolCall":{"status":"success","value":{"name":"shell","arguments":{"command":"ls"}}}}]"#,
+        t + 1,
+        "{}",
+    );
+    message("20261101_1", "msg_a_3", "assistant", r#"[{"type":"thinking","thinking":"hmm"}]"#, t + 2, "{}");
+    message("20261101_1", "msg_a_4", "assistant", r#"[{"type":"text","text":"three files"}]"#, t + 3, "{}");
+    message("20261101_2", "msg_x_1", "user", r#"[{"type":"text","text":"archived"}]"#, t + 100, "{}");
+    message("20261101_3", "msg_y_1", "user", r#"[{"type":"text","text":"scheduled"}]"#, t + 100, "{}");
+    message("20261101_4", "msg_z_1", "user", r#"[{"type":"text","text":"child"}]"#, t + 100, "{}");
+    message("20261101_5", "msg_w_1", "user", r#"[{"type":"text","text":"elsewhere"}]"#, t + 100, "{}");
+
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("20261101_1"));
+    assert_eq!(status.title.as_deref(), Some("main"));
+    assert_eq!(status.state, Some(State::Waiting));
+    assert_eq!(status.last_message.as_deref(), Some("three files"));
+
+    let chat = goose::history_in(&db, &cwd, 0).unwrap();
+    assert!(chat.complete, "four messages: the whole session");
+    assert_eq!(chat.messages.len(), 3, "thinking is not conversation");
+    assert!(matches!(chat.messages[0].role, history::Role::User));
+    assert_eq!(chat.messages[0].text, "list the files");
+    assert_eq!(chat.messages[0].id.as_deref(), Some("msg_a_1.0"));
+    assert!(chat.messages[0].at.is_some(), "entries carry their message's time");
+    assert!(matches!(chat.messages[1].role, history::Role::Tool));
+    assert!(chat.messages[1].text.contains("shell"), "{}", chat.messages[1].text);
+    assert_eq!(chat.messages[2].text, "three files");
+
+    // A new prompt is working again; a tool call mid-turn is working too.
+    message("20261101_1", "msg_a_5", "user", r#"[{"type":"text","text":"and again"}]"#, t + 4, "{}");
+    assert_eq!(goose::status_in(&db, &cwd, 0).unwrap().state, Some(State::Working));
+    message(
+        "20261101_1",
+        "msg_a_6",
+        "assistant",
+        r#"[{"type":"text","text":"on it"},{"type":"toolRequest","id":"r2","toolCall":{"status":"success","value":{"name":"shell","arguments":{}}}}}]"#,
+        t + 5,
+        "{}",
+    );
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.state, Some(State::Working), "a tool call means mid-turn, even with text");
+    assert_eq!(status.last_message, None);
+}
+
+/// An old Goose database: no `schema_version`, none of the newer columns, millisecond clocks.
+/// The title falls back to the first user text, and ids fall back to the row.
+#[test]
+fn goose_reads_an_old_database_without_the_new_columns() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-old");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY, description TEXT, working_dir TEXT, created_at TIMESTAMP);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
+           content_json TEXT, created_timestamp INTEGER);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO sessions VALUES('20260101_1','',?1,'2026-01-01 00:00:00')", [cwd.to_string_lossy().into_owned()]).unwrap();
+    c.execute(
+        "INSERT INTO messages(session_id, role, content_json, created_timestamp) VALUES('20260101_1','user',?1,1767225600000)",
+        [r#"[{"type":"text","text":"first line\nsecond line"}]"#],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO messages(session_id, role, content_json, created_timestamp) VALUES('20260101_1','assistant',?1,1767225660000)",
+        [r#"[{"type":"text","text":"old reply"}]"#],
+    )
+    .unwrap();
+
+    let status = goose::status_in(&db, &cwd, 0).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("20260101_1"));
+    assert_eq!(status.title.as_deref(), Some("first line"), "no name column: the first prompt names it");
+    assert_eq!(status.state, Some(State::Waiting));
+    assert_eq!(status.since, Some(1_767_225_660_000), "millisecond clocks are normalized, not divided twice");
+    assert_eq!(status.last_message.as_deref(), Some("old reply"));
+
+    let chat = goose::history_in(&db, &cwd, 0).unwrap();
+    assert!(chat.complete);
+    assert_eq!(chat.messages.len(), 2);
+    assert_eq!(chat.messages[0].id.as_deref(), Some("1.0"), "no message_id column: the row is the id");
+}
+
+/// A database newer than the known schema versions is skipped, never misread; an unreadable one
+/// is a failed read; and a session from before the process started isn't its conversation.
+#[test]
+fn goose_skips_unknown_versions_and_unreadable_databases() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-unknown");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+
+    let db = dir.join("sessions.db");
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_version VALUES(99);
+         CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT, session_id TEXT,
+           role TEXT, content_json TEXT, created_timestamp INTEGER, metadata_json TEXT);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO sessions VALUES('20261101_1','new',?1,'2026-11-01 00:00:00','user')", [cwd.to_string_lossy().into_owned()])
+        .unwrap();
+    assert!(goose::status_in(&db, &cwd, 0).is_none(), "schema 99 is newer than the reader knows");
+    assert!(goose::history_in(&db, &cwd, 0).is_none());
+    drop(c);
+
+    fs::write(&db, b"not a database").unwrap();
+    assert!(goose::status_in(&db, &cwd, 0).is_none(), "an unreadable database is a failed read");
+    assert!(goose::history_in(&db, &cwd, 0).is_none());
+
+    let db = dir.join("other.db");
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch("CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT);").unwrap();
+    drop(c);
+    assert!(goose::status_in(&db, &cwd, 0).is_none(), "no messages table: not a sessions database");
+    assert!(goose::history_in(&db, &cwd, 0).is_none());
+}
+
+/// A session with messages only from before the process started isn't its conversation; one with
+/// no messages yet is idle.
+#[test]
+fn goose_matches_only_sessions_active_since_the_process_started() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-stale");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
+           content_json TEXT, created_timestamp INTEGER);",
+    )
+    .unwrap();
+    c.execute("INSERT INTO sessions VALUES('old','',?1,'2026-01-01 00:00:00','user')", [cwd.to_string_lossy().into_owned()]).unwrap();
+    c.execute(
+        "INSERT INTO messages(session_id, role, content_json, created_timestamp) VALUES('old','assistant',?1,1767225600)",
+        [r#"[{"type":"text","text":"yesterday"}]"#],
+    )
+    .unwrap();
+    assert!(goose::status_in(&db, &cwd, 1_800_000_000).is_none(), "nothing since the process started: no session");
+    assert!(goose::history_in(&db, &cwd, 1_800_000_000).unwrap().messages.is_empty());
+
+    c.execute("INSERT INTO sessions VALUES('new','',?1,'2026-11-12 00:00:01','user')", [cwd.to_string_lossy().into_owned()]).unwrap();
+    let status = goose::status_in(&db, &cwd, 1_794_441_600).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("new"));
+    assert_eq!(status.state, Some(State::Idle), "created but nothing written yet");
+}
+
 /// A session file that can't be read is a failed read, which isn't cached as an empty one.
 #[test]
 fn an_unreadable_session_file_is_a_failed_read() {

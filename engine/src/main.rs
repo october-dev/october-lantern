@@ -114,7 +114,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         // Development: test a session reader against stored sessions.
-        // lantern-engine probe opencode|pi|october|gemini <cwd> [started-secs]
+        // lantern-engine probe opencode|goose|pi|october|gemini <cwd> [started-secs]
         Some("probe") => {
             let kind = args.get(1).map(String::as_str).unwrap_or("");
             let cwd = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("."));
@@ -123,6 +123,7 @@ fn main() -> Result<()> {
                 "opencode" => {
                     (readers::opencode::status(&cwd, start), readers::opencode::history(&cwd, start).unwrap_or_default().messages)
                 }
+                "goose" => (readers::goose::status(&cwd, start), readers::goose::history(&cwd, start).unwrap_or_default().messages),
                 "gemini" => {
                     let f = readers::gemini::session_file(&cwd, start);
                     println!("file: {f:?}");
