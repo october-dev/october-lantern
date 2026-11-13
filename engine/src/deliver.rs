@@ -156,12 +156,16 @@ fn verify_pane(agent: &Agent, pane: &TmuxPane) -> Result<()> {
     Ok(())
 }
 
-/// Asks the terminal app for Automation permission (and waits while the person answers the
-/// dialog) without typing anything, so the check before typing happens after the wait.
+/// Finishes anything that can wait before the final checks run: asks the terminal app for
+/// Automation permission (and waits while the person answers the dialog) without typing
+/// anything, so the check before typing happens after the wait; re-probes the running kitty's
+/// targeting support for the same reason. Every kitty send and Open goes through here first
+/// (see actions.rs), so the low-level input functions must not probe again after validation.
 pub fn prepare(agent: &Agent, limit: Duration) -> Result<()> {
     match &agent.route {
         Route::Terminal { .. } => osascript("tell application \"Terminal\" to count windows", &[], limit, false).map(|_| ()),
         Route::Iterm { .. } => osascript("tell application id \"com.googlecode.iterm2\" to count windows", &[], limit, false).map(|_| ()),
+        Route::Kitty { socket, cli, .. } => crate::kitty::verify_targeting(cli, socket),
         _ => Ok(()),
     }
 }

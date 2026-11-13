@@ -17,8 +17,9 @@
 //! matching windows`, while an affected one runs the no-op and reports success. Only the
 //! no-match refusal grants a direct route; anything else — success, denial, timeout, another
 //! error — means `Route::None`, and replies stay copy and paste. The scan caches the answer
-//! briefly (see scanner.rs), and every send checks the running instance again, so a restarted
-//! kitty is always re-gated.
+//! briefly (see scanner.rs), and preparation re-probes the running instance before the final
+//! checks (see deliver.rs), so a restarted kitty is always re-gated without another wait
+//! after validation.
 //!
 //! Every reply and key also checks the window is still the agent's: `kitty @ ls` lists each
 //! window with the pids in its foreground, and the send is refused unless the agent's pid is in
@@ -146,9 +147,11 @@ pub fn targeting_works(cli: &Path, socket: &str) -> bool {
     }
 }
 
-/// Refuses unless the running kitty still honors `--match`: a restarted instance is caught at
-/// send time even when the scan saw a healthy one. Nothing is typed either way.
-fn verify_targeting(cli: &Path, socket: &str) -> Result<()> {
+/// Refuses unless the running kitty still honors `--match`: a restarted instance is caught
+/// even when the scan saw a healthy one. Runs in preparation (see deliver.rs), before the final
+/// checks — never inside the send itself, where its wait could make them stale. Nothing is typed
+/// either way.
+pub fn verify_targeting(cli: &Path, socket: &str) -> Result<()> {
     if targeting_works(cli, socket) {
         Ok(())
     } else {
@@ -255,7 +258,6 @@ const ENTER: &str = "\\r";
 /// Type `text` into the window and press Enter (one line; a newline would submit early), each
 /// write acknowledged by kitty. Empty text only presses Enter.
 pub fn send_text(cli: &Path, socket: &str, window: &str, text: &str) -> Result<()> {
-    verify_targeting(cli, socket)?;
     send_text_with(text, &mut |payload: &str| run(cli, action_argv(socket, window, payload), true))
 }
 
@@ -287,7 +289,6 @@ fn stroke(key: crate::deliver::Key) -> String {
 /// Press one key: Escape, Tab, Enter or a single character. A denied key is a refusal: nothing
 /// was typed.
 pub fn send_key(cli: &Path, socket: &str, window: &str, key: crate::deliver::Key) -> Result<()> {
-    verify_targeting(cli, socket)?;
     let stroke = stroke(key);
     run(cli, action_argv(socket, window, &stroke), true)
 }
@@ -296,7 +297,6 @@ pub fn send_key(cli: &Path, socket: &str, window: &str, key: crate::deliver::Key
 /// honors its match on every release, but Open shares the reply's route: one requirement for
 /// both, and an ungated kitty only comes forward.
 pub fn activate(cli: &Path, socket: &str, window: &str) -> Result<()> {
-    verify_targeting(cli, socket)?;
     run(cli, argv(socket, "focus-window", window, &[]), false)
 }
 
