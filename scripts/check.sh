@@ -55,7 +55,7 @@ echo "==> docs"
 # were never committed, leaving four broken images).
 missing=0
 refs="$(grep -o 'src="[^"]*"' "$ROOT/README.md" | sed 's/^src="//; s/"$//' || true)
-$(grep -o '!\[[^]]*\]([^)]*)' "$ROOT/README.md" | sed 's/^![^]]*(\(.*\))$/\1/' || true)"
+$(grep -o '!\[[^]]*\]([^)]*)' "$ROOT/README.md" | sed 's/^!\[[^]]*\](\([^ )]*\)).*$/\1/' || true)"
 while IFS= read -r img; do
   case "$img" in http*|data:*|'') continue;; esac
   if [[ ! -f "$ROOT/$img" ]]; then echo "README references missing image: $img" >&2; missing=1; fi

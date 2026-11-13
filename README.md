@@ -35,7 +35,7 @@
 ## Less checking. More getting things done.
 
 <p align="center">
-  <img src="docs/images/pill.png" alt="Lantern pill" width="320" />
+  <img src="docs/images/pill.png" alt="Lantern pill" width="83" />
   <img src="docs/images/panel.png" alt="Lantern panel" width="320" />
   <img src="docs/images/question-card.png" alt="Question card" width="320" />
   <img src="docs/images/ask-lantern.png" alt="Ask Lantern" width="320" />
