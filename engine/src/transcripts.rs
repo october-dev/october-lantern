@@ -209,15 +209,19 @@ impl Transcripts {
 
     // ---------- Copilot CLI ----------
 
-    /// The session a Copilot process has open (its in-use marker), cached briefly like
-    /// Codex's.
-    pub fn copilot_path_for_pid(&mut self, pid: u32) -> Option<PathBuf> {
-        if let Some((at, path)) = self.copilot_open.get(&pid)
-            && at.elapsed() < Duration::from_secs(15)
-        {
-            return path.clone();
+    /// The session a Copilot process owns (its in-use marker). A live marker keeps its
+    /// answer no matter its age; a removed one (`/clear` switches sessions, an exit
+    /// removes it) re-resolves on the next scan. Absences cache briefly like Codex's.
+    pub fn copilot_path_for_pid(&mut self, root: &Path, pid: u32, started_secs: u64) -> Option<PathBuf> {
+        if let Some((at, path)) = self.copilot_open.get(&pid) {
+            match path {
+                Some(log) if copilot_marker_live(log, pid, started_secs) => return Some(log.clone()),
+                None if at.elapsed() < Duration::from_secs(15) => return None,
+                _ => {}
+            }
         }
-        let path = crate::readers::copilot::session_for_pid(pid);
+        let open = crate::platform::open_files(pid);
+        let path = crate::readers::copilot::session_for_pid_in(root, pid, started_secs, &open);
         self.copilot_open.insert(pid, (Instant::now(), path.clone()));
         path
     }
@@ -227,6 +231,16 @@ impl Transcripts {
         self.muse_open.retain(|pid, _| live.contains(pid));
         self.copilot_open.retain(|pid, _| live.contains(pid));
     }
+}
+
+/// Whether a cached Copilot marker answer still holds: the marker is there, and it isn't
+/// older than the process (a reused pid after a crashed run's leftover).
+fn copilot_marker_live(log: &Path, pid: u32, started_secs: u64) -> bool {
+    let marker = log.with_file_name(format!("inuse.{pid}.hold"));
+    if !marker.is_file() {
+        return false;
+    }
+    started_secs == 0 || file_stamp(&marker).is_some_and(|(ms, _)| ms / 1000 >= started_secs)
 }
 
 fn text_blocks(content: &Value) -> Option<String> {

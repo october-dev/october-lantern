@@ -75,13 +75,84 @@ const NPM_PACKAGES: [(&str, &str); 8] = [
 
 /// The program a script run by an interpreter stands for.
 fn script_program(script: &str) -> &str {
-    if cfg!(windows) {
-        let path = script.replace('\\', "/").to_ascii_lowercase();
-        if let Some((_, prog)) = NPM_PACKAGES.iter().find(|(pkg, _)| path.contains(&format!("/node_modules/{pkg}/"))) {
-            return prog;
-        }
+    let path = script.replace('\\', "/").to_ascii_lowercase();
+    // GitHub Copilot's npm entry script doesn't carry the program's name on any OS.
+    if path.contains("/node_modules/@github/copilot/") {
+        return "copilot";
+    }
+    if cfg!(windows)
+        && let Some((_, prog)) = NPM_PACKAGES.iter().find(|(pkg, _)| path.contains(&format!("/node_modules/{pkg}/")))
+    {
+        return prog;
     }
     basename(script)
+}
+
+/// Whether a native `copilot` is GitHub's CLI: its platform install, its flags, or one of
+/// its own subcommands. Anything else (AWS's deploy tool, one-shot helpers) isn't an
+/// interactive agent Lantern shows.
+fn is_github_copilot_native(p: &Proc) -> bool {
+    let exe = p.exe.as_ref().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let argv0 = p.cmd.first().map(|a| a.to_ascii_lowercase()).unwrap_or_default();
+    // The npm package's platform binary bears its origin in its path.
+    if exe.contains("@github/copilot") || argv0.contains("@github/copilot") {
+        return true;
+    }
+    let args: Vec<&str> = p.cmd.get(1..).unwrap_or(&[]).iter().map(String::as_str).collect();
+    if args.is_empty() {
+        // Bare `copilot` starts GitHub's interactive session (AWS's prints help and exits).
+        return true;
+    }
+    const FLAGS: [&str; 40] = [
+        "-p",
+        "--prompt",
+        "-i",
+        "--interactive",
+        "-r",
+        "--resume",
+        "--continue",
+        "-C",
+        "--trust",
+        "--allow-all",
+        "--allow-all-tools",
+        "--allow-all-paths",
+        "--allow-all-urls",
+        "--allow-tool",
+        "--allow-url",
+        "--deny-tool",
+        "--deny-url",
+        "--agent",
+        "--add-dir",
+        "--additional-mcp-config",
+        "--add-github-mcp-tool",
+        "--add-github-mcp-toolset",
+        "--acp",
+        "--autopilot",
+        "--fleet",
+        "--plan",
+        "--mode",
+        "--model",
+        "--no-ask-user",
+        "--banner",
+        "--log-level",
+        "--silent",
+        "--output-format",
+        "--max-ai-credits",
+        "--auto-tier",
+        "--reasoning-effort",
+        "--screen-reader",
+        "--experimental",
+        "--enable-memory",
+        "--plugin-dir",
+    ];
+    // `--flag=value` spells the same flag (`--resume=<id>`, as the CLI prints it).
+    if args.iter().any(|a| FLAGS.contains(&a.split('=').next().unwrap_or(a))) {
+        return true;
+    }
+    // GitHub's own subcommands (one-shots like `init`, `app`, `update`, `version` and
+    // anything unknown stay unrecognized).
+    const SUBCOMMANDS: [&str; 9] = ["config", "sessions", "plugin", "sandbox", "skill", "workflow", "memories", "instruction", "lsp"];
+    SUBCOMMANDS.contains(&args[0])
 }
 
 /// Classifies a process from argv. `node /path/to/codex ...` counts as codex.
@@ -94,8 +165,8 @@ pub fn classify(p: &Proc) -> Option<Kind> {
         (argv0, p.cmd.get(1..).unwrap_or(&[]))
     };
     let kind = match Kind::from_program(prog) {
-        // GitHub's Copilot CLI is a node program; a native `copilot` is AWS's deploy tool.
-        Some(Kind::Copilot) if !wrapped => return None,
+        // A native `copilot` may be GitHub's CLI or AWS's deploy tool: tell them apart.
+        Some(Kind::Copilot) if !wrapped && !is_github_copilot_native(p) => return None,
         Some(kind) => kind,
         None if p.exe.as_ref().is_some_and(|e| e.to_string_lossy().contains("/.local/share/claude/versions/")) => Kind::Claude,
         None => return None,
@@ -488,12 +559,20 @@ impl Scanner {
                     .map(|p| (Kind::Codex, p)),
                 Kind::Muse => self.transcripts.muse_path_for_pid(agent.pid).map(|p| (Kind::Muse, p)),
                 Kind::Copilot => {
-                    let open = self.transcripts.copilot_path_for_pid(agent.pid);
-                    let guessed = open
-                        .is_none()
-                        .then(|| self.started.get(&agent.pid))
-                        .flatten()
-                        .and_then(|(cwd, start)| crate::readers::copilot::session_file(cwd, *start));
+                    let home = self.environ(agent.pid, "COPILOT_HOME");
+                    let known = self.started.get(&agent.pid);
+                    let root = known.map(|(cwd, _)| crate::readers::copilot::root_for_env(cwd, home.as_deref()));
+                    let open = root.as_ref().and_then(|r| {
+                        let start = known.map(|(_, s)| *s).unwrap_or(0);
+                        self.transcripts.copilot_path_for_pid(r, agent.pid, start).or_else(|| {
+                            self.children.get(&agent.pid).copied().and_then(|c| self.transcripts.copilot_path_for_pid(r, c, start))
+                        })
+                    });
+                    let guessed = if open.is_none() {
+                        known.and_then(|(cwd, start)| root.as_ref().and_then(|r| crate::readers::copilot::session_file_in(r, cwd, *start)))
+                    } else {
+                        None
+                    };
                     open.or(guessed).map(|p| (Kind::Copilot, p))
                 }
                 Kind::Pi | Kind::October | Kind::Gemini => {
@@ -668,13 +747,29 @@ impl Scanner {
                 None => (None, SessionMatch::None),
             },
             Kind::Copilot => {
-                // Exact while the process holds its session's in-use marker; otherwise the
-                // newest session for its folder.
-                if let Some(path) = self.transcripts.copilot_path_for_pid(p.pid) {
+                // The npm wrapper doesn't hold the marker; its native child does. The
+                // parent's start time stands in for the child's where open files can't be
+                // read: the parent is always older, so a genuinely stale marker still fails.
+                let child = self.children.get(&p.pid).copied();
+                let home = self.environ(p.pid, "COPILOT_HOME");
+                let root = p.cwd.as_deref().map(|c| crate::readers::copilot::root_for_env(c, home.as_deref()));
+                let open = root.as_ref().and_then(|r| {
+                    self.transcripts
+                        .copilot_path_for_pid(r, p.pid, p.start_time)
+                        .or_else(|| child.and_then(|c| self.transcripts.copilot_path_for_pid(r, c, p.start_time)))
+                });
+                if let Some(path) = open {
+                    // A marker with no log yet (`/clear` before its first write, resume
+                    // before the first prompt): an empty session, still exact.
+                    if !path.is_file() {
+                        let mut status = idle();
+                        status.session_id = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
+                        return (Some(status), SessionMatch::Exact);
+                    }
                     return found(self.transcripts.cached(&path, crate::readers::copilot::parse), SessionMatch::Exact);
                 }
-                let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };
-                match crate::readers::copilot::session_file(cwd, p.start_time) {
+                let (Some(cwd), Some(root)) = (p.cwd.as_deref(), root) else { return (None, SessionMatch::None) };
+                match crate::readers::copilot::session_file_in(&root, cwd, p.start_time) {
                     Some(path) => found(self.transcripts.cached(&path, crate::readers::copilot::parse), SessionMatch::Guessed),
                     None => (Some(idle()), SessionMatch::None),
                 }

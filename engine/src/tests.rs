@@ -75,7 +75,8 @@ fn classifies_agents_and_skips_helpers() {
     assert_eq!(scanner::classify(&proc(&["/Users/x/.local/bin/claude", "daemon", "run"])), None);
     assert_eq!(scanner::classify(&proc(&["/Users/x/.local/bin/claude", "-p", "hi"])), None);
     assert_eq!(scanner::classify(&proc(&["/opt/homebrew/bin/codex", "exec", "hi"])), None);
-    // A native `copilot` is AWS's deploy tool, not GitHub Copilot CLI.
+    // AWS's `copilot deploy` shares the name but isn't GitHub's CLI (see
+    // `classifies_copilot_launch_shapes` for the full shape).
     assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "deploy"])), None);
     assert_eq!(scanner::classify(&proc(&["/bin/zsh"])), None);
 }
@@ -1632,6 +1633,9 @@ fn copilot_session(dir: &std::path::Path, id: &str, workspace: &str) -> PathBuf 
     session.join("events.jsonl")
 }
 
+/// The normal lifecycle, as 1.0.110 writes it: a tools round ends mid-turn (even with
+/// narration and completed tools), an approval waits in its actual position, and only a
+/// round with no tools finishes with the reply.
 #[test]
 fn copilot_sessions_give_state_question_and_history() {
     use crate::readers::copilot;
@@ -1643,7 +1647,7 @@ fn copilot_sessions_give_state_question_and_history() {
     let mut events = vec![
         copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
         copilot_ev(1, "user.message", serde_json::json!({"content": "refactor the parser\nplease"})),
-        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "t1"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
         copilot_ev(
             3,
             "assistant.message",
@@ -1658,43 +1662,48 @@ fn copilot_sessions_give_state_question_and_history() {
     assert_eq!(s.state, Some(State::Working));
     assert_eq!((s.title.as_deref(), s.session_id.as_deref(), s.since), (Some("refactor the parser"), Some("s1"), Some(at(4))));
 
-    // Subagent traffic and future event types are not the conversation.
-    events.push(
-        serde_json::json!({"id": "sub-1", "timestamp": "2026-11-12T10:00:05.000Z", "parentId": null,
-            "type": "assistant.message", "agentId": "sub1", "data": {"messageId": "sm1", "content": "subagent reply"}})
-        .to_string(),
-    );
-    events.push(copilot_ev(6, "session.holo_deck", serde_json::json!({"on": true})));
-    events.push(copilot_ev(7, "tool.execution_complete", serde_json::json!({"toolCallId": "c1", "success": true})));
-    events.push(copilot_ev(8, "assistant.message", serde_json::json!({"messageId": "m2", "content": "Done."})));
-    write(&events);
-    // The turn hasn't ended: still working, with no last message yet.
-    let s = copilot::parse(&log, 0);
-    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Working), None));
-
-    events.push(copilot_ev(9, "assistant.turn_end", serde_json::json!({"turnId": "t1"})));
-    write(&events);
-    let s = copilot::parse(&log, 0);
-    assert_eq!((s.state, s.last_message.as_deref(), s.since), (Some(State::Waiting), Some("Done."), Some(at(9))));
-
-    // A permission prompt is waiting on you, answered in its terminal.
+    // The approval waits where the CLI puts it: after the tool starts, before it completes.
     events.push(copilot_ev(
-        10,
+        5,
         "permission.requested",
-        serde_json::json!({"requestId": "r1", "permissionRequest": {"kind": "shell", "fullCommandText": "rm -rf /tmp/x"}}),
+        serde_json::json!({"requestId": "r1", "permissionRequest": {"kind": "shell", "toolCallId": "c1", "fullCommandText": "rm -rf /tmp/x"}}),
     ));
     write(&events);
     let s = copilot::parse(&log, 0);
     assert_eq!(s.state, Some(State::NeedsInput));
     assert_eq!(s.question.as_deref(), Some("Allow rm -rf /tmp/x?"));
-    assert_eq!((s.question_kind, s.since), (Some(QuestionKind::Other), Some(at(10))));
+    assert_eq!((s.question_kind, s.since), (Some(QuestionKind::Other), Some(at(5))));
 
-    events.push(copilot_ev(11, "permission.completed", serde_json::json!({"requestId": "r1", "result": {"kind": "approved"}})));
+    // Subagent traffic and future event types are not the conversation.
+    events.push(
+        serde_json::json!({"id": "sub-1", "timestamp": "2026-11-12T10:00:06.000Z", "parentId": null,
+            "type": "assistant.message", "agentId": "sub1", "data": {"messageId": "sm1", "content": "subagent reply"}})
+        .to_string(),
+    );
+    events.push(copilot_ev(6, "session.holo_deck", serde_json::json!({"on": true})));
+    events.push(copilot_ev(7, "permission.completed", serde_json::json!({"requestId": "r1", "result": {"kind": "approved"}})));
+    events.push(copilot_ev(8, "tool.execution_complete", serde_json::json!({"toolCallId": "c1", "success": true})));
+    write(&events);
+    // Approved and done, but the round goes on: still working.
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Working), None));
+
+    // Narration plus completed tools plus the round's end is still mid-task: the round
+    // asked for tools, so it isn't the final answer.
+    events.push(copilot_ev(9, "assistant.message", serde_json::json!({"messageId": "m2", "content": "Let me look."})));
+    events.push(copilot_ev(10, "assistant.turn_end", serde_json::json!({"turnId": "0"})));
     write(&events);
     let s = copilot::parse(&log, 0);
-    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Waiting), Some("Done.")));
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Working), None));
 
-    events.push(copilot_ev(12, "user.message", serde_json::json!({"content": "thanks"})));
+    events.push(copilot_ev(11, "assistant.turn_start", serde_json::json!({"turnId": "1"})));
+    events.push(copilot_ev(12, "assistant.message", serde_json::json!({"messageId": "m3", "content": "Done."})));
+    events.push(copilot_ev(13, "assistant.turn_end", serde_json::json!({"turnId": "1"})));
+    write(&events);
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref(), s.since), (Some(State::Waiting), Some("Done."), Some(at(13))));
+
+    events.push(copilot_ev(14, "user.message", serde_json::json!({"content": "thanks"})));
     write(&events);
     let s = copilot::parse(&log, 0);
     assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Working), None));
@@ -1707,6 +1716,7 @@ fn copilot_sessions_give_state_question_and_history() {
         [
             ("User".into(), "refactor the parser\nplease"),
             ("Tool".into(), "bash · ls"),
+            ("Agent".into(), "Let me look."),
             ("Agent".into(), "Done."),
             ("User".into(), "thanks")
         ]
@@ -1721,29 +1731,64 @@ fn copilot_matches_by_in_use_marker_then_folder() {
     let other = dir.join("other");
     fs::create_dir_all(&cwd).unwrap();
     fs::create_dir_all(&other).unwrap();
-    // Two sessions claim the pid (a crash leftover plus a live one): the newest log wins.
-    let old = copilot_session(&dir, "old", &format!("id: old\ncwd: {}\n", cwd.display()));
-    fs::write(&old, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "old"})) + "\n").unwrap();
-    fs::write(old.parent().unwrap().join("inuse.4242.hold"), "").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    let new = copilot_session(&dir, "new", &format!("id: new\ncwd: {}\n", cwd.display()));
-    fs::write(&new, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "new"})) + "\n").unwrap();
-    fs::write(new.parent().unwrap().join("inuse.4242.hold"), "").unwrap();
-    // A marker without a log is not a session.
+    let live = copilot_session(&dir, "live", &format!("id: live\ncwd: {}\n", cwd.display()));
+    fs::write(&live, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "live"})) + "\n").unwrap();
+    let marker = live.parent().unwrap().join("inuse.4242.hold");
+    fs::write(&marker, "").unwrap();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    // One marker, held open: exact.
+    assert_eq!(copilot::session_for_pid_in(&dir, 4242, now - 60, std::slice::from_ref(&marker)).as_deref(), Some(live.as_path()));
+    // One marker, not held open: a stale leftover, not this process.
+    assert_eq!(copilot::session_for_pid_in(&dir, 4242, now - 60, &[dir.join("elsewhere")]), None);
+    // Where open files can't be read, the marker must not predate the process.
+    assert_eq!(copilot::session_for_pid_in(&dir, 4242, now - 60, &[]).as_deref(), Some(live.as_path()));
+    assert_eq!(copilot::session_for_pid_in(&dir, 4242, now + 3600, &[]), None, "marker predates the process: stale");
+    assert_eq!(copilot::session_for_pid_in(&dir, 4242, 0, &[]).as_deref(), Some(live.as_path()));
+    assert_eq!(copilot::session_for_pid_in(&dir, 9999, 0, &[]), None);
+    assert_eq!(copilot::session_for_pid_in(&dir.join("missing"), 4242, 0, &[]), None);
+
+    // A marker without a log names a session before its first write (`/clear`).
     let bare = dir.join("session-state").join("bare");
     fs::create_dir_all(&bare).unwrap();
-    fs::write(bare.join("inuse.4242.hold"), "").unwrap();
+    fs::write(bare.join("inuse.5555.hold"), "").unwrap();
+    assert_eq!(copilot::session_for_pid_in(&dir, 5555, 0, &[]).as_deref(), Some(bare.join("events.jsonl").as_path()));
 
-    assert_eq!(copilot::session_for_pid_in(&dir, 4242).as_deref(), Some(new.as_path()));
-    assert_eq!(copilot::session_for_pid_in(&dir, 9999), None);
-    assert_eq!(copilot::session_for_pid_in(&dir.join("missing"), 4242), None);
+    // Two sessions claim the pid (a crash leftover plus a live one after a pid reuse):
+    // not an exact ownership, never the newest log.
+    fs::write(live.parent().unwrap().join("inuse.7777.hold"), "").unwrap();
+    fs::write(bare.join("inuse.7777.hold"), "").unwrap();
+    assert_eq!(copilot::session_for_pid_in(&dir, 7777, 0, &[]), None, "several matches are ambiguous");
 
     // Without the marker, the newest session for the folder since the process started.
-    assert_eq!(copilot::session_file_in(&dir, &cwd, 0).as_deref(), Some(new.as_path()));
+    assert_eq!(copilot::session_file_in(&dir, &cwd, 0).as_deref(), Some(live.as_path()));
     assert_eq!(copilot::session_file_in(&dir, &other, 0), None, "no session for this folder");
-    let future = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3600;
-    assert_eq!(copilot::session_file_in(&dir, &cwd, future), None, "both sessions predate the process");
+    assert_eq!(copilot::session_file_in(&dir, &cwd, now + 3600), None, "the session predates the process");
     assert_eq!(copilot::session_file_in(&dir.join("missing"), &cwd, 0), None);
+}
+
+/// A moved marker re-resolves on the next scan (`/clear` switches sessions); an absence
+/// caches briefly, like Codex's.
+#[test]
+fn copilot_marker_answers_revalidate_on_the_next_scan() {
+    let dir = temp_dir("copilot-revalidate");
+    let first = copilot_session(&dir, "first", "id: first\ncwd: /tmp\n");
+    fs::write(&first, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "first"})) + "\n").unwrap();
+    fs::write(first.parent().unwrap().join("inuse.4242.hold"), "").unwrap();
+    let mut t = crate::transcripts::Transcripts::default();
+    // `open_files` of a test pid is empty, so the filename match decides.
+    assert_eq!(t.copilot_path_for_pid(&dir, 4242, 0).as_deref(), Some(first.as_path()));
+    // `/clear` moves the marker to a session with no log yet.
+    fs::remove_file(first.parent().unwrap().join("inuse.4242.hold")).unwrap();
+    let second = dir.join("session-state").join("second");
+    fs::create_dir_all(&second).unwrap();
+    fs::write(second.join("inuse.4242.hold"), "").unwrap();
+    assert_eq!(t.copilot_path_for_pid(&dir, 4242, 0).as_deref(), Some(second.join("events.jsonl").as_path()));
+    // An exit removes it: gone on the next scan, and absences stick briefly.
+    fs::remove_file(second.join("inuse.4242.hold")).unwrap();
+    assert_eq!(t.copilot_path_for_pid(&dir, 4242, 0), None);
+    fs::write(second.join("inuse.4242.hold"), "").unwrap();
+    assert_eq!(t.copilot_path_for_pid(&dir, 4242, 0), None, "absences cache briefly");
 }
 
 #[test]
@@ -1758,12 +1803,18 @@ fn copilot_tolerates_unknown_events_torn_tails_and_empty_logs() {
     // A killed writer's torn final line keeps its prefix.
     fs::write(&log, copilot_ev(1, "user.message", serde_json::json!({"content": "hi"})) + "\n{\"torn\": ").unwrap();
     assert_eq!(copilot::parse(&log, 0).state, Some(State::Working));
-    // Nothing written yet.
+    // Nothing written yet: opened but idle, still this session.
     fs::write(&log, "").unwrap();
-    assert_eq!(copilot::parse(&log, 0).state, Some(State::Unknown));
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.session_id.as_deref()), (Some(State::Idle), Some("s9")));
     // A session that only started is idle.
     fs::write(&log, copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s9"})) + "\n").unwrap();
     assert_eq!(copilot::parse(&log, 0).state, Some(State::Idle));
+    // A marker with no log yet (`/clear` before its first write) reads the same way.
+    let fresh = dir.join("session-state").join("fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    let s = copilot::parse(&fresh.join("events.jsonl"), 0);
+    assert_eq!((s.state, s.session_id.as_deref()), (Some(State::Idle), Some("fresh")));
     assert!(copilot::history(&dir.join("session-state").join("s9").join("missing.jsonl")).is_none());
 }
 
@@ -1778,24 +1829,315 @@ fn copilot_reads_workspace_metadata_and_home_override() {
     assert_eq!(ws.updated_secs, crate::model::epoch_ms("2026-11-12T10:00:00.000Z").unwrap() / 1000);
     assert!(copilot::read_workspace(&dir.join("missing.yaml")).is_none());
 
+    // An indented key inside a block scalar must not overwrite a top-level one.
+    fs::write(&yaml, "cwd: /top\nsummary: |\n  cwd: /indented\n  name: shadowed\n").unwrap();
+    let ws = copilot::read_workspace(&yaml).unwrap();
+    assert_eq!((ws.cwd.as_deref(), ws.name.as_deref()), (Some("/top"), None));
+
     // A named session takes its title from the name, not the first prompt.
     let log = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\nname: Fix the parser\n");
     fs::write(&log, copilot_ev(1, "user.message", serde_json::json!({"content": "do it"})) + "\n").unwrap();
     assert_eq!(copilot::parse(&log, 0).title.as_deref(), Some("Fix the parser"));
 
-    // `$COPILOT_HOME` replaces the whole path; a relative one joins the agent's folder.
-    let saved = std::env::var_os("COPILOT_HOME");
-    unsafe {
-        std::env::set_var("COPILOT_HOME", dir.as_path());
-        assert_eq!(copilot::root_for(dir.join("proj").as_path()).as_path(), dir.as_path());
-        std::env::set_var("COPILOT_HOME", ".copilot-rel");
-        assert_eq!(copilot::root_for(dir.join("proj").as_path()).as_path(), dir.join("proj").join(".copilot-rel").as_path());
-        std::env::remove_var("COPILOT_HOME");
-    }
-    assert_eq!(copilot::root_for(dir.as_path()), crate::transcripts::home().join(".copilot"));
-    unsafe {
-        if let Some(v) = saved {
-            std::env::set_var("COPILOT_HOME", v);
-        }
-    }
+    // `$COPILOT_HOME` (from the agent's environment) replaces the whole path; a relative
+    // one joins the agent's folder. No process-global environment changes to check that.
+    assert_eq!(copilot::root_for_env(dir.join("proj").as_path(), Some(dir.to_str().unwrap())).as_path(), dir.as_path());
+    assert_eq!(
+        copilot::root_for_env(dir.join("proj").as_path(), Some(".copilot-rel")).as_path(),
+        dir.join("proj").join(".copilot-rel").as_path()
+    );
+    assert_eq!(copilot::root_for_env(dir.as_path(), None), crate::transcripts::home().join(".copilot"));
+}
+
+/// A confirmed cancellation ends the turn with or without committed text, and the next
+/// prompt recovers: open tools and pending approvals don't leak past the abort.
+#[test]
+fn copilot_abort_ends_the_turn_and_later_prompts_recover() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-abort");
+    let with_text = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "write the essay"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(3, "assistant.message", serde_json::json!({"messageId": "m1", "content": "An essay in progress"})),
+        copilot_ev(4, "assistant.turn_end", serde_json::json!({"turnId": "0"})),
+        copilot_ev(5, "abort", serde_json::json!({})),
+    ];
+    fs::write(&with_text, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&with_text, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Idle), Some("An essay in progress")));
+
+    // Without committed text: idle with nothing to show. An open tool and a pending
+    // approval die with the turn either way.
+    let bare = copilot_session(&dir, "s2", "id: s2\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s2"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "run it"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(
+            3,
+            "assistant.message",
+            serde_json::json!({"messageId": "m1", "content": "", "toolRequests": [{"toolCallId": "c1", "name": "bash", "arguments": {}}]}),
+        ),
+        copilot_ev(4, "tool.execution_start", serde_json::json!({"toolCallId": "c1", "toolName": "bash"})),
+        copilot_ev(
+            5,
+            "permission.requested",
+            serde_json::json!({"requestId": "r1", "permissionRequest": {"kind": "shell", "toolCallId": "c1", "fullCommandText": "make"}}),
+        ),
+        copilot_ev(6, "assistant.turn_end", serde_json::json!({"turnId": "0"})),
+        copilot_ev(7, "abort", serde_json::json!({})),
+    ];
+    fs::write(&bare, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&bare, 0);
+    assert_eq!((s.state, s.last_message.as_deref(), s.question.as_deref()), (Some(State::Idle), None, None));
+
+    // The next prompt starts a working turn that finishes normally.
+    let mut events = events.to_vec();
+    events.push(copilot_ev(8, "user.message", serde_json::json!({"content": "try again"})));
+    fs::write(&bare, events.join("\n") + "\n").unwrap();
+    assert_eq!(copilot::parse(&bare, 0).state, Some(State::Working));
+    events.push(copilot_ev(9, "assistant.turn_start", serde_json::json!({"turnId": "1"})));
+    events.push(copilot_ev(10, "assistant.message", serde_json::json!({"messageId": "m2", "content": "Recovered."})));
+    events.push(copilot_ev(11, "assistant.turn_end", serde_json::json!({"turnId": "1"})));
+    fs::write(&bare, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&bare, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Waiting), Some("Recovered.")));
+}
+
+/// A tool that never completes is dropped by the next model round: its results would have
+/// fed that call, so anything still open is abandoned.
+#[test]
+fn copilot_orphan_tools_do_not_stick_past_the_next_round() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-orphan");
+    let log = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "go"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(
+            3,
+            "assistant.message",
+            serde_json::json!({"messageId": "m1", "content": "", "toolRequests": [{"toolCallId": "c1", "name": "bash", "arguments": {}}]}),
+        ),
+        copilot_ev(4, "tool.execution_start", serde_json::json!({"toolCallId": "c1", "toolName": "bash"})),
+        // No completion ever arrives for c1.
+        copilot_ev(5, "assistant.turn_end", serde_json::json!({"turnId": "0"})),
+        copilot_ev(6, "assistant.turn_start", serde_json::json!({"turnId": "1"})),
+        copilot_ev(7, "assistant.message", serde_json::json!({"messageId": "m2", "content": "All good."})),
+        copilot_ev(8, "assistant.turn_end", serde_json::json!({"turnId": "1"})),
+    ];
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Waiting), Some("All good.")));
+}
+
+/// A cold resume abandons open tools and pending prompts; a resume that was still active
+/// (or explicitly continues pending work) keeps them.
+#[test]
+fn copilot_cold_resume_abandons_and_continued_resume_keeps() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-resume");
+    let cold = copilot_session(&dir, "cold", "id: cold\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "cold"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "go"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(3, "tool.execution_start", serde_json::json!({"toolCallId": "c1", "toolName": "bash"})),
+        copilot_ev(
+            4,
+            "permission.requested",
+            serde_json::json!({"requestId": "r1", "permissionRequest": {"kind": "shell", "toolCallId": "c1", "fullCommandText": "make"}}),
+        ),
+        copilot_ev(5, "session.shutdown", serde_json::json!({})),
+        copilot_ev(6, "session.resume", serde_json::json!({"sessionWasActive": false})),
+    ];
+    fs::write(&cold, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&cold, 0);
+    assert_eq!((s.state, s.question.as_deref()), (Some(State::Idle), None));
+
+    let kept = copilot_session(&dir, "kept", "id: kept\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "kept"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "go"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(3, "tool.execution_start", serde_json::json!({"toolCallId": "c1", "toolName": "bash"})),
+        copilot_ev(
+            4,
+            "permission.requested",
+            serde_json::json!({"requestId": "r1", "permissionRequest": {"kind": "shell", "toolCallId": "c1", "fullCommandText": "make"}}),
+        ),
+        copilot_ev(5, "session.resume", serde_json::json!({"sessionWasActive": true})),
+    ];
+    fs::write(&kept, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&kept, 0);
+    assert_eq!((s.state, s.question.as_deref()), (Some(State::NeedsInput), Some("Allow make?")));
+
+    let continued = copilot_session(&dir, "continued", "id: continued\ncwd: /tmp\n");
+    let mut events = events.to_vec();
+    events[5] = copilot_ev(5, "session.resume", serde_json::json!({"sessionWasActive": false, "continuePendingWork": true}));
+    fs::write(&continued, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&continued, 0);
+    assert_eq!((s.state, s.question.as_deref()), (Some(State::NeedsInput), Some("Allow make?")));
+}
+
+/// An `ask_user` tool with no completion yet needs you; its question shows, answered in
+/// the terminal, and clears on completion whether answered or cancelled. Without its
+/// question text it stays an ordinary open tool.
+#[test]
+fn copilot_ask_user_needs_input_until_answered_or_cancelled() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-ask");
+    let log = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\n");
+    let at = |n: u64| crate::model::epoch_ms(&format!("2026-11-12T10:00:{n:02}.000Z")).unwrap();
+    let mut events = vec![
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "pick for me"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(
+            3,
+            "assistant.message",
+            serde_json::json!({"messageId": "m1", "content": "", "toolRequests": [{"toolCallId": "c1", "name": "ask_user", "arguments": {}}]}),
+        ),
+        copilot_ev(
+            4,
+            "tool.execution_start",
+            serde_json::json!({"toolCallId": "c1", "toolName": "ask_user", "arguments": {"message": "Which color?", "requestedSchema": {}}}),
+        ),
+    ];
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&log, 0);
+    assert_eq!(s.state, Some(State::NeedsInput));
+    assert_eq!(s.question.as_deref(), Some("Which color?"));
+    assert_eq!((s.question_kind, s.since), (Some(QuestionKind::Other), Some(at(4))));
+
+    events.push(copilot_ev(5, "human_response.recorded", serde_json::json!({})));
+    events.push(copilot_ev(6, "tool.execution_complete", serde_json::json!({"toolCallId": "c1", "success": true})));
+    events.push(copilot_ev(7, "assistant.turn_end", serde_json::json!({"turnId": "0"})));
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    // Answered, but the asking round isn't the final answer.
+    assert_eq!(copilot::parse(&log, 0).state, Some(State::Working));
+    events.push(copilot_ev(8, "assistant.turn_start", serde_json::json!({"turnId": "1"})));
+    events.push(copilot_ev(9, "assistant.message", serde_json::json!({"messageId": "m2", "content": "Blue it is."})));
+    events.push(copilot_ev(10, "assistant.turn_end", serde_json::json!({"turnId": "1"})));
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Waiting), Some("Blue it is.")));
+
+    // A cancelled question clears the same way.
+    let cancel = copilot_session(&dir, "s2", "id: s2\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s2"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "pick for me"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(
+            3,
+            "assistant.message",
+            serde_json::json!({"messageId": "m1", "content": "", "toolRequests": [{"toolCallId": "c9", "name": "ask_user", "arguments": {}}]}),
+        ),
+        copilot_ev(
+            4,
+            "tool.execution_start",
+            serde_json::json!({"toolCallId": "c9", "toolName": "ask_user", "arguments": {"message": "Which number?", "requestedSchema": {}}}),
+        ),
+        copilot_ev(5, "human_response.recorded", serde_json::json!({})),
+        copilot_ev(
+            6,
+            "tool.execution_complete",
+            serde_json::json!({"toolCallId": "c9", "success": true, "result": {"content": "User cancelled the request."}}),
+        ),
+        copilot_ev(7, "assistant.turn_end", serde_json::json!({"turnId": "0"})),
+        copilot_ev(8, "assistant.turn_start", serde_json::json!({"turnId": "1"})),
+        copilot_ev(9, "assistant.message", serde_json::json!({"messageId": "m2", "content": "You cancelled the prompt."})),
+        copilot_ev(10, "assistant.turn_end", serde_json::json!({"turnId": "1"})),
+    ];
+    fs::write(&cancel, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&cancel, 0);
+    assert_eq!((s.state, s.question.as_deref()), (Some(State::Waiting), None));
+
+    // Without its question text there is nothing to show: an ordinary open tool.
+    let vague = copilot_session(&dir, "s3", "id: s3\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s3"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "pick for me"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(3, "tool.execution_start", serde_json::json!({"toolCallId": "c2", "toolName": "ask_user"})),
+    ];
+    fs::write(&vague, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&vague, 0);
+    assert_eq!((s.state, s.question.as_deref()), (Some(State::Working), None));
+}
+
+/// A session error is not a terminal state on its own: retries aren't visible here, so
+/// whatever follows decides.
+#[test]
+fn copilot_session_errors_do_not_end_the_turn() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-error");
+    let log = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\n");
+    let mut events = vec![
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "go"})),
+        copilot_ev(2, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(3, "session.error", serde_json::json!({"message": "transient failure"})),
+    ];
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    assert_eq!(copilot::parse(&log, 0).state, Some(State::Working));
+    events.push(copilot_ev(4, "assistant.message", serde_json::json!({"messageId": "m1", "content": "Recovered."})));
+    events.push(copilot_ev(5, "assistant.turn_end", serde_json::json!({"turnId": "0"})));
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&log, 0);
+    assert_eq!((s.state, s.last_message.as_deref()), (Some(State::Waiting), Some("Recovered.")));
+}
+
+/// Empty and memory-kept prompts are bookkeeping: never the title, never the chat.
+#[test]
+fn copilot_skips_empty_and_memory_prompts_for_title_and_chat() {
+    use crate::readers::copilot;
+    let dir = temp_dir("copilot-title");
+    let log = copilot_session(&dir, "s1", "id: s1\ncwd: /tmp\n");
+    let events = [
+        copilot_ev(0, "session.start", serde_json::json!({"sessionId": "s1"})),
+        copilot_ev(1, "user.message", serde_json::json!({"content": "", "source": "memory"})),
+        copilot_ev(2, "user.message", serde_json::json!({"content": "   "})),
+        copilot_ev(3, "user.message", serde_json::json!({"content": "do the thing"})),
+        copilot_ev(4, "assistant.turn_start", serde_json::json!({"turnId": "0"})),
+        copilot_ev(5, "assistant.message", serde_json::json!({"messageId": "m1", "content": "Doing it."})),
+        copilot_ev(6, "assistant.turn_end", serde_json::json!({"turnId": "0"})),
+    ];
+    fs::write(&log, events.join("\n") + "\n").unwrap();
+    let s = copilot::parse(&log, 0);
+    assert_eq!(s.title.as_deref(), Some("do the thing"));
+    let h = copilot::history(&log).unwrap();
+    let texts: Vec<_> = h.messages.iter().map(|m| m.text.as_str()).collect();
+    assert_eq!(texts, ["do the thing", "Doing it."]);
+}
+
+/// Native GitHub Copilot and the npm loader are agents; AWS's deploy tool and one-shot
+/// helpers are not.
+#[test]
+fn classifies_copilot_launch_shapes() {
+    // Native installs (install script, Homebrew, WinGet): bare is interactive.
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/opt/homebrew/bin/copilot", "--resume=abc"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "--allow-all"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "sessions"])), Some(Kind::Copilot));
+    // The npm package's platform binary bears its origin in its path.
+    assert_eq!(scanner::classify(&proc(&["/x/node_modules/@github/copilot-darwin-arm64/copilot"])), Some(Kind::Copilot));
+    // npm launches: the linked bin and the loader itself.
+    assert_eq!(scanner::classify(&proc(&["node", "/x/node_modules/.bin/copilot"])), Some(Kind::Copilot));
+    assert_eq!(scanner::classify(&proc(&["node", "/x/node_modules/@github/copilot/npm-loader.js"])), Some(Kind::Copilot));
+    // AWS's deploy tool shares the name but none of the shape.
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "deploy"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "svc", "logs"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "app", "show"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "env", "ls"])), None);
+    // One-shot helpers aren't agents you can answer.
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "init"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "app"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "version"])), None);
+    assert_eq!(scanner::classify(&proc(&["/usr/local/bin/copilot", "-p", "hi"])), None);
+    assert_eq!(scanner::classify(&proc(&["node", "/x/node_modules/@github/copilot/npm-loader.js", "-p", "hi"])), None);
 }
