@@ -493,11 +493,11 @@ pub mod goose {
         }
         #[cfg(windows)]
         {
-            return std::env::var_os("APPDATA")
+            std::env::var_os("APPDATA")
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute())
                 .unwrap_or_else(|| home().join("AppData/Roaming"))
-                .join("Block/goose/data/sessions/sessions.db");
+                .join("Block/goose/data/sessions/sessions.db")
         }
         #[cfg(not(windows))]
         {
