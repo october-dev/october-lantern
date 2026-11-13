@@ -346,11 +346,15 @@ fn qwen_session_file_matches_cwd_and_skips_archive() {
     fs::create_dir_all(&archive).unwrap();
     let live = chats.join("11111111-1111-1111-1111-111111111111.jsonl");
     let other = chats.join("22222222-2222-2222-2222-222222222222.jsonl");
-    fs::write(&live, format!("{{\"uuid\":\"u1\",\"sessionId\":\"q1\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"parts\":[{{\"text\":\"hi\"}}]}},\"cwd\":\"{cwd}\"}}\n")).unwrap();
+    // Serialized, not interpolated: a Windows cwd's backslashes are JSON escapes.
+    let line = |uuid: &str, sid: &str, cwd: &str| {
+        serde_json::json!({"uuid": uuid, "sessionId": sid, "type": "user", "message": {"role": "user", "parts": [{"text": "hi"}]}, "cwd": cwd}).to_string() + "\n"
+    };
+    fs::write(&live, line("u1", "q1", &cwd)).unwrap();
     // Same folder, another project: newer, but its records name another cwd.
     fs::write(&other, "{\"uuid\":\"u9\",\"sessionId\":\"q9\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"parts\":[{\"text\":\"hi\"}]},\"cwd\":\"/elsewhere\"}\n").unwrap();
     // Archived and newest of all: never read.
-    fs::write(archive.join("33333333-3333-3333-3333-333333333333.jsonl"), format!("{{\"uuid\":\"u8\",\"sessionId\":\"q8\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"parts\":[{{\"text\":\"hi\"}}]}},\"cwd\":\"{cwd}\"}}\n")).unwrap();
+    fs::write(archive.join("33333333-3333-3333-3333-333333333333.jsonl"), line("u8", "q8", &cwd)).unwrap();
 
     // SAFETY: no other test reads `QWEN_RUNTIME_DIR`, and the old value is restored below.
     let old = std::env::var_os("QWEN_RUNTIME_DIR");
