@@ -65,6 +65,10 @@ enum Pending {
     Focus {
         agent_id: String,
     },
+    /// Escape for a working agent, from Ask's Stop.
+    Stop {
+        agent_id: String,
+    },
     History,
     Launch,
     /// A message sent without the composer (Point & Ask).

@@ -152,6 +152,7 @@ impl Lantern {
             UiAction::SendPointAskToAgent => self.send_point(),
             UiAction::CopyPointAskAnswer => self.copy_point_ask_answer(),
             UiAction::SubmitAssistant => self.submit_assistant(),
+            UiAction::StopAssistant => self.stop_assistant(),
             UiAction::ClearAssistant => self.clear_assistant(),
             UiAction::RetryAssistantTask { turn } => self.retry_assistant_task(turn),
             UiAction::OpenUpgrade { url, from, offer } => {
