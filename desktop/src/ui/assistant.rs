@@ -746,6 +746,9 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                             );
                             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stop"));
                             let help = match agent {
+                                Some(a) if !cx.model.assistant.asking && a.kind.as_str() == AgentKind::COPILOT => {
+                                    format!("Stop @{} in its terminal", a.handle)
+                                }
                                 Some(a) if !cx.model.assistant.asking => format!("Stop @{}", a.handle),
                                 _ => "Stop Lantern's answer".to_string(),
                             };

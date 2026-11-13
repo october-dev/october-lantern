@@ -114,7 +114,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         // Development: test a session reader against stored sessions.
-        // lantern-engine probe opencode|pi|october|gemini <cwd> [started-secs]
+        // lantern-engine probe opencode|copilot|pi|october|gemini <cwd> [started-secs] [pid: copilot's exact marker]
         Some("probe") => {
             let kind = args.get(1).map(String::as_str).unwrap_or("");
             let cwd = std::path::PathBuf::from(args.get(2).map(String::as_str).unwrap_or("."));
@@ -130,6 +130,24 @@ fn main() -> Result<()> {
                     (
                         f.as_ref().map(|f| readers::gemini::parse(f, m)),
                         f.and_then(|f| readers::gemini::history(&f)).unwrap_or_default().messages,
+                    )
+                }
+                "copilot" => {
+                    let pid: Option<u32> = args.get(4).and_then(|s| s.parse().ok());
+                    let f = pid
+                        .and_then(|p| {
+                            readers::copilot::session_for_pid_in(
+                                &readers::copilot::root_for(&cwd),
+                                p,
+                                start,
+                                &crate::platform::open_files(p),
+                            )
+                        })
+                        .or_else(|| readers::copilot::session_file(&cwd, start));
+                    println!("file: {f:?}");
+                    (
+                        f.as_ref().map(|f| readers::copilot::parse(f, 0)),
+                        f.and_then(|f| readers::copilot::history(&f)).unwrap_or_default().messages,
                     )
                 }
                 k => {

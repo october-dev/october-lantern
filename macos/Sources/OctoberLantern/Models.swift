@@ -17,6 +17,7 @@ struct AgentKind: RawRepresentable, Codable, Hashable {
     static let october = AgentKind(rawValue: "october")
     static let claude = AgentKind(rawValue: "claude")
     static let codex = AgentKind(rawValue: "codex")
+    static let copilot = AgentKind(rawValue: "copilot")
 
     /// Every agent Lantern supports, in the order New Session lists them.
     static let supported: [AgentKind] = [

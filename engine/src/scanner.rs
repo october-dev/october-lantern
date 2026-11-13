@@ -52,9 +52,18 @@ fn is_helper(kind: Kind, args: &[String]) -> bool {
         Kind::Claude => (&["daemon", "mcp"], &["--bg-pty-host", "--bg-spare", "--chrome-native-host", "-p", "--print"]),
         Kind::Codex => (&["exec", "e", "mcp", "mcp-server", "app-server", "login", "logout", "proto"], &[]),
         Kind::Opencode => (&["serve", "run", "mcp"], &[]),
+        // GitHub Copilot's one-shot and server modes (`--prompt=PROMPT` is a documented
+        // spelling; `--server`/`--headless`/`--remote` are legacy SDK server startup, not
+        // interactive). This runs for native and npm launches alike.
+        Kind::Copilot => (
+            &["mcp", "serve", "exec", "run", "login"],
+            &["-p", "--print", "--prompt", "--acp", "--server", "--headless", "--remote", "-h", "--help", "-v", "--version"],
+        ),
         _ => (&["mcp", "serve", "exec", "run", "login"], &["-p", "--print", "--prompt"]),
     };
-    args.first().is_some_and(|a| subcommands.contains(&a.as_str())) || args.iter().any(|a| flags.contains(&a.as_str()))
+    // `--flag=value` spells the same flag.
+    args.first().is_some_and(|a| subcommands.contains(&a.as_str()))
+        || args.iter().any(|a| flags.contains(&a.split('=').next().unwrap_or(a.as_str())))
 }
 
 const INTERPRETERS: [&str; 5] = ["node", "bun", "deno", "python", "uv"];
@@ -75,13 +84,171 @@ const NPM_PACKAGES: [(&str, &str); 8] = [
 
 /// The program a script run by an interpreter stands for.
 fn script_program(script: &str) -> &str {
-    if cfg!(windows) {
-        let path = script.replace('\\', "/").to_ascii_lowercase();
-        if let Some((_, prog)) = NPM_PACKAGES.iter().find(|(pkg, _)| path.contains(&format!("/node_modules/{pkg}/"))) {
-            return prog;
-        }
+    let path = script.replace('\\', "/").to_ascii_lowercase();
+    // GitHub Copilot's npm entry script doesn't carry the program's name on any OS.
+    if path.contains("/node_modules/@github/copilot/") {
+        return "copilot";
+    }
+    if cfg!(windows)
+        && let Some((_, prog)) = NPM_PACKAGES.iter().find(|(pkg, _)| path.contains(&format!("/node_modules/{pkg}/")))
+    {
+        return prog;
     }
     basename(script)
+}
+
+/// AWS Copilot's top-level commands, from its root command definition. AWS ended support
+/// in June 2026, so this list no longer changes. (`run` is the `run local` command's name;
+/// `help` is added by its parser.)
+const AWS_COMMANDS: [&str; 15] =
+    ["app", "completion", "deploy", "docs", "env", "help", "init", "job", "pipeline", "run", "secret", "storage", "svc", "task", "version"];
+
+/// GitHub Copilot CLI options that take a value, from `copilot --help` (1.0.110, unchanged in
+/// 1.0.111): `--name value` and `--name=value` alike. `--config-dir` (deprecated) and
+/// `--worktree`/`-w` come from the current command reference, which is newer than either
+/// binary. These tables describe GitHub's option values; they do not establish executable identity.
+const COPILOT_VALUE_OPTS: [&str; 30] = [
+    "add-dir",
+    "add-github-mcp-tool",
+    "add-github-mcp-toolset",
+    "additional-mcp-config",
+    "agent",
+    "attachment",
+    "auto-tier",
+    "config-dir",
+    "context",
+    "disable-mcp-server",
+    "dynamic-retrieval",
+    "effort",
+    "enable-mcp-server",
+    "extension-sdk-path",
+    "interactive",
+    "log-dir",
+    "log-level",
+    "max-ai-credits",
+    "max-autopilot-continues",
+    "mcp-github-auth",
+    "mode",
+    "model",
+    "name",
+    "output-format",
+    "plugin-dir",
+    "prompt",
+    "reasoning-effort",
+    "session-id",
+    "stream",
+    "usage-output-file",
+];
+
+/// GitHub Copilot CLI options that take an optional single value (`--resume sessions` resumes
+/// the session named `sessions`; `--resume --model x` leaves `--model` alone).
+const COPILOT_OPTIONAL_OPTS: [&str; 7] = ["bash-env", "connect", "mouse", "resume", "share", "sync-session", "worktree"];
+
+/// GitHub Copilot CLI options that take any number of values, up to the next option
+/// (`--allow-tool a b sessions` consumes all three).
+const COPILOT_GREEDY_OPTS: [&str; 7] =
+    ["allow-tool", "allow-url", "available-tools", "deny-tool", "deny-url", "excluded-tools", "secret-env-vars"];
+
+/// GitHub Copilot CLI short options: `-nweb` and `-n web` alike, `-sn foo` combined.
+const COPILOT_VALUE_SHORTS: [char; 4] = ['C', 'i', 'n', 'p'];
+const COPILOT_OPTIONAL_SHORTS: [char; 2] = ['r', 'w'];
+
+/// GitHub's own subcommands that Lantern recognizes (its one-shots and anything unknown stay
+/// unrecognized).
+const COPILOT_SUBCOMMANDS: [&str; 9] = ["config", "sessions", "plugin", "sandbox", "skill", "workflow", "memories", "instruction", "lsp"];
+
+/// Whether the next argument is taken as an option's value: anything but another option or `--`.
+/// A lone `-` is a value (both parsers read it as one); on its own it is a word neither CLI
+/// accepts.
+fn takes_value(next: Option<&&str>) -> bool {
+    next.is_some_and(|n| !n.starts_with('-') || *n == "-")
+}
+
+/// Whether a native `copilot` is GitHub's CLI in an interactive form: bare, flags only, or one
+/// of its own subcommands. AWS's deploy tool shares the name and takes options before its
+/// command (`copilot --name web deploy`), so the first word left after GitHub's own options is
+/// checked against AWS's frozen command list first; a session named `deploy`
+/// (`copilot --yolo -n deploy`) is consumed as `--name`'s value and stays visible. One-shot and
+/// server modes are filtered by `is_helper`, not here.
+fn is_github_copilot_native(p: &Proc) -> bool {
+    let exe = p.exe.as_ref().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let argv0 = p.cmd.first().map(|a| a.to_ascii_lowercase()).unwrap_or_default();
+    // The npm package's platform binary bears its origin in its path.
+    if exe.contains("@github/copilot") || argv0.contains("@github/copilot") {
+        return true;
+    }
+    let args: Vec<&str> = p.cmd.get(1..).unwrap_or(&[]).iter().map(String::as_str).collect();
+    if args.is_empty() {
+        // Bare `copilot` starts GitHub's interactive session (AWS's prints help and exits).
+        return true;
+    }
+    let mut first_word: Option<&str> = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i];
+        if a == "--" {
+            // Words after `--` are never subcommands (GitHub errors on them); a bare `--`
+            // is neutral.
+            if i + 1 < args.len() {
+                return false;
+            }
+            break;
+        }
+        if let Some(name) = a.strip_prefix("--") {
+            let (opt, attached) = match name.split_once('=') {
+                Some((o, _)) => (o, true),
+                None => (name, false),
+            };
+            if !attached {
+                if COPILOT_VALUE_OPTS.contains(&opt) || COPILOT_OPTIONAL_OPTS.contains(&opt) {
+                    if takes_value(args.get(i + 1)) {
+                        i += 1;
+                    }
+                } else if COPILOT_GREEDY_OPTS.contains(&opt) {
+                    while takes_value(args.get(i + 1)) {
+                        i += 1;
+                    }
+                }
+                // Anything else takes no value (`--yolo` is a plain flag; an unknown option
+                // errors in GitHub, so a flags-only line carrying one is at most a flash).
+            }
+            i += 1;
+            continue;
+        }
+        if a.len() > 1 && a.starts_with('-') {
+            // A short cluster (`-sn foo`): booleans chain, a value short ends it.
+            let rest = &a[1..];
+            let bytes = rest.as_bytes();
+            let mut j = 0;
+            while j < bytes.len() {
+                let c = bytes[j] as char;
+                if COPILOT_VALUE_SHORTS.contains(&c) || COPILOT_OPTIONAL_SHORTS.contains(&c) {
+                    if j + 1 == bytes.len() && takes_value(args.get(i + 1)) {
+                        i += 1;
+                    }
+                    break;
+                }
+                if c != 'h' && c != 's' && c != 'v' {
+                    // Unknown short: the whole token is an unknown option.
+                    break;
+                }
+                j += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if first_word.is_none() {
+            first_word = Some(a);
+        }
+        i += 1;
+    }
+    match first_word {
+        None => true,
+        Some(w) if AWS_COMMANDS.contains(&w) => false,
+        // A later word may be an AWS option's value, not a GitHub subcommand.
+        Some(w) if COPILOT_SUBCOMMANDS.contains(&w) => args.first().copied() == Some(w),
+        Some(_) => false,
+    }
 }
 
 /// Classifies a process from argv. `node /path/to/codex ...` counts as codex.
@@ -94,8 +261,8 @@ pub fn classify(p: &Proc) -> Option<Kind> {
         (argv0, p.cmd.get(1..).unwrap_or(&[]))
     };
     let kind = match Kind::from_program(prog) {
-        // GitHub's Copilot CLI is a node program; a native `copilot` is AWS's deploy tool.
-        Some(Kind::Copilot) if !wrapped => return None,
+        // A native `copilot` may be GitHub's CLI or AWS's deploy tool: tell them apart.
+        Some(Kind::Copilot) if !wrapped && !is_github_copilot_native(p) => return None,
         Some(kind) => kind,
         None if p.exe.as_ref().is_some_and(|e| e.to_string_lossy().contains("/.local/share/claude/versions/")) => Kind::Claude,
         None => return None,
@@ -105,6 +272,11 @@ pub fn classify(p: &Proc) -> Option<Kind> {
 
 fn arg_after<'a>(args: &'a [String], names: &[&str]) -> Option<&'a str> {
     args.iter().position(|a| names.contains(&a.as_str())).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
+/// The session id on a Claude Code command line: `--session-id <id>`, `--resume <id>` or `-r <id>`.
+pub(crate) fn claude_session_arg(args: &[String]) -> Option<&str> {
+    arg_after(args, &["--session-id", "--resume", "-r"]).filter(|id| looks_like_id(id))
 }
 
 /// On Windows, an agent with a console of its own can be typed into through it (console.rs).
@@ -487,6 +659,23 @@ impl Scanner {
                     .or_else(|| self.codex_paths.get(&agent.pid).map(|(p, _)| p.clone()))
                     .map(|p| (Kind::Codex, p)),
                 Kind::Muse => self.transcripts.muse_path_for_pid(agent.pid).map(|p| (Kind::Muse, p)),
+                Kind::Copilot => {
+                    let home = self.environ(agent.pid, "COPILOT_HOME");
+                    let known = self.started.get(&agent.pid);
+                    let root = known.map(|(cwd, _)| crate::readers::copilot::root_for_env(cwd, home.as_deref()));
+                    let open = root.as_ref().and_then(|r| {
+                        let start = known.map(|(_, s)| *s).unwrap_or(0);
+                        self.transcripts.copilot_path_for_pid(r, agent.pid, start).or_else(|| {
+                            self.children.get(&agent.pid).copied().and_then(|c| self.transcripts.copilot_path_for_pid(r, c, start))
+                        })
+                    });
+                    let guessed = if open.is_none() {
+                        known.and_then(|(cwd, start)| root.as_ref().and_then(|r| crate::readers::copilot::session_file_in(r, cwd, *start)))
+                    } else {
+                        None
+                    };
+                    open.or(guessed).map(|p| (Kind::Copilot, p))
+                }
                 Kind::Pi | Kind::October | Kind::Gemini => {
                     let (cwd, start) = self.started.get(&agent.pid)?;
                     let path = if agent.kind == Kind::Gemini {
@@ -539,6 +728,7 @@ impl Scanner {
             Kind::Pi | Kind::October => crate::readers::pi::history(&path),
             Kind::Gemini => crate::readers::gemini::history(&path),
             Kind::Muse => crate::readers::muse::history(&path),
+            Kind::Copilot => crate::readers::copilot::history(&path),
             _ => crate::history::claude(&path),
         };
         // A file that couldn't be read is no read, and isn't cached.
@@ -598,9 +788,7 @@ impl Scanner {
                     .and_then(|l| l.session_id.as_deref())
                     .filter(|id| looks_like_id(id))
                     .and_then(|id| self.transcripts.claude_path_for_session(id));
-                let from_args = arg_after(args, &["--session-id", "--resume", "-r"])
-                    .filter(|id| looks_like_id(id))
-                    .and_then(|id| self.transcripts.claude_path_for_session(id));
+                let from_args = claude_session_arg(args).and_then(|id| self.transcripts.claude_path_for_session(id));
                 let found_path = match from_hook.or(from_live).or(from_args) {
                     Some(path) => Some((path, true)),
                     None => match self.claude_paths.get(&p.pid).filter(|(p, _)| p.exists()) {
@@ -657,6 +845,34 @@ impl Scanner {
                 Some(path) => found(self.transcripts.cached(&path, crate::readers::muse::parse), SessionMatch::Exact),
                 None => (None, SessionMatch::None),
             },
+            Kind::Copilot => {
+                // The npm wrapper doesn't hold the marker; its native child does. The
+                // parent's start time stands in for the child's where open files can't be
+                // read: the parent is always older, so a genuinely stale marker still fails.
+                let child = self.children.get(&p.pid).copied();
+                let home = self.environ(p.pid, "COPILOT_HOME");
+                let root = p.cwd.as_deref().map(|c| crate::readers::copilot::root_for_env(c, home.as_deref()));
+                let open = root.as_ref().and_then(|r| {
+                    self.transcripts
+                        .copilot_path_for_pid(r, p.pid, p.start_time)
+                        .or_else(|| child.and_then(|c| self.transcripts.copilot_path_for_pid(r, c, p.start_time)))
+                });
+                if let Some(path) = open {
+                    // A marker with no log yet (`/clear` before its first write, resume
+                    // before the first prompt): an empty session, still exact.
+                    if !path.is_file() {
+                        let mut status = idle();
+                        status.session_id = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
+                        return (Some(status), SessionMatch::Exact);
+                    }
+                    return found(self.transcripts.cached(&path, crate::readers::copilot::parse), SessionMatch::Exact);
+                }
+                let (Some(cwd), Some(root)) = (p.cwd.as_deref(), root) else { return (None, SessionMatch::None) };
+                match crate::readers::copilot::session_file_in(&root, cwd, p.start_time) {
+                    Some(path) => found(self.transcripts.cached(&path, crate::readers::copilot::parse), SessionMatch::Guessed),
+                    None => (Some(idle()), SessionMatch::None),
+                }
+            }
             // No session file since the process started means nothing has happened yet.
             Kind::Pi | Kind::October => {
                 let Some(cwd) = p.cwd.as_deref() else { return (None, SessionMatch::None) };

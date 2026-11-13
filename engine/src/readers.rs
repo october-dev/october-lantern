@@ -1,8 +1,9 @@
-//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI and Muse.
-//! Like the Claude Code and Codex readers, these only read the agents' own files.
+//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI, Muse
+//! and GitHub Copilot CLI. Like the Claude Code and Codex readers, these only read the agents'
+//! own files.
 //!
-//! None of these three keeps its session file open, so a running process is matched to its
-//! session by working directory and start time.
+//! Muse and Copilot hold their session's marker open, so a running process is matched to its
+//! session exactly; the rest match by working directory and start time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -583,6 +584,440 @@ pub mod muse {
                     for (i, call) in ev["tool_calls"].as_array().into_iter().flatten().enumerate() {
                         let name = call["name"].as_str().unwrap_or("tool");
                         push(&mut out, Role::Tool, &describe_tool(name, &call["args"]), at, line_id(offset, i));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(Chat { messages: keep_recent(out), whole })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// GitHub Copilot CLI: one directory per session, `$COPILOT_HOME/session-state/<id>/`
+// (`~/.copilot` when unset), holding the session's append-only event log (`events.jsonl`)
+// and its metadata (`workspace.yaml`, with the session's working directory). A resumed
+// session appends to the same log, so one session is always one file. The running native
+// process holds `inuse.<pid>.hold` in its session directory open and removes it on exit,
+// so it's matched exactly (by filename, live ownership, and one match only); otherwise the
+// newest session for the process's folder is guessed. `/clear` moves the marker to a new,
+// still logless session directory, which reads as an empty conversation.
+//
+// Each line is an event envelope, `{id, timestamp, parentId, type, data}` with an optional
+// `agentId` (a subagent's traffic: its parent's tool plumbing, skipped until a capture
+// shows how its prompts surface) and `ephemeral` (never written to disk). The CLI never
+// persists idle events, so waiting is read from the turn structure: a model round runs
+// `turn_start`, message chunks, its tools, `turn_end`; a round that requested tools is
+// never the final answer, even once the tools complete. An unanswered
+// `permission.requested`, or an `ask_user` tool with no completion yet, is waiting on you
+// instead. `abort`, `session.shutdown` and a cold `session.resume` abandon open tools and
+// pending prompts; a resumed session that was still active keeps them.
+
+pub mod copilot {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    /// Where the CLI keeps its files: `$COPILOT_HOME` (from the agent's own environment)
+    /// replaces the whole path when set; a relative one resolves against the agent's working
+    /// directory, as the CLI does.
+    pub fn root_for_env(cwd: &Path, copilot_home: Option<&str>) -> PathBuf {
+        match copilot_home.map(PathBuf::from) {
+            Some(dir) if dir.is_absolute() => dir,
+            Some(dir) => cwd.join(dir),
+            None => home().join(".copilot"),
+        }
+    }
+
+    /// `root_for_env` from this process's environment (the probe and tests).
+    pub fn root_for(cwd: &Path) -> PathBuf {
+        root_for_env(cwd, std::env::var("COPILOT_HOME").ok().as_deref())
+    }
+
+    /// The `workspace.yaml` keys this reader needs. The file is a flat `key: value` map (the
+    /// CLI writes plain values; quotes are tolerated but never required).
+    pub(crate) struct Workspace {
+        pub(crate) cwd: Option<String>,
+        pub(crate) name: Option<String>,
+        pub(crate) updated_secs: u64,
+    }
+
+    pub(crate) fn read_workspace(path: &Path) -> Option<Workspace> {
+        let mut ws = Workspace { cwd: None, name: None, updated_secs: 0 };
+        for line in fs::read_to_string(path).ok()?.lines() {
+            // Top-level keys only: an indented `cwd:` inside a block scalar must not win.
+            if line.starts_with([' ', '\t']) {
+                continue;
+            }
+            let Some((key, value)) = line.split_once(':') else { continue };
+            let value = unquote(value.trim());
+            match key.trim() {
+                "cwd" => ws.cwd = Some(value),
+                "name" => ws.name = Some(value),
+                "updated_at" => ws.updated_secs = epoch_ms(&value).map(|ms| ms / 1000).unwrap_or(0),
+                _ => {}
+            }
+        }
+        Some(ws)
+    }
+
+    /// One pair of matching quotes off, when the value has them.
+    fn unquote(value: &str) -> String {
+        let quoted = value.len() >= 2 && value.starts_with(['\'', '"']) && value.ends_with(value.chars().next().unwrap_or('"'));
+        if quoted { value[1..value.len() - 1].to_string() } else { value.to_string() }
+    }
+
+    /// The session `pid` owns: the CLI holds `inuse.<pid>.hold` in its session directory open
+    /// while it runs. Exactly one match counts — a stale marker plus a live one after a pid
+    /// reuse, or several live matches, is not an exact ownership, and the caller falls back
+    /// to the folder guess (which keeps its ambiguity protection). `open` is what the
+    /// process holds open now: on Unix the marker must be among them; where open files
+    /// can't be read the marker must not predate the process (`started_secs == 0` skips
+    /// that check). The log may not exist yet (a `/clear` session before its first write):
+    /// its path still names the session.
+    pub fn session_for_pid_in(root: &Path, pid: u32, started_secs: u64, open: &[PathBuf]) -> Option<PathBuf> {
+        let want = format!("inuse.{pid}.hold");
+        let mut found = None;
+        for entry in fs::read_dir(root.join("session-state")).ok()?.flatten() {
+            let marker = entry.path().join(&want);
+            if marker.is_file() {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(marker);
+            }
+        }
+        let marker = found?;
+        if open.is_empty() {
+            // No open-file evidence (Windows, or the lookup failed): a marker written before
+            // its process started cannot be that process's.
+            if started_secs != 0 && mtime_ms(&marker).unwrap_or(0) / 1000 < started_secs {
+                return None;
+            }
+        } else if !open.iter().any(|p| same_file(p, &marker)) {
+            return None;
+        }
+        Some(marker.with_file_name("events.jsonl"))
+    }
+
+    /// Whether two paths name the same file (the open-files list is canonicalized; the
+    /// session root may not be).
+    fn same_file(a: &Path, b: &Path) -> bool {
+        a == b || fs::canonicalize(a).ok().zip(fs::canonicalize(b).ok()).is_some_and(|(x, y)| x == y)
+    }
+
+    /// The newest session for `cwd` with activity since the process started (a minute's
+    /// tolerance, like the other readers): the fallback where no in-use marker names the pid.
+    /// Recency comes from the log, whose appends outrun the metadata's `updated_at`.
+    pub fn session_file_in(root: &Path, cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        let want = resolved(cwd);
+        let since = started_secs.saturating_sub(60);
+        let mut best: Option<(u64, PathBuf)> = None;
+        for entry in fs::read_dir(root.join("session-state")).ok()?.flatten() {
+            let log = entry.path().join("events.jsonl");
+            if !log.is_file() {
+                continue;
+            }
+            let Some(ws) = read_workspace(&entry.path().join("workspace.yaml")) else { continue };
+            let Some(wd) = ws.cwd.as_deref() else { continue };
+            if resolved(Path::new(wd)) != want {
+                continue;
+            }
+            let stamp = mtime_ms(&log).unwrap_or(0);
+            if stamp / 1000 < since && ws.updated_secs < since {
+                continue;
+            }
+            if best.as_ref().is_none_or(|(ms, _)| stamp >= *ms) {
+                best = Some((stamp, log));
+            }
+        }
+        best.map(|(_, log)| log)
+    }
+
+    pub fn session_file(cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        session_file_in(&root_for(cwd), cwd, started_secs)
+    }
+
+    /// From the root agent (no `agentId`): a subagent's prompts and answers are the parent
+    /// turn's tool plumbing, not the conversation.
+    fn root_event(e: &Value) -> bool {
+        e.get("agentId").is_none_or(|v| v.is_null())
+    }
+
+    fn at_ms(e: &Value) -> Option<u64> {
+        e["timestamp"].as_str().and_then(epoch_ms)
+    }
+
+    /// What the pending permission prompt asks, from its request's kind.
+    fn permission_question(data: &Value) -> String {
+        let req = &data["permissionRequest"];
+        let what = match req["kind"].as_str() {
+            Some("shell") => req["fullCommandText"].as_str().unwrap_or("a command").to_string(),
+            Some("write") => format!("writing {}", req["fileName"].as_str().unwrap_or("a file")),
+            Some("read") => format!("reading {}", req["path"].as_str().unwrap_or("a file")),
+            Some("mcp") => req["toolName"].as_str().unwrap_or("a tool").to_string(),
+            Some("url") => req["url"].as_str().unwrap_or("a URL").to_string(),
+            _ => "this action".to_string(),
+        };
+        format!("Allow {}?", truncate(&what, 200))
+    }
+
+    /// Whether a `user.message` carries something its human said: empty and memory-kept
+    /// entries are bookkeeping, not the conversation.
+    fn human_said(data: &Value) -> Option<&str> {
+        if data["source"] == "memory" {
+            return None;
+        }
+        data["content"].as_str().filter(|t| !t.trim().is_empty())
+    }
+
+    /// A session's state from its event log: your prompt, a model round, or a tool call
+    /// starting means working. A round that requested tools is never the final answer, even
+    /// once the tools complete; a round that didn't is waiting with the last reply (or idle
+    /// when it said nothing). An unanswered `permission.requested`, or an `ask_user` tool
+    /// with no completion yet, is waiting on you. `abort`, `session.shutdown` and a cold
+    /// `session.resume` abandon open tools and pending prompts. A log with no recognized
+    /// event (a format newer than this reader) is unknown, never misread; a session with
+    /// nothing written yet is idle.
+    pub fn parse(path: &Path, mtime: u64) -> SessionStatus {
+        let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
+        status.session_id = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned());
+        if let Some(dir) = path.parent()
+            && let Some(ws) = read_workspace(&dir.join("workspace.yaml"))
+            && let Some(name) = ws.name.filter(|n| !n.trim().is_empty())
+        {
+            status.title = Some(truncate(name.lines().next().unwrap_or(&name), 80));
+        }
+        if status.title.is_none()
+            && let Some(head) = read_range(path, false, 256 * 1024)
+        {
+            status.title = lines(&head)
+                .filter(|e| root_event(e) && e["type"] == "user.message")
+                .filter_map(|e| human_said(&e["data"]).map(String::from))
+                .next()
+                .map(|p| truncate(p.lines().next().unwrap_or(&p), 80));
+        }
+        let Some(text) = read_range(path, true, TAIL_BYTES) else {
+            status.state = Some(State::Idle);
+            return status;
+        };
+        let mut state = State::Idle;
+        let mut reply: Option<String> = None;
+        let mut anchored = false;
+        let mut recognized = false;
+        let mut round_tools = false;
+        // Open tool calls: tool id → unit. An `ask_user` also records its question.
+        let mut open: HashSet<String> = HashSet::new();
+        let mut asked: HashMap<String, (String, u64)> = HashMap::new();
+        // Pending permission prompts: request id → (question, asked at, tool call).
+        let mut pending: HashMap<String, (String, u64, Option<String>)> = HashMap::new();
+        for e in lines(&text) {
+            if !root_event(&e) {
+                continue;
+            }
+            let data = &e["data"];
+            let at = at_ms(&e);
+            match e["type"].as_str() {
+                Some("user.message") => {
+                    recognized = true;
+                    state = State::Working;
+                    reply = None;
+                    anchored = false;
+                    status.since = at.or(status.since);
+                }
+                Some("assistant.message") => {
+                    recognized = true;
+                    if let Some(text) = data["content"].as_str().filter(|t| !t.trim().is_empty()) {
+                        reply = Some(text.to_string());
+                        status.since = at.or(status.since);
+                    }
+                    if data["toolRequests"].as_array().is_some_and(|r| !r.is_empty()) {
+                        round_tools = true;
+                        state = State::Working;
+                        anchored = false;
+                        status.since = at.or(status.since);
+                    }
+                }
+                Some("assistant.turn_start") => {
+                    recognized = true;
+                    // A new model round: the previous round's tools all resolved (their
+                    // results feed this call), so anything still open is abandoned.
+                    open.clear();
+                    asked.clear();
+                    round_tools = false;
+                    state = State::Working;
+                    anchored = false;
+                    status.since = at.or(status.since);
+                }
+                Some("assistant.turn_end") => {
+                    recognized = true;
+                    if !round_tools {
+                        state = State::Waiting;
+                        status.since = at.or(status.since);
+                    }
+                }
+                Some("tool.execution_start") => {
+                    recognized = true;
+                    if let Some(id) = data["toolCallId"].as_str() {
+                        open.insert(id.to_string());
+                        if data["toolName"] == "ask_user"
+                            && let Some(question) = data["arguments"]["message"].as_str().filter(|t| !t.trim().is_empty())
+                        {
+                            asked.insert(id.to_string(), (truncate(question, 200), at.unwrap_or(0)));
+                        }
+                    }
+                    state = State::Working;
+                    anchored = false;
+                    status.since = at.or(status.since);
+                }
+                Some("tool.execution_complete") => {
+                    recognized = true;
+                    if let Some(id) = data["toolCallId"].as_str() {
+                        open.remove(id);
+                        asked.remove(id);
+                        // A finished tool can't still await approval.
+                        pending.retain(|_, (_, _, tool)| tool.as_deref() != Some(id));
+                    }
+                }
+                Some("permission.requested") => {
+                    recognized = true;
+                    if let Some(id) = data["requestId"].as_str() {
+                        let tool = data["permissionRequest"]["toolCallId"].as_str().map(String::from);
+                        pending.insert(id.to_string(), (permission_question(data), at.unwrap_or(0), tool));
+                    }
+                }
+                Some("permission.completed") => {
+                    recognized = true;
+                    if let Some(id) = data["requestId"].as_str() {
+                        pending.remove(id);
+                    }
+                }
+                // A confirmed cancellation ends the turn: nothing is open or pending any
+                // more, and the session rests until the next prompt.
+                Some("abort") => {
+                    recognized = true;
+                    open.clear();
+                    asked.clear();
+                    pending.clear();
+                    round_tools = false;
+                    state = State::Idle;
+                    status.since = at.or(status.since);
+                }
+                Some("session.task_complete") => {
+                    recognized = true;
+                    if let Some(summary) = data["summary"].as_str().filter(|t| !t.trim().is_empty()) {
+                        reply = Some(summary.to_string());
+                    }
+                    if open.is_empty() {
+                        state = State::Waiting;
+                        anchored = true;
+                        status.since = at.or(status.since);
+                    }
+                }
+                // A session's end abandons whatever it left open and rests; a cold
+                // resume starts clean, while one that was still active (or explicitly
+                // continues pending work) keeps everything, including its state.
+                Some("session.shutdown") => {
+                    recognized = true;
+                    open.clear();
+                    asked.clear();
+                    pending.clear();
+                    round_tools = false;
+                    state = State::Idle;
+                }
+                Some("session.resume") => {
+                    recognized = true;
+                    if data["sessionWasActive"].as_bool() != Some(true) && data["continuePendingWork"].as_bool() != Some(true) {
+                        open.clear();
+                        asked.clear();
+                        pending.clear();
+                        round_tools = false;
+                        state = State::Idle;
+                    }
+                }
+                // Lifecycle bookkeeping: recognized, but says nothing about this turn. A
+                // session error is deliberately not terminal: retries aren't visible here,
+                // and whatever follows decides.
+                Some(
+                    "session.start"
+                    | "session.error"
+                    | "session.model_change"
+                    | "session.auto_mode_resolved"
+                    | "session.permissions_changed"
+                    | "session.usage_record"
+                    | "session.usage_checkpoint"
+                    | "instruction.update"
+                    | "system.message"
+                    | "human_response.recorded"
+                    | "model.turn_started"
+                    | "model.turn_ended"
+                    | "model.message"
+                    | "model.response"
+                    | "model.messages_snapshot"
+                    | "model.model_call_started"
+                    | "model.model_call_success"
+                    | "model.captured_assignment_context",
+                ) => recognized = true,
+                _ => {}
+            }
+        }
+        if !recognized {
+            // Nothing the reader knows: an empty log is a session with nothing in it yet,
+            // anything else a format newer than this reader.
+            status.state = Some(if text.trim().is_empty() { State::Idle } else { State::Unknown });
+            return status;
+        }
+        if let Some((_, (question, asked, _))) = pending.iter().max_by_key(|(_, (_, at, _))| at) {
+            status.state = Some(State::NeedsInput);
+            status.question = Some(question.clone());
+            // Copilot's approval keys aren't Lantern's: answer it in its terminal.
+            status.question_kind = Some(crate::model::QuestionKind::Other);
+            status.since = Some(*asked).filter(|at| *at > 0).or(status.since);
+        } else if let Some((_, (question, asked))) = asked.iter().max_by_key(|(_, (_, at))| at) {
+            status.state = Some(State::NeedsInput);
+            status.question = Some(question.clone());
+            status.question_kind = Some(crate::model::QuestionKind::Other);
+            status.since = Some(*asked).filter(|at| *at > 0).or(status.since);
+        } else if !open.is_empty() {
+            status.state = Some(State::Working);
+        } else {
+            // A turn that ended silently is over with nothing to show; a completed task
+            // with nothing to show still finished.
+            if state == State::Waiting && reply.as_ref().is_none_or(|r| r.trim().is_empty()) && !anchored {
+                state = State::Idle;
+            }
+            if state == State::Waiting || state == State::Idle {
+                status.last_message = reply.map(|t| truncate(&t, MESSAGE_CHARS));
+            }
+            status.state = Some(state);
+        }
+        status
+    }
+
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (entries, whole) = tail_lines(path, crate::history::TAIL_BYTES)?;
+        let mut out = Vec::new();
+        for (offset, e) in entries {
+            if !root_event(&e) {
+                continue;
+            }
+            let at = at_ms(&e).map(crate::model::iso);
+            let at = at.as_deref();
+            let data = &e["data"];
+            match e["type"].as_str() {
+                // `content` is what was said; `transformedContent` wraps it for the model.
+                // Empty and memory-kept entries are bookkeeping, not the conversation.
+                Some("user.message") => {
+                    if let Some(text) = human_said(data) {
+                        push(&mut out, Role::User, text, at, line_id(offset, 0));
+                    }
+                }
+                Some("assistant.message") => {
+                    if let Some(text) = data["content"].as_str().filter(|t| !t.trim().is_empty()) {
+                        push(&mut out, Role::Agent, text, at, line_id(offset, 0));
+                    }
+                    for (i, call) in data["toolRequests"].as_array().into_iter().flatten().enumerate() {
+                        let name = call["name"].as_str().unwrap_or("tool");
+                        push(&mut out, Role::Tool, &describe_tool(name, &call["arguments"]), at, line_id(offset, i + 1));
                     }
                 }
                 _ => {}
