@@ -1777,3 +1777,11 @@ fn an_unreadable_session_file_is_a_failed_read() {
     assert!(crate::readers::gemini::history(&dir.join("missing.jsonl")).is_none());
     assert!(crate::readers::grok::history(&dir.join("missing.jsonl")).is_none());
 }
+
+#[test]
+fn npm_errors_say_what_went_wrong_not_where_the_log_is() {
+    let refused = "npm error code ECONNREFUSED\nnpm error FetchError: request to http://127.0.0.1:9/-/ping failed, reason: connect ECONNREFUSED 127.0.0.1:9\nnpm error     at x\nnpm error A complete log of this run can be found in: /x.log\n";
+    assert_eq!(crate::harness::npm_reason(refused), "connect ECONNREFUSED 127.0.0.1:9");
+    assert_eq!(crate::harness::npm_reason("npm error code E404\nnpm error 404 Not Found\nnpm error A complete log\n"), "E404");
+    assert_eq!(crate::harness::npm_reason(""), "no details");
+}

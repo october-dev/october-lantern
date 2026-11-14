@@ -197,7 +197,14 @@ pub fn ensure_installed() -> Result<Bundled> {
         return Ok(b);
     }
     *PROGRESS.lock().unwrap() = Progress::Installing;
+    crate::elog::line("October Harness: installing");
+    let started = Instant::now();
     let result = install_into(&support_dir(), true);
+    let took = started.elapsed().as_secs();
+    match &result {
+        Ok(_) => crate::elog::line(format_args!("October Harness: installed after {took} s")),
+        Err(e) => crate::elog::line(format_args!("October Harness: install failed after {took} s: {e:#}")),
+    }
     *PROGRESS.lock().unwrap() = match &result {
         Ok(_) => Progress::Idle,
         Err(e) => Progress::Failed(format!("{e:#}")),
@@ -295,7 +302,7 @@ fn download_node(root: &Path, pin: &Pin) -> Result<PathBuf> {
     if let Some(bin) = usable_node(&dest, pin.node_minimum) {
         return Ok(bin);
     }
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(300))).build().into();
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(INSTALL_LIMIT)).build().into();
     let mut resp = agent.get(&pin.node_url).call().context("downloading Node.js")?;
     let bytes = resp.body_mut().with_config().limit(256 * 1024 * 1024).read_to_vec().context("downloading Node.js")?;
     if sha256_hex(&bytes) != pin.node_sha256 {
@@ -333,6 +340,30 @@ fn download_node(root: &Path, pin: &Pin) -> Result<PathBuf> {
     usable_node(&dest, pin.node_minimum).context("the downloaded Node.js doesn't run on this computer")
 }
 
+/// How long the Node.js download, and npm's install, may each take. Generous for a slow
+/// connection: the install fetches about 95 MB in some 130 packages, and Windows' virus scanner
+/// checks each of its 16,000 files.
+const INSTALL_LIMIT: Duration = Duration::from_secs(15 * 60);
+
+/// npm's download cache under `root`, kept across attempts so one that runs out of time or
+/// connection isn't started again from nothing; removed once the harness is installed.
+fn npm_cache(root: &Path) -> PathBuf {
+    root.join("npm-cache")
+}
+
+/// What went wrong, from npm's error output: a failed request's reason, else its error code,
+/// else its first line (npm ends with where its log is, which says nothing).
+pub(crate) fn npm_reason(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines().map(|l| l.trim_start_matches("npm error").trim()).filter(|l| !l.is_empty()).collect();
+    let reason = lines
+        .iter()
+        .find_map(|l| l.split_once("reason: ").map(|(_, r)| r))
+        .or_else(|| lines.iter().find_map(|l| l.strip_prefix("code ")))
+        .or_else(|| lines.first().copied())
+        .unwrap_or("no details");
+    crate::model::truncate(reason, 200)
+}
+
 /// Installs the pinned harness under `root` (`support_dir()` in the app). `reuse_desktop`: use a
 /// compatible Node.js from October Desktop instead of downloading one.
 pub fn install_into(root: &Path, reuse_desktop: bool) -> Result<Bundled> {
@@ -355,24 +386,42 @@ pub fn install_into(root: &Path, reuse_desktop: bool) -> Result<Bundled> {
         // Its Node.js first; then the system's basics (npm runs no install scripts here).
         let system = if cfg!(windows) { std::env::var("PATH").unwrap_or_default() } else { "/usr/bin:/bin:/usr/sbin:/sbin".to_string() };
         let path = format!("{}{}{system}", node_bin.display(), target.path_separator());
+        // Unreachable, npm doesn't stop: it retries each of some 130 packages in turn, for an
+        // hour or more. A ping first (with the person's own npm settings: proxy, mirror) says so
+        // in a minute.
+        let ping = crate::run::output(
+            Command::new(target.node_exe(&node_bin))
+                .arg(&npm_cli)
+                .args(["ping", "--fetch-timeout=30000", "--fetch-retries=1", "--no-update-notifier", "--loglevel=error"])
+                .env("PATH", &path),
+            Duration::from_secs(90),
+        );
+        match ping {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => bail!(
+                "this computer can't reach npm's registry, where October Harness comes from. Check the internet connection, or a proxy or firewall ({})",
+                npm_reason(&String::from_utf8_lossy(&out.stderr))
+            ),
+            Err(e) => bail!("this computer can't reach npm's registry, where October Harness comes from ({e:#})"),
+        }
         let out = crate::run::output(
             Command::new(target.node_exe(&node_bin))
                 .arg(npm_cli)
                 .args(["install", "--prefix"])
                 .arg(&work)
                 .args(["--ignore-scripts", "--no-audit", "--no-fund", "--no-update-notifier", "--loglevel=error"])
+                // npm waits 5 minutes on a stalled download by default; two, then a retry,
+                // so a bad connection ends in npm's own error rather than in our time limit.
+                .args(["--fetch-timeout=120000", "--fetch-retries=2", "--fetch-retry-maxtimeout=15000", "--prefer-offline"])
                 .arg(format!("{}@{}", pin.package, pin.version))
                 .env("PATH", &path)
-                .env("npm_config_cache", work.join(".npm-cache")),
-            Duration::from_secs(300),
+                .env("npm_config_cache", npm_cache(root)),
+            INSTALL_LIMIT,
         )
         .context("installing October Harness")?;
         if !out.status.success() {
-            let err = String::from_utf8_lossy(&out.stderr);
-            let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-            bail!("npm couldn't install October Harness: {}", crate::model::truncate(last, 200));
+            bail!("npm couldn't install October Harness: {}", npm_reason(&String::from_utf8_lossy(&out.stderr)));
         }
-        let _ = std::fs::remove_dir_all(work.join(".npm-cache"));
         // npm installs every platform's optional packages from the harness's shrinkwrap (about
         // 300 MB of esbuild builds); only this system's can ever load.
         prune_other_platforms(&work.join("node_modules"), 0, target);
@@ -403,6 +452,7 @@ pub fn install_into(root: &Path, reuse_desktop: bool) -> Result<Bundled> {
         let _ = std::fs::remove_dir_all(&work);
     }
     result?;
+    let _ = std::fs::remove_dir_all(npm_cache(root));
     // Older versions (and unfinished installs) are no longer used.
     for old in std::fs::read_dir(&harness).into_iter().flatten().flatten() {
         if old.path() != dest {
