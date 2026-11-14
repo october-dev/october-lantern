@@ -144,8 +144,9 @@ Say you have six sessions running in cmux: two Claude Code, two Codex, one OpenC
 | October harness (`october`) | ✅ | ✅ | ✅ | October's own agent, built on Pi. Built in: installed on first use when it isn't on your PATH, and the default agent when no other agent is signed in to your own plan |
 | Gemini CLI | ✅ | ✅ | ✅ | |
 | Muse (Meta) | ✅ | ✅ | ✅ | Exact session matching. When Muse asks to approve a tool, the card shows what it wants; answer in its terminal |
+| Goose | ✅ | ✅ | ✅ | Reads Goose's sessions database. Approval prompts show as Working; answer them in Goose's terminal |
 | Grok | ✅ | ✅ | ✅ | Reads Grok's session files. Taking back a prompt with Ctrl+C before Grok starts responding can leave the card on *Working* until a later turn ends. Stop isn't offered for Grok: Escape doesn't stop it, so cancel its turn with Ctrl+C in its terminal |
-| Cursor Agent, Qwen Code, Goose, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shown as *Running*; you can still reply and jump to them |
+| Cursor Agent, Qwen Code, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie | ✅ | — | — | Shown as *Running*; you can still reply and jump to them |
 
 Headless runs (for example `claude -p` or `codex exec` in a script) are ignored on purpose, because there's no one to answer them.
 
@@ -169,7 +170,7 @@ Lantern is in **beta (v0.6.21)**.
 | macOS app (macOS 14+, Apple silicon and Intel), signed and notarized | ✅ |
 | Automatic updates | ✅ |
 | Finds agents in any terminal | ✅ |
-| Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI, Grok, Muse |
+| Working / your-turn status, last message, chat view | ✅ Claude Code, Codex, OpenCode, Pi, October harness, Gemini CLI, Goose, Grok, Muse |
 | Reply from Lantern | ✅ cmux, Terminal, iTerm2, tmux. Other terminals: copy and paste. |
 | Allow / Deny permission prompts | ✅ Claude Code with hooks on, in cmux, iTerm2 and tmux. The card shows the tool and the full command being approved. The key is only pressed if that prompt is still the one on screen. |
 | Cards: an agent Lantern started asks you a question or hands you a step, shows its progress and its result | ✅ Claude Code, Codex and October started from Lantern (with or without October Bus and Cua Driver). An answer goes only to a question the agent is still waiting on (up to 25 minutes); otherwise the card says it closed, and nothing is typed in later. Proven end to end with Claude Code and Codex on macOS; October's own model turn and Windows/Linux not yet. |
@@ -230,7 +231,7 @@ Lantern is in **beta (v0.6.21)**.
 - **The assistant's Ask** sends your question, earlier questions and answers in that chat, and a short summary of your running agents (handle, agent, project, state, session title, the question it's asking and the start of its last message) to the same October endpoint. Nothing is sent until you submit the question. Ask conversations are saved locally, including text and image references, and can be reopened after quitting Lantern. A task it starts runs on your computer like any New Session; the selected agent can send its input to its own model provider.
 - **Agents using your apps.** With "Let agents use this Mac's apps" on (the default), agents Lantern starts can look at and operate your apps' windows, including your signed-in browser, through Cua Driver running on this computer. Screenshots and what agents read stay on the computer except what the agent itself sends to its own AI provider, as with anything else it reads. Cua Driver's own anonymous usage reporting is turned off (`cua-driver telemetry disable`, and `DO_NOT_TRACK=1` for Lantern's driver). Turn it off in Settings › General.
 - **New-session screenshots.** The optional "Include a screenshot of my screen" setting adds a screenshot to a new session. Point & Ask and agents with computer access have the separate capture paths described above. It captures the display you're on when you open New Session, leaving out Lantern's own windows, and shows you a preview. When you click Start, it's saved on your Mac (`~/Library/Application Support/October Lantern/screenshots`, only readable by you, deleted after a week), and the new agent is given its path with the first message: Codex gets it attached (`--image`), and Claude Code and Gemini CLI are allowed to read that folder. Lantern itself never uploads it; the agent sends it to its model provider like any image you give it. It's never recorded continuously.
-- **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`, `~/.grok/sessions`), and never modifies them.
+- **Read-only by default.** Lantern reads the process list and the agents' own session files (`~/.claude/projects`, `~/.codex/sessions`, OpenCode's database, `~/.pi` / `~/.october` sessions, `~/.gemini`, Goose's sessions database, `~/.grok/sessions`), and never modifies them.
 - **Typing replies.** When you send a reply, Lantern types it into that agent's terminal: through cmux's command-line tool, tmux, or macOS Automation for Terminal and iTerm2. macOS asks you once per app before Automation is allowed.
 - **Optional hooks.** If you turn on exact status, Lantern adds itself to Claude Code's hooks (`~/.claude/settings.json`: PermissionRequest, Notification, Stop, UserPromptSubmit, PostToolUse, PostToolUseFailure) and Codex's `notify` setting (`~/.codex/config.toml`). It reads and checks both files before changing either, backs both up (never overwriting an earlier backup), replaces each atomically, puts the first file back if the second can't be written, keeps any existing Codex notify program working, and restores everything when you turn hooks off or uninstall. Settings shows Claude Code and Codex separately, and offers an update when an older Lantern's Claude hooks are installed. If Lantern is deleted without uninstalling, the hooks quietly do nothing. The hook events Lantern stores (`~/Library/Application Support/October Lantern/events`) hold the agent's last message and the command it asked permission for.
 - **Problem and crash reports are only ever sent by you**, as an email you see before sending. They contain versions and a summary of which agents and terminals are running, never conversations, folders or code.
@@ -262,7 +263,7 @@ Lantern doesn't need Full Disk Access.
 
 1. **Prove the October connections live:** a real phone pairing, reply and revoke, and a real October Desktop pairing.
 2. **Replies in more terminals:** Ghostty, VS Code and Warp.
-3. **Status for more agents:** Cursor, Qwen, Goose and others.
+3. **Status for more agents:** Cursor, Qwen and others.
 4. **Automatic routing.** Say "tell the backend agent to use Postgres" and Lantern picks the agent.
 5. **Windows.**
 
@@ -328,7 +329,7 @@ Yes. The core app is free and local monitoring/replies need no account. Ask Lant
   1. reads the process table and picks out interactive agent processes by executable name (including `node`/`bun`/`python` wrappers);
   2. finds the app each one runs in by walking up its parent processes, and matches its terminal against tmux panes;
   3. works out how to type into it: tmux, cmux (from the `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID` in the agent's environment), or Terminal / iTerm2 (AppleScript, matching the tab's tty);
-  4. reads each agent's session to decide *working* vs *your turn* and get the last message and title. It uses Claude Code transcripts (each entry's `stop_reason` and timestamp), Codex rollout files (found through the process's open files; turn events carry their own times), OpenCode's SQLite database (read-only), Pi and October harness JSONL, Gemini CLI JSONL and Grok Build updates (these four matched by folder and start time), and Muse's session event log (found through the session lock the process holds open; a run's start and end mark the turn, and a tool approval with no decision is a question for you);
+  4. reads each agent's session to decide *working* vs *your turn* and get the last message and title. It uses Claude Code transcripts (each entry's `stop_reason` and timestamp), Codex rollout files (found through the process's open files; turn events carry their own times), OpenCode's SQLite database (read-only), Pi and October harness JSONL, Gemini CLI JSONL, Goose's SQLite sessions database and Grok Build updates (these five matched by folder and start time), and Muse's session event log (found through the session lock the process holds open; a run's start and end mark the turn, and a tool approval with no decision is a question for you);
   5. merges hook events (from `lantern-engine hook ...`), using whichever is newer;
   6. sends the app a snapshot whenever something changed.
 
@@ -360,7 +361,7 @@ Development flags:
 Engine commands:
 - `cargo run -- agents`
 - `cargo run -- history <agent-id>`
-- `cargo run -- probe opencode|pi|october|gemini|grok <folder>`
+- `cargo run -- probe opencode|pi|october|gemini|goose|grok <folder>`
 - `cargo run -- hooks status|install|uninstall|remove-all`
 
 **Releasing** (from the Mac that holds the signing keys):
