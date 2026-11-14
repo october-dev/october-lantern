@@ -602,6 +602,7 @@ fn elements_of(v: &Value) -> Vec<Element> {
                     label: e.get("label").and_then(Value::as_str).map(str::to_string),
                     value: e.get("value").and_then(Value::as_str).map(str::to_string),
                     frame: e.get("frame").and_then(rect_of),
+                    depth: e.get("depth").and_then(Value::as_u64).unwrap_or(0) as u32,
                 })
                 .collect()
         })
