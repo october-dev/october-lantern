@@ -28,6 +28,7 @@ impl AgentKind {
     pub const OCTOBER: &str = "october";
     pub const CLAUDE: &str = "claude";
     pub const CODEX: &str = "codex";
+    pub const GROK: &str = "grok";
     /// Every agent Lantern supports, in the order New Session lists them.
     pub const SUPPORTED: [&str; 18] = [
         "claude", "codex", "gemini", "opencode", "pi", "october", "grok", "cursor", "copilot", "qwen", "goose", "aider", "amp", "kimi",
@@ -260,6 +261,12 @@ impl Agent {
     }
     pub fn is_live(&self) -> bool {
         self.live.unwrap_or(true)
+    }
+    /// Whether Stop is offered: it sends Escape, which Grok doesn't take as cancel (it keeps
+    /// working and points at Ctrl+C), so Lantern never offers Stop for Grok — and never says
+    /// it stopped one. Both the button and the action read this.
+    pub fn stoppable(&self) -> bool {
+        self.kind.as_str() != AgentKind::GROK
     }
     pub fn session_ambiguous(&self) -> bool {
         self.session_match.as_deref() == Some("ambiguous")

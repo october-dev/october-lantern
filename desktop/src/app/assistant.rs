@@ -702,7 +702,8 @@ impl Lantern {
     }
 
     /// Stop (Swift `Assistant.stop`): Lantern's answer ends where it is; a working agent gets
-    /// Escape, as in its terminal, and stays open for what you say next.
+    /// Escape, as in its terminal, and stays open for what you say next. Never a Grok: Escape
+    /// doesn't stop it, so Grok gets no Stop and no "Stopped" claim.
     pub(super) fn stop_assistant(&mut self) {
         if self.model.assistant.asking {
             self.asking.generation.fetch_add(1, Ordering::SeqCst);
@@ -713,7 +714,8 @@ impl Lantern {
             }
             return;
         }
-        let Some(agent_id) = self.model.assistant_agent().filter(|a| a.state == AgentState::Working).map(|a| a.id.clone()) else {
+        let Some(agent_id) = self.model.assistant_agent().filter(|a| a.state == AgentState::Working && a.stoppable()).map(|a| a.id.clone())
+        else {
             return;
         };
         if let Some(id) = self.request(json!({"type": "keys", "agentId": agent_id, "keys": ["Escape"]})) {
@@ -1328,6 +1330,16 @@ mod tests {
         let id = lantern.pending.iter().find(|(_, p)| matches!(p, Pending::Stop { .. })).map(|(id, _)| id.clone()).unwrap();
         lantern.engine_event(json!({"type": "replyResult", "requestId": id, "ok": true}));
         assert_eq!(lantern.model.toast.as_ref().map(|t| t.text.as_str()), Some("Stopped @claude-1"));
+    }
+
+    #[test]
+    fn stop_sends_no_escape_to_a_working_grok() {
+        let mut lantern = lantern(&["claude"]);
+        with_running_task(&mut lantern);
+        lantern.model.agents.iter_mut().find(|a| a.id == "claude:9:9").unwrap().kind = AgentKind::new("grok");
+        lantern.stop_assistant();
+        assert!(lantern.pending.values().all(|p| !matches!(p, Pending::Stop { .. })), "no Escape for Grok");
+        assert!(lantern.model.toast.is_none(), "no Stopped toast for Grok");
     }
 
     #[test]

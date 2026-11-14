@@ -402,7 +402,7 @@ fn codex_cwd(path: &Path) -> Option<String> {
 }
 
 /// Same folder, allowing for Windows' case-insensitive paths and either slash.
-fn same_folder(recorded: &str, cwd: &Path) -> bool {
+pub(crate) fn same_folder(recorded: &str, cwd: &Path) -> bool {
     let normal = |path: &str| {
         let path = path.replace('\\', "/");
         let path = path.trim_end_matches('/');

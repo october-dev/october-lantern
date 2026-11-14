@@ -1,8 +1,8 @@
-//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI and Muse.
-//! Like the Claude Code and Codex readers, these only read the agents' own files.
+//! Session readers for OpenCode, Pi (and the October harness, a Pi fork), Gemini CLI, Grok
+//! and Muse. Like the Claude Code and Codex readers, these only read the agents' own files.
 //!
-//! None of these three keeps its session file open, so a running process is matched to its
-//! session by working directory and start time.
+//! None of these keeps its session file open, so a running process is matched to its session by
+//! working directory and start time.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -460,6 +460,281 @@ pub mod gemini {
                 _ => {}
             }
         }
+        Some(Chat { messages: keep_recent(out), whole })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Grok Build: one directory per session,
+// `$GROK_HOME/sessions/<percent-encoded cwd>/<sessionId>/` (default `~/.grok/sessions`).
+// `updates.jsonl` is the authoritative transcript, an ACP `session/update` stream (a turn's
+// prompt, the reply's chunks, its tool calls, then `turn_completed` on `_x.ai/session/update`);
+// `summary.json` names the session under `info` (`id`, `cwd`), which is the match. Shapes are
+// checked against grok-build's source (xai-org/grok-build) and real sessions.
+
+pub mod grok {
+    use super::*;
+
+    fn root() -> PathBuf {
+        std::env::var_os("GROK_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".grok")).join("sessions")
+    }
+
+    /// The working directory as Grok names its session folder: `urlencoding::encode(cwd)`
+    /// (`/` → `%2F`, `:` → `%3A`); letters, digits and `-_.~` stay as they are. (A cwd whose
+    /// encoding exceeds 255 bytes gets a hash-named folder instead; those sessions match
+    /// through the full scan in `session_file_in`.)
+    pub(crate) fn encode(cwd: &str) -> String {
+        let mut out = String::with_capacity(cwd.len());
+        for b in cwd.bytes() {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{b:02X}"));
+            }
+        }
+        out
+    }
+
+    /// The session's `summary.json`.
+    fn summary(session: &Path) -> Option<Value> {
+        let bytes = fs::read(session.join("summary.json")).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    /// The `info.cwd` the session claims (the source of truth for the match).
+    fn summary_cwd(summary: &Value) -> Option<&str> {
+        summary.get("info")?.get("cwd")?.as_str()
+    }
+
+    /// Whether Grok hides the session from its own listings: an explicit `hidden`, else any
+    /// `subagent…` kind (a helper's child session, stored in the same folder with its own
+    /// `updates.jsonl`). Mirrors Grok's `Summary::is_hidden` exactly; headless sessions stay
+    /// listable there, and here.
+    fn is_hidden(summary: &Value) -> bool {
+        if let Some(hidden) = summary.get("hidden").and_then(Value::as_bool) {
+            return hidden;
+        }
+        summary.get("session_kind").and_then(Value::as_str).is_some_and(|k| k.starts_with("subagent"))
+    }
+
+    /// The summary's `info.cwd` against the agent's cwd, raw and resolved (a cwd seen through a
+    /// symlink), so Windows paths match too.
+    fn matches_folder(recorded: &str, cwd: &Path) -> bool {
+        crate::transcripts::same_folder(recorded, cwd) || crate::transcripts::same_folder(recorded, &resolved(cwd))
+    }
+
+    pub fn session_file(cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        session_file_in(&root(), cwd, started_secs)
+    }
+
+    /// The newest session on `cwd` the agent could have written: the encoded folder first (Grok
+    /// names it `urlencoding::encode(cwd)`), every folder only when that has no match (a cwd
+    /// Grok saw before a symlink changed, or a long cwd's hash-named folder). The session's own
+    /// `info.cwd` decides; hidden (subagent) sessions never match.
+    pub(crate) fn session_file_in(sessions: &Path, cwd: &Path, started_secs: u64) -> Option<PathBuf> {
+        let started_ms = started_secs.saturating_sub(60) * 1000;
+        let hunt = |dir: &Path| -> Option<(u64, PathBuf)> {
+            fs::read_dir(dir)
+                .ok()?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .filter_map(|session| {
+                    let log = session.join("updates.jsonl");
+                    let m = mtime_ms(&log)?;
+                    if m < started_ms {
+                        return None;
+                    }
+                    let s = summary(&session)?;
+                    if is_hidden(&s) {
+                        return None;
+                    }
+                    matches_folder(summary_cwd(&s)?, cwd).then_some((m, log))
+                })
+                .max_by_key(|(m, _)| *m)
+        };
+        if let Some((_, log)) = hunt(&sessions.join(encode(&resolved(cwd).to_string_lossy()))) {
+            return Some(log);
+        }
+        fs::read_dir(sessions)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .filter_map(|dir| hunt(&dir))
+            .max_by_key(|(m, _)| *m)
+            .map(|(_, log)| log)
+    }
+
+    /// `params.update` of a session-update line: `session/update`, or Grok's own `_x.ai`
+    /// extension updates (`task_completed`, `plan`, …).
+    fn update(e: &Value) -> Option<&Value> {
+        if !matches!(e["method"].as_str(), Some("session/update" | "_x.ai/session/update")) {
+            return None;
+        }
+        let u = &e["params"]["update"];
+        u.is_object().then_some(u)
+    }
+
+    /// When the line happened, in epoch ms: the agent's own clock first, else the line's own
+    /// seconds.
+    fn at_ms(e: &Value) -> Option<u64> {
+        e["params"]["update"]["_meta"]["agentTimestampMs"]
+            .as_u64()
+            .or_else(|| e["params"]["_meta"]["agentTimestampMs"].as_u64())
+            .or_else(|| e["timestamp"].as_u64().map(|s| s.saturating_mul(1000)))
+    }
+
+    /// Text of a message chunk: usually one `{"type": "text", "text": …}` block.
+    fn chunk_text(update: &Value) -> String {
+        let content = &update["content"];
+        if let Some(blocks) = content.as_array() {
+            blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n")
+        } else if content["type"] == "text" {
+            content["text"].as_str().unwrap_or_default().to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// A real prompt: the user's own words. Background-task completions arrive as
+    /// `user_message_chunk` too, marked `hideFromScrollback`, for the model only.
+    fn is_real_prompt(e: &Value) -> bool {
+        let Some(u) = update(e) else { return false };
+        if u["sessionUpdate"] != "user_message_chunk" || u["_meta"]["hideFromScrollback"].as_bool() == Some(true) {
+            return false;
+        }
+        !chunk_text(u).trim().is_empty()
+    }
+
+    pub fn parse(path: &Path, mtime: u64) -> SessionStatus {
+        let mut status = SessionStatus { since: Some(mtime), ..Default::default() };
+        if let Some(head) = read_range(path, false, 128 * 1024) {
+            for e in lines(&head) {
+                if status.session_id.is_none()
+                    && let Some(id) = e["params"]["sessionId"].as_str()
+                {
+                    status.session_id = Some(id.to_string());
+                }
+                if status.title.is_none()
+                    && is_real_prompt(&e)
+                    && let Some(u) = update(&e)
+                {
+                    status.title = Some(truncate(chunk_text(u).lines().next().unwrap_or(""), 80));
+                }
+                if status.session_id.is_some() && status.title.is_some() {
+                    break;
+                }
+            }
+        }
+        // The session id is its directory's name.
+        if status.session_id.is_none() {
+            status.session_id = path.parent().and_then(|d| d.file_name()).and_then(|s| s.to_str()).map(String::from);
+        }
+        let Some(tail) = read_range(path, true, TAIL_BYTES) else { return status };
+        // A turn ends with `turn_completed`; anything after it is the next turn starting. Every
+        // turn — a real prompt or a hidden reminder, which always starts one — sets Working;
+        // the model's thoughts count too, since a turn usually thinks before it writes. The last
+        // message is the turn's final agent text: a new message starts at every update that
+        // isn't another reply chunk (a tool call, a thought, the next prompt), as in `history`,
+        // and `turn_completed` keeps the turn's text. The reset is lazy — trailing bookkeeping
+        // after the final text (a hook run, a tool update) must not wipe it. `turn_completed`
+        // carries no text on normal turns — only errors fill `agent_result`.
+        // Cancel-rewind can take back a prompt before Grok's first activity. Its user chunk
+        // may already be on disk, but Grok records neither turn_completed nor rewind_marker
+        // for that cancellation. This transcript then reads Working until a later turn ends.
+        let mut state: Option<State> = None;
+        let mut reply = String::new();
+        let mut last = String::new();
+        let mut fresh = true;
+        for e in lines(&tail) {
+            let Some(u) = update(&e) else { continue };
+            let su = u["sessionUpdate"].as_str();
+            // A hidden reminder is invisible to the reply (as in `history`): no new agent text.
+            let hidden = su == Some("user_message_chunk") && u["_meta"]["hideFromScrollback"].as_bool() == Some(true);
+            if su == Some("turn_completed") {
+                last = std::mem::take(&mut reply);
+                if let Some(result) = u["agent_result"].as_str().filter(|r| !r.trim().is_empty()) {
+                    last = result.to_string();
+                }
+                fresh = true;
+            } else if su == Some("agent_message_chunk") {
+                let t = chunk_text(u);
+                if fresh {
+                    reply = t;
+                    fresh = false;
+                } else {
+                    reply.push_str(&t);
+                }
+            } else if !hidden {
+                fresh = true;
+            }
+            let next = match su {
+                Some("user_message_chunk") => Some(State::Working),
+                Some("agent_message_chunk" | "agent_thought_chunk" | "tool_call") => Some(State::Working),
+                Some("turn_completed") => Some(State::Waiting),
+                _ => None,
+            };
+            if let Some(s) = next {
+                state = Some(s);
+                status.since = at_ms(&e).or(status.since);
+            }
+        }
+        status.state = Some(state.unwrap_or(State::Idle));
+        if status.state == Some(State::Waiting) {
+            status.last_message = Some(truncate(&last, MESSAGE_CHARS)).filter(|t| !t.is_empty());
+        }
+        status
+    }
+
+    pub fn history(path: &Path) -> Option<Chat> {
+        let (entries, whole) = tail_lines(path, crate::history::TAIL_BYTES)?;
+        let mut out = Vec::new();
+        // One reply streams as many `agent_message_chunk` lines; they read as one message.
+        let mut agent: Option<(String, Option<String>, Option<String>)> = None;
+        let flush = |out: &mut Vec<crate::history::ChatMessage>, agent: &mut Option<(String, Option<String>, Option<String>)>| {
+            if let Some((text, at, id)) = agent.take() {
+                push(out, Role::Agent, &text, at.as_deref(), id);
+            }
+        };
+        for (offset, e) in entries {
+            let Some(u) = update(&e) else { continue };
+            if u["sessionUpdate"] != "agent_message_chunk" {
+                flush(&mut out, &mut agent);
+            }
+            let at = at_ms(&e).map(crate::model::iso);
+            let at = at.as_deref();
+            match u["sessionUpdate"].as_str() {
+                Some("user_message_chunk") => {
+                    if u["_meta"]["hideFromScrollback"].as_bool() == Some(true) {
+                        continue;
+                    }
+                    push(&mut out, Role::User, &chunk_text(u), at, line_id(offset, 0));
+                }
+                Some("agent_message_chunk") => {
+                    let t = chunk_text(u);
+                    if t.trim().is_empty() {
+                        continue;
+                    }
+                    match agent.as_mut() {
+                        Some(a) => a.0.push_str(&t),
+                        None => agent = Some((t, at.map(String::from), line_id(offset, 0))),
+                    }
+                }
+                Some("tool_call") => {
+                    let name = u["title"].as_str().unwrap_or("tool");
+                    let input = u.get("rawInput").unwrap_or(&Value::Null);
+                    push(&mut out, Role::Tool, &describe_tool(name, input), at, line_id(offset, 0));
+                }
+                Some("turn_completed") => {
+                    if let Some(result) = u["agent_result"].as_str() {
+                        push(&mut out, Role::Agent, result, at, line_id(offset, "result"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        flush(&mut out, &mut agent);
         Some(Chat { messages: keep_recent(out), whole })
     }
 }
