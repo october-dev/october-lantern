@@ -2,6 +2,20 @@
 
 - `banner.png`: generated with the built-in image generation tool, using the existing `logo.png` and the Lantern website's autumn poster as references. Final image: 2048 × 683 pixels.
 - `download-macos.svg`, `download-windows.svg`: local, static vector buttons. The README supplies the download link and accessible alternative text. It makes no third-party image requests.
+- `../images/`: README screenshots, captured on a Mac in dark mode from placeholder data only
+  (no real agents, paths or conversations). `question-card.png` is `question-permission.png`
+  from `OctoberLantern --snapshot-questions <dir>` (sample permission card; that command does
+  not start the engine). `ask-lantern.png` is `panel-assistant-recent.png` from
+  `OctoberLantern --snapshot <dir>` (the demo recent-chat home, whose turn list is empty — not
+  a thread). Note `--snapshot` starts the engine first, so its inbox, agents and chat captures
+  show real sessions and must not be published. `panel.png` and `pill.png` show the same views
+  with three sample agents held still via a temporary local change; no committed command
+  produces them. All four have an opaque black backdrop (`question-card.png` is captured over
+  black; the other two translucent captures were composited onto black afterwards).
+  Optimised with `PIL.Image.save(..., optimize=True)`. To refresh on Linux instead:
+  `build/linux/october-lantern --fixture desktop/fixtures/<surface>.json --out docs/images/<name>.png --scale 2`
+  (create `docs/images/` first; the renderer does not). `scripts/check.sh` fails the build if
+  any image the README references is missing.
 
 ## Banner generation prompt
 
