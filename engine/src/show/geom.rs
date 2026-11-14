@@ -119,6 +119,8 @@ pub struct Element {
     pub label: Option<String>,
     pub value: Option<String>,
     pub frame: Option<Rect>,
+    /// How deep in the window's tree: the elements after one that are deeper are inside it.
+    pub depth: u32,
 }
 
 /// What kind of control an element is, the same words on every system; `None` for elements Show
@@ -136,6 +138,9 @@ pub fn control_kind(role: &str) -> Option<&'static str> {
         "disclosuretriangle" => "disclosure",
         "slider" => "slider",
         "incrementor" | "spinbutton" | "spinner" => "stepper",
+        // A sidebar or list entry (System Settings' Appearance, a Finder folder) is clicked like a
+        // button; October takes no other word for it.
+        "row" | "outlinerow" | "tablerow" | "listitem" | "treeitem" | "dataitem" => "button",
         _ => return None,
     })
 }
@@ -155,6 +160,27 @@ pub struct Control {
     pub image: Rect,
     pub screen: Rect,
     pub window_id: i64,
+}
+
+/// A row's name: rows have none of their own, so the first plain text inside it (a few elements
+/// on). Only text is read, never a field (nothing typed is sent) or a cell (some are named for
+/// their code, like "ICMNoteListCell").
+fn inner_label(elements: &[Element], row: usize) -> Option<String> {
+    let depth = elements[row].depth;
+    elements[row + 1..].iter().take_while(|e| e.depth > depth).take(8).find_map(|e| {
+        let role = e.role.trim_start_matches("AX").to_ascii_lowercase().replace([' ', '_', '-'], "");
+        if !matches!(role.as_str(), "statictext" | "text") {
+            return None;
+        }
+        let text = e.label.as_deref().or(e.value.as_deref())?;
+        sendable_label(&Element { role: String::new(), label: Some(text.into()), value: None, frame: None, depth: 0 })
+    })
+}
+
+/// A list's entry (a row, list or tree item), as each system names it.
+fn is_row(role: &str) -> bool {
+    let r = role.trim_start_matches("AX").to_ascii_lowercase().replace([' ', '_', '-'], "");
+    matches!(r.as_str(), "row" | "outlinerow" | "tablerow" | "listitem" | "treeitem" | "dataitem")
 }
 
 /// A control's name, when it is safe to send: never a value (the driver falls back to an element's
@@ -189,7 +215,7 @@ pub fn project(capture: &Capture, windows: &[(Window, Vec<Element>)]) -> Vec<Con
     let mut out = Vec::new();
     for (i, (window, elements)) in order.iter().enumerate() {
         let in_front: Vec<Rect> = order[..i].iter().map(|(w, _)| w.bounds).collect();
-        for e in elements {
+        for (k, e) in elements.iter().enumerate() {
             if out.len() >= CONTROL_LIMIT {
                 return out;
             }
@@ -202,7 +228,7 @@ pub fn project(capture: &Capture, windows: &[(Window, Vec<Element>)]) -> Vec<Con
             out.push(Control {
                 id: out.len() as u32 + 1,
                 kind,
-                label: sendable_label(e),
+                label: if is_row(&e.role) { sendable_label(e).or_else(|| inner_label(elements, k)) } else { sendable_label(e) },
                 image,
                 screen: frame,
                 window_id: window.window_id,
@@ -242,7 +268,7 @@ mod tests {
     }
 
     fn button(label: &str, frame: Rect) -> Element {
-        Element { role: "AXButton".into(), label: Some(label.into()), value: None, frame: Some(frame) }
+        Element { role: "AXButton".into(), label: Some(label.into()), value: None, frame: Some(frame), depth: 0 }
     }
 
     #[test]
@@ -315,17 +341,47 @@ mod tests {
             label: Some("hunter2".into()),
             value: Some("hunter2".into()),
             frame: Some(Rect::new(10.0, 10.0, 40.0, 20.0)),
+            depth: 0,
         };
         let field = Element {
             role: "AXTextField".into(),
             label: Some("Password".into()),
             value: None,
             frame: Some(Rect::new(10.0, 60.0, 40.0, 20.0)),
+            depth: 0,
         };
         let secure = Element { role: "AXSecureTextField".into(), ..field.clone() };
         let controls = project(&c, &[(window(1, 1, Rect::new(0.0, 0.0, 800.0, 600.0)), vec![typed, field, secure])]);
         assert_eq!(controls.len(), 1, "fields are never offered");
         assert_eq!(controls[0].label, None, "a name equal to the value is dropped, the control stays");
+    }
+
+    /// System Settings' sidebar: each entry is a row with no name of its own, its name in the text
+    /// inside it. Without the rows, a step on the sidebar had nothing to point at and October
+    /// guessed a box (a report: "Click Appearance" ringed an empty spot).
+    #[test]
+    fn sidebar_rows_are_offered_by_the_text_inside_them() {
+        let c = capture();
+        let el = |role: &str, label: Option<&str>, value: Option<&str>, frame: Option<Rect>, depth: u32| Element {
+            role: role.into(),
+            label: label.map(Into::into),
+            value: value.map(Into::into),
+            frame,
+            depth,
+        };
+        let sidebar = vec![
+            el("AXOutline", None, None, Some(Rect::new(10.0, 50.0, 200.0, 400.0)), 2),
+            el("AXRow", None, None, Some(Rect::new(10.0, 100.0, 200.0, 28.0)), 3),
+            el("AXCell", None, None, Some(Rect::new(10.0, 100.0, 200.0, 28.0)), 4),
+            el("AXStaticText", None, Some("Appearance"), Some(Rect::new(40.0, 104.0, 90.0, 20.0)), 5),
+            el("AXRow", None, None, Some(Rect::new(10.0, 130.0, 200.0, 28.0)), 3),
+            el("AXTextField", None, Some("typed in a row"), Some(Rect::new(40.0, 134.0, 90.0, 20.0)), 4),
+            el("AXButton", Some("Lock"), None, Some(Rect::new(10.0, 470.0, 40.0, 20.0)), 3),
+        ];
+        let controls = project(&c, &[(window(1, 1, Rect::new(0.0, 0.0, 800.0, 600.0)), sidebar)]);
+        let offered: Vec<_> = controls.iter().map(|c| (c.kind, c.label.as_deref())).collect();
+        assert_eq!(offered, [("button", Some("Appearance")), ("button", None), ("button", Some("Lock"))]);
+        assert_eq!(controls[0].screen, Rect::new(10.0, 100.0, 200.0, 28.0), "the whole row is ringed");
     }
 
     #[test]
@@ -344,7 +400,7 @@ mod tests {
 
     #[test]
     fn long_names_are_cut_and_control_characters_dropped() {
-        let e = Element { role: "AXButton".into(), label: Some(format!("a\u{7}{}", "é".repeat(200))), value: None, frame: None };
+        let e = Element { role: "AXButton".into(), label: Some(format!("a\u{7}{}", "é".repeat(200))), value: None, frame: None, depth: 0 };
         let label = sendable_label(&e).unwrap();
         assert!(label.starts_with('a') && !label.contains('\u{7}'));
         assert_eq!(label.encode_utf16().count(), LABEL_LIMIT);
