@@ -490,6 +490,8 @@ fn ai_menu(ui: &mut Ui, cx: &mut Ctx) {
     let color = if tier == OctoberTier::Pro { t::GREEN } else { t::MUTED };
     let button =
         ui.add(egui::Button::new(c::text(format!("{} ▾", tier.label()), 11.0, Weight::Medium, color)).corner_radius(12).fill(t::FAINT));
+    // Named like the Mac menu (Swift `AIChoiceMenu`): what the button shows, plus what it is.
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("AI: {}", tier.label())));
     let button = button.on_hover_text(tier.explanation());
     let email = cx.model.account.signed_in.as_ref().map(|a| a.email.trim()).filter(|e| e.contains('@'));
     let mut action = None;
@@ -707,23 +709,23 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        if c::icon_button(ui, "assistant-images", Icon::Paperclip, 28.0, t::MUTED, false)
-                            .on_hover_text("Add images (you can also paste or drop them here)")
-                            .clicked()
-                        {
+                        // Named like the Mac twins (AskBox toolbar): the icon debug name is no name.
+                        let attach = c::icon_button(ui, "assistant-images", Icon::Paperclip, 28.0, t::MUTED, false);
+                        attach.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add images"));
+                        if attach.on_hover_text("Add images (you can also paste or drop them here)").clicked() {
                             cx.emit(UiAction::PickAssistantImages);
                         }
-                        if c::icon_button(
+                        let mic = c::icon_button(
                             ui,
                             "assistant-mic",
                             if cx.model.dictating { Icon::MicFill } else { Icon::Mic },
                             28.0,
                             if cx.model.dictating { t::RED } else { t::MUTED },
                             false,
-                        )
-                        .on_hover_text(if cx.model.dictating { "Stop listening" } else { "Speak" })
-                        .clicked()
-                        {
+                        );
+                        let mic_name = if cx.model.dictating { "Stop listening" } else { "Speak" };
+                        mic.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, mic_name));
+                        if mic.on_hover_text(mic_name).clicked() {
                             cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
                         }
                         ai_menu(ui, cx);
@@ -1219,7 +1221,18 @@ mod tests {
             serde_json::from_str(include_str!("../../fixtures/panel-assistant-thread.json")).unwrap();
         let mut view = UiState::default();
         let (model, inputs) = (&mut fixture.model, &mut fixture.inputs);
-        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Paperclip"), vec![UiAction::PickAssistantImages]);
+        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Add images"), vec![UiAction::PickAssistantImages]);
+        // The microphone is named for what it does, in both states, like the Mac toolbar.
+        assert_eq!(
+            click_control(&ctx, &assets, model, inputs, &mut view, "Speak"),
+            vec![UiAction::ToggleDictation { owner: DictationOwner::Assistant }]
+        );
+        model.dictating = true;
+        assert_eq!(
+            click_control(&ctx, &assets, model, inputs, &mut view, "Stop listening"),
+            vec![UiAction::ToggleDictation { owner: DictationOwner::Assistant }]
+        );
+        model.dictating = false;
         model.assistant.attachments = vec!["/nowhere/a.png".into()];
         inputs.assistant.clear();
         assert_eq!(

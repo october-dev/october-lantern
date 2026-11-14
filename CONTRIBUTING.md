@@ -16,6 +16,7 @@ that finds your coding agents, reads their sessions and types replies for you.
 - `scripts/build-bus-linux.sh` bundles the pinned native Bus; `scripts/package-linux.sh` produces Linux release assets. CI creates artifacts; its optional Publish input explicitly uploads a release. The updater source is selected by the build-time `LANTERN_RELEASES_REPO` variable.
 - `scripts/setup-dictation.sh` installs local whisper.cpp and the multilingual model without root access and verifies transcription with the upstream sample.
 - `OctoberLantern --snapshot <dir>` renders the panels offscreen, handy for UI changes.
+- UI PRs get a `screens` artifact from the Screens workflow: the same surfaces on Mac and Linux side by side — check it before merging.
 
 ## How the pieces talk
 
