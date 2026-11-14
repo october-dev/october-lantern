@@ -15,8 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var subscriptions = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Development: `--snapshot <dir>` draws the welcome pages and settings tabs offscreen into
-        // PNGs and quits, for checking layouts without putting windows on screen.
+        // Development: `--snapshot <dir>` draws the welcome pages, settings tabs and panels
+        // offscreen into PNGs and quits, for checking layouts without putting windows on screen.
+        // The engine is never started: panels render fixed sample state (see
+        // `AppModel.loadSnapshotSample`), so CI renders the same screens on a bare runner.
         // Development: `--ask <image> <question>` asks October's AI once, prints the answer and quits
         // (`--ask chat <question>` asks the way the assistant does: no image, chat mode).
         if let i = CommandLine.arguments.firstIndex(of: "--ask"), i + 2 < CommandLine.arguments.count {
@@ -74,7 +76,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count {
-            model.start()
             snapshot(into: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
             return
         }
@@ -258,17 +259,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func snapshot(into dir: URL) {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // A signed-in demo account for the Ask Lantern rows, like the Linux fixtures.
+        let demoAccount = OctoberAccount.detached(signedIn: true)
         var jobs: [(String, AnyView)] = (0..<4).map { ("welcome-\($0)", AnyView(WelcomeView(model: model, onDone: {}, step: $0))) }
         jobs.append(("welcome-permissions-only", AnyView(WelcomeView(model: model, onDone: {}, permissionsOnly: true))))
         jobs += (0..<4).map { ("settings-\($0)", AnyView(SettingsView(model: model, onShowWelcome: {}, tab: $0))) }
+        // Before the demo jobs: AssistantHome reads Assistant.shared, which the assistant jobs fill in.
+        jobs.append(("panel-assistant-signed-out", AnyView(AssistantHome(model: model, account: .detached()).frame(width: 380).background(Color.black))))
+        jobs.append(("account-signed-out", AnyView(AccountCard(account: .detached()).padding(14).frame(width: 380).background(Color.black))))
         let panels: [(String, PanelMode)] = [("inbox", .inbox), ("agents", .agents), ("new", .newSession), ("october", .october), ("chat", .agents), ("assistant", .assistant),
                                                 ("starting", .inbox), ("starting-failed", .inbox),
                                                 ("assistant-recent", .assistant), ("assistant-task", .assistant)]
         jobs += panels.map { name, mode in
-            ("panel-\(name)", AnyView(PanelView(model: model, dictation: model.dictation).onAppear {
+            let signedIn = name == "assistant" || name.hasPrefix("assistant-")
+            return ("panel-\(name)", AnyView(PanelView(model: model, dictation: model.dictation, account: signedIn ? demoAccount : nil).onAppear {
+                self.model.loadSnapshotSample()
                 self.model.closeChat()
                 self.model.panel = mode
-                if name == "chat", let first = self.model.inbox.first ?? self.model.agents.first { self.model.openChat(first) }
+                if name == "chat" { self.model.loadSnapshotChat() }
+                if name == "assistant" { Assistant.shared.demoEmpty() }
                 if name.hasPrefix("assistant-") { Assistant.shared.demo(thread: name == "assistant-task") }
                 if name.hasPrefix("starting") {
                     self.model.showPreview(LaunchPreview(
@@ -277,8 +286,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }))
         }
-        jobs.append(("panel-assistant-signed-out", AnyView(AssistantHome(model: model, account: .detached()).frame(width: 380).background(Color.black))))
-        jobs.append(("account-signed-out", AnyView(AccountCard(account: .detached()).padding(14).frame(width: 380).background(Color.black))))
         jobs.append(("point-ask", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: false) })))
         jobs.append(("point-ask-answer", AnyView(PointAskCard(point: PointAsk.shared).onAppear { PointAsk.shared.demo(answered: true) })))
         func next() {
@@ -295,8 +302,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 next()
             }
         }
-        // Let the engine report agents first, so the agent page has something to show.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { next() }
+        // No engine to wait for: the sample state is ready now.
+        next()
     }
 
     // MARK: Menu

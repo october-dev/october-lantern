@@ -122,11 +122,13 @@ pub(crate) fn describe_tool(name: &str, input: &Value) -> String {
         v => v.clone(),
     };
     let detail =
-        ["description", "command", "cmd", "file_path", "path", "pattern", "url", "query", "prompt"].iter().find_map(|k| match &input[*k] {
-            Value::String(s) => Some(s.clone()),
-            Value::Array(a) => Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
-            _ => None,
-        });
+        ["description", "command", "cmd", "file_path", "path", "target_file", "target_directory", "pattern", "url", "query", "prompt"]
+            .iter()
+            .find_map(|k| match &input[*k] {
+                Value::String(s) => Some(s.clone()),
+                Value::Array(a) => Some(a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                _ => None,
+            });
     match detail {
         Some(d) => format!("{name} · {}", truncate(d.lines().next().unwrap_or(&d), 120)),
         None => name.to_string(),

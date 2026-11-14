@@ -490,6 +490,8 @@ fn ai_menu(ui: &mut Ui, cx: &mut Ctx) {
     let color = if tier == OctoberTier::Pro { t::GREEN } else { t::MUTED };
     let button =
         ui.add(egui::Button::new(c::text(format!("{} ▾", tier.label()), 11.0, Weight::Medium, color)).corner_radius(12).fill(t::FAINT));
+    // Named like the Mac menu (Swift `AIChoiceMenu`): what the button shows, plus what it is.
+    button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("AI: {}", tier.label())));
     let button = button.on_hover_text(tier.explanation());
     let email = cx.model.account.signed_in.as_ref().map(|a| a.email.trim()).filter(|e| e.contains('@'));
     let mut action = None;
@@ -707,23 +709,23 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        if c::icon_button(ui, "assistant-images", Icon::Paperclip, 28.0, t::MUTED, false)
-                            .on_hover_text("Add images (you can also paste or drop them here)")
-                            .clicked()
-                        {
+                        // Named like the Mac twins (AskBox toolbar): the icon debug name is no name.
+                        let attach = c::icon_button(ui, "assistant-images", Icon::Paperclip, 28.0, t::MUTED, false);
+                        attach.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add images"));
+                        if attach.on_hover_text("Add images (you can also paste or drop them here)").clicked() {
                             cx.emit(UiAction::PickAssistantImages);
                         }
-                        if c::icon_button(
+                        let mic = c::icon_button(
                             ui,
                             "assistant-mic",
                             if cx.model.dictating { Icon::MicFill } else { Icon::Mic },
                             28.0,
                             if cx.model.dictating { t::RED } else { t::MUTED },
                             false,
-                        )
-                        .on_hover_text(if cx.model.dictating { "Stop listening" } else { "Speak" })
-                        .clicked()
-                        {
+                        );
+                        let mic_name = if cx.model.dictating { "Stop listening" } else { "Speak" };
+                        mic.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, mic_name));
+                        if mic.on_hover_text(mic_name).clicked() {
                             cx.emit(UiAction::ToggleDictation { owner: DictationOwner::Assistant });
                         }
                         ai_menu(ui, cx);
@@ -735,7 +737,7 @@ fn ask_box(ui: &mut Ui, cx: &mut Ctx) {
                         // Stop takes Send's place while something runs and nothing is typed: with
                         // words in the box, Send stays, so you can tell a working agent more.
                         let empty = cx.inputs.assistant.trim().is_empty() && cx.model.assistant.attachments.is_empty();
-                        let working = agent.is_some_and(|a| a.state == AgentState::Working);
+                        let working = agent.is_some_and(|a| a.state == AgentState::Working && a.stoppable());
                         if empty && (cx.model.assistant.asking || working) {
                             let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(28.0), Sense::click());
                             ui.painter().circle_filled(rect.center(), 14.0, t::AMBER);
@@ -1211,6 +1213,52 @@ mod tests {
     }
 
     #[test]
+    fn a_working_grok_keeps_send_while_claude_gets_stop() {
+        use crate::model::{Agent, AgentKind, AgentState, AssistantTurn, TaskLink};
+        let ctx = egui::Context::default();
+        t::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let mut fixture: crate::app::fixture::Fixture =
+            serde_json::from_str(include_str!("../../fixtures/panel-assistant-home.json")).unwrap();
+        let mut view = UiState::default();
+        let (model, inputs) = (&mut fixture.model, &mut fixture.inputs);
+        model.agents = vec![Agent {
+            id: "grok:9:9".into(),
+            kind: AgentKind::new("grok"),
+            handle: "grok-1".into(),
+            state: AgentState::Working,
+            ..Default::default()
+        }];
+        model.assistant.turns = vec![AssistantTurn {
+            id: 1,
+            task: Some(TaskLink { agent_id: Some("grok:9:9".into()), ..Default::default() }),
+            ..Default::default()
+        }];
+        model.assistant.asking = false;
+        inputs.assistant.clear();
+        let labels = |ctx: &egui::Context, model: &Model, inputs: &mut Inputs, view: &mut UiState| -> Vec<String> {
+            ctx.enable_accesskit();
+            let mut output = ctx.run_ui(
+                egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(380.0, 900.0))), ..Default::default() },
+                |ui| {
+                    let env = Env { now_ms: 1_790_000_000_000.0, reduce_motion: true, home: "/home/me".into() };
+                    let mut out = Vec::new();
+                    super::super::render_panel(ui, &mut Ctx { model, inputs, view, assets: &assets, out: &mut out, env: &env }, 900.0);
+                },
+            );
+            output.textures_delta.clear();
+            let update = output.platform_output.accesskit_update.expect("egui emits an accessibility tree when enabled");
+            update.nodes.iter().filter_map(|(_, node)| node.label().map(str::to_string)).collect()
+        };
+        let names = labels(&ctx, model, inputs, &mut view);
+        assert!(names.iter().any(|l| l == "Ask"), "Send stays for a working Grok: {names:?}");
+        assert!(!names.iter().any(|l| l == "Stop"), "no Stop for a working Grok: {names:?}");
+        model.agents[0].kind = AgentKind::new("claude");
+        let names = labels(&ctx, model, inputs, &mut view);
+        assert!(names.iter().any(|l| l == "Stop"), "a working Claude still gets Stop: {names:?}");
+    }
+
+    #[test]
     fn images_can_be_added_and_removed_before_sending() {
         let ctx = egui::Context::default();
         t::install(&ctx);
@@ -1219,7 +1267,18 @@ mod tests {
             serde_json::from_str(include_str!("../../fixtures/panel-assistant-thread.json")).unwrap();
         let mut view = UiState::default();
         let (model, inputs) = (&mut fixture.model, &mut fixture.inputs);
-        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Paperclip"), vec![UiAction::PickAssistantImages]);
+        assert_eq!(click_control(&ctx, &assets, model, inputs, &mut view, "Add images"), vec![UiAction::PickAssistantImages]);
+        // The microphone is named for what it does, in both states, like the Mac toolbar.
+        assert_eq!(
+            click_control(&ctx, &assets, model, inputs, &mut view, "Speak"),
+            vec![UiAction::ToggleDictation { owner: DictationOwner::Assistant }]
+        );
+        model.dictating = true;
+        assert_eq!(
+            click_control(&ctx, &assets, model, inputs, &mut view, "Stop listening"),
+            vec![UiAction::ToggleDictation { owner: DictationOwner::Assistant }]
+        );
+        model.dictating = false;
         model.assistant.attachments = vec!["/nowhere/a.png".into()];
         inputs.assistant.clear();
         assert_eq!(

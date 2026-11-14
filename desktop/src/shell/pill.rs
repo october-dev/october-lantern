@@ -42,6 +42,17 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
 
     let lantern = Rect::from_min_size(rect.min + vec2(PAD, PAD), vec2(LANTERN, LANTERN));
     let response = ui.interact(lantern, ui.id().with("lantern"), Sense::click_and_drag());
+    // Screen readers (Swift `LanternButton`): the lantern reads as one button, named for what's
+    // waiting. Engine trouble joins the name: on the Mac it's the badge's own element, but a
+    // second interact here would steal the lantern's clicks.
+    let mut name = match model.badge() {
+        0 => "October Lantern".to_string(),
+        n => format!("October Lantern, {n} waiting on you"),
+    };
+    if let Some(problem) = problem_text(&model.engine) {
+        name = format!("{name}. {problem}");
+    }
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.as_str()));
     lantern_button(&painter, lantern, model, assets);
     engine_problem(&painter, lantern, &model.engine);
     if response.clicked() {
@@ -85,6 +96,8 @@ pub fn show(ui: &mut egui::Ui, model: &Model, assets: &Assets, expanded: bool, o
         ] {
             let slot = Rect::from_min_size(pos2(rect.center().x - ICON / 2.0, y), vec2(ICON, ICON));
             let response = ui.interact(slot, ui.id().with(help), Sense::click());
+            // Icon-only, like the Mac's `PillIcon`: its help text is its accessible name.
+            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, help));
             if response.hovered() || active {
                 painter.circle_filled(slot.center(), ICON / 2.0, theme::white(0.12));
             }
@@ -220,6 +233,55 @@ mod tests {
             output.textures_delta.clear();
         }
         help
+    }
+
+    /// The accessibility tree's control names after one frame of the pill.
+    fn access_names(model: &Model, expanded: bool) -> Vec<String> {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        theme::install(&ctx);
+        let assets = Assets::load(&ctx);
+        let size = if expanded { crate::shell::PILL_EXPANDED } else { crate::shell::PILL_COLLAPSED };
+        let mut output =
+            ctx.run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), ..Default::default() }, |ui| {
+                show(ui, model, &assets, expanded, &mut Vec::new());
+            });
+        output.textures_delta.clear();
+        output
+            .platform_output
+            .accesskit_update
+            .expect("egui emits an accessibility tree when enabled")
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| node.label().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn pill_buttons_are_named_like_the_macs() {
+        let mut model = Model::default();
+        model.inbox.new = vec!["a".into(), "b".into()];
+        let names = access_names(&model, true);
+        for name in [
+            "October Lantern, 2 waiting on you",
+            "Ask Lantern: ask anything, or tell it what to do",
+            "Point & Ask: select part of the screen and ask about it",
+            "Start a new agent",
+            "Your agents",
+            "Connections",
+        ] {
+            assert!(names.iter().any(|n| n == name), "missing {name} in {names:?}");
+        }
+        // Engine trouble joins the lantern's name (the Mac's separate badge element would steal
+        // clicks here).
+        model.engine = EngineHealth::Restarting;
+        let names = access_names(&model, false);
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "October Lantern, 2 waiting on you. Lantern's engine stopped and is restarting. Agents may be out of date."),
+            "{names:?}"
+        );
     }
 
     #[test]

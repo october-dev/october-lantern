@@ -392,14 +392,15 @@ final class Assistant: ObservableObject {
     }
 
     /// What Stop would stop: Lantern's own answer while it comes in, else the conversation's agent
-    /// while it works.
+    /// while it works — except Grok, which Escape doesn't stop.
     var stoppable: Bool {
         if asking { return true }
-        return activeAgent?.state == .working
+        guard let agent = activeAgent, agent.state == .working else { return false }
+        return agent.stoppable
     }
 
     /// Stop: Lantern's answer ends where it is; a working agent gets Escape and stays open for
-    /// what you say next.
+    /// what you say next. Never a Grok: Escape doesn't stop it, so Lantern won't claim it did.
     func stop() {
         if asking {
             task?.cancel()
@@ -408,7 +409,7 @@ final class Assistant: ObservableObject {
             if let i = turns.indices.last {
                 turns[i].answer += turns[i].answer.isEmpty ? "Stopped." : "\n\n(Stopped.)"
             }
-        } else if let agent = activeAgent, agent.state == .working {
+        } else if let agent = activeAgent, agent.state == .working, agent.stoppable {
             model?.interrupt(agent)
         }
     }
@@ -654,6 +655,14 @@ final class Assistant: ObservableObject {
         ]
         conversations = convos
         turns = thread ? [turn] : []
+    }
+
+    /// For snapshots: the home with no chats, like the Linux home fixture. Nothing is saved.
+    func demoEmpty() {
+        restoring = true
+        defer { restoring = false }
+        conversations = []
+        turns = []
     }
 
     // MARK: Saved conversations
@@ -1255,6 +1264,7 @@ struct AssistantThread: View {
                     Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain).help("Close")
+                .accessibilityLabel("Close")
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -1685,7 +1695,8 @@ struct AskBox: View {
                                     Button { assistant.removeAttachment(url) } label: {
                                         Image(systemName: "xmark.circle.fill").font(.system(size: 13)).foregroundStyle(.white, .black.opacity(0.7))
                                     }
-                                    .buttonStyle(.plain).help("Remove this image").offset(x: 4, y: -4)
+                                    .buttonStyle(.plain).help("Remove this image")
+                                    .accessibilityLabel("Remove this image").offset(x: 4, y: -4)
                                 }
                             }
                         }
@@ -1744,6 +1755,7 @@ struct AskBox: View {
                     .foregroundStyle(Theme.muted).frame(width: 28, height: 28)
             }
             .buttonStyle(.plain).help("Add images (you can also paste or drop them here)")
+            .accessibilityLabel("Add images")
             Button {
                 if dictation.isActive { dictation.stop() } else { dictation.start(prefix: assistant.text, owner: "assistant") }
             } label: {
@@ -1751,6 +1763,7 @@ struct AskBox: View {
                     .foregroundStyle(dictation.isRecording ? Theme.red : Theme.muted).frame(width: 28, height: 28)
             }
             .buttonStyle(.plain).help(dictation.isRecording ? "Stop listening" : "Speak")
+            .accessibilityLabel(dictation.isRecording ? "Stop listening" : "Speak")
             AIChoiceMenu()
             Spacer(minLength: 8)
             if showsStop {
@@ -1760,6 +1773,7 @@ struct AskBox: View {
                         .background(Circle().fill(Theme.amber))
                 }
                 .buttonStyle(.plain).help(assistant.asking ? "Stop Lantern's answer" : "Stop @\(assistant.activeAgent?.handle ?? "the agent")")
+                .accessibilityLabel("Stop")
             } else {
                 Button { assistant.submit() } label: {
                     Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold)).foregroundStyle(.black.opacity(0.85))
@@ -1767,6 +1781,7 @@ struct AskBox: View {
                         .background(Circle().fill(canSubmit ? Theme.amber : Theme.amber.opacity(0.35)))
                 }
                 .buttonStyle(.plain).disabled(!canSubmit).help("Ask (Return)")
+                .accessibilityLabel("Ask")
             }
         }
     }
@@ -1842,6 +1857,9 @@ struct AssistantHome: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        // One item for VoiceOver, named like its desktop twin (assistant.rs).
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel(c.title)
                         .contextMenu { Button("Delete", role: .destructive) { assistant.delete(c) } }
                     }
                 }
@@ -1864,6 +1882,7 @@ struct AssistantHome: View {
                             Image(systemName: "xmark").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.muted).frame(width: 22, height: 22)
                         }
                         .buttonStyle(.plain).keyboardShortcut(.cancelAction).help("Close")
+                        .accessibilityLabel("Close")
                     }
                     if account.signedIn {
                         Text("Ask anything, or tell Lantern what to do and an agent gets on it.")

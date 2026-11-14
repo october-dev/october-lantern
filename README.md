@@ -73,8 +73,8 @@ On Mac, **Control + Option + Space** opens replies and **Control + Option + P** 
 
 | Agents | What you can see |
 |---|---|
-| **Claude Code, Codex, [October Harness](https://harness.october.dev), OpenCode, Pi, Gemini CLI, Goose, Muse (Meta)** | Working / your-turn status, the last message, and conversation history. |
-| **Grok, Cursor Agent, Qwen Code, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie** | Running sessions; reply and navigation support depend on the terminal. |
+| **Claude Code, Codex, [October Harness](https://harness.october.dev), OpenCode, Pi, Gemini CLI, Goose, Grok, Muse (Meta)** | Working / your-turn status, the last message, and conversation history. |
+| **Cursor Agent, Qwen Code, Aider, Amp, GitHub Copilot CLI, Kimi, Droid, Crush, Auggie** | Running sessions; reply and navigation support depend on the terminal. |
 
 Optional hooks add completion updates for Codex and permission requests for Claude Code. When Lantern can't confidently match a conversation to a session, it says so.
 
