@@ -12,6 +12,10 @@ use crate::transcripts::tail_lines;
 /// How far back to read. Long sessions are tens of MB; the recent part is what matters here.
 pub(crate) const TAIL_BYTES: u64 = 3 * 1024 * 1024;
 pub(crate) const MAX_MESSAGES: usize = 120;
+/// How many of a session's newest messages the database readers (OpenCode, Goose) read for the
+/// chat, which shows recent messages only. 80 is Harsh's decision on PR #38 (2026-11-15);
+/// loading older messages can come later if people miss them.
+pub(crate) const LAST_MESSAGES: usize = 80;
 pub(crate) const MESSAGE_CHARS: usize = 8000;
 
 #[derive(Debug, Clone, Serialize)]

@@ -18,6 +18,7 @@ struct AgentKind: RawRepresentable, Codable, Hashable {
     static let claude = AgentKind(rawValue: "claude")
     static let codex = AgentKind(rawValue: "codex")
     static let grok = AgentKind(rawValue: "grok")
+    static let goose = AgentKind(rawValue: "goose")
 
     /// Every agent Lantern supports, in the order New Session lists them.
     static let supported: [AgentKind] = [
@@ -168,10 +169,10 @@ struct Agent: Codable, Identifiable, Hashable {
 
     var isLive: Bool { live ?? true }
 
-    /// Whether Stop is offered: it sends Escape, which Grok doesn't take as cancel (it keeps
-    /// working and points at Ctrl+C), so Lantern never offers Stop for Grok — and never says
-    /// it stopped one. Both the button and the action read this.
-    var stoppable: Bool { kind != .grok }
+    /// Whether Stop is offered: it sends Escape, which neither Grok nor Goose takes as cancel
+    /// (both stop a turn on Ctrl+C), so Lantern never offers Stop for them — and never says it
+    /// stopped one. Both the button and the action read this.
+    var stoppable: Bool { kind != .grok && kind != .goose }
 
     /// Lantern can't tell which conversation belongs to this process.
     var sessionAmbiguous: Bool { sessionMatch == "ambiguous" }

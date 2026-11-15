@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
-use crate::history::{Chat, Role, describe_tool, keep_recent, line_id, push};
+use crate::history::{Chat, LAST_MESSAGES, Role, describe_tool, keep_recent, line_id, push};
 use crate::model::{SessionStatus, State, epoch_ms, truncate};
 use crate::transcripts::{MESSAGE_CHARS, TAIL_BYTES, home, lines, read_range, tail_lines};
 
@@ -199,9 +199,6 @@ pub mod opencode {
         let chat = Chat { messages: keep_recent(out), whole: total <= LAST_MESSAGES };
         Some(crate::history::History::of(&format!("opencode:{session}"), chat))
     }
-
-    /// How many of a session's newest messages `history` reads.
-    const LAST_MESSAGES: usize = 80;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -706,11 +703,13 @@ pub mod goose {
     }
 
     /// `status`, against the database at `db` (where a test puts its fixture). `None` when the
-    /// database couldn't be read; an Idle status with no session when
-    /// the lookup worked but this process has no session yet.
+    /// database couldn't be read; an Idle status with no session when the lookup worked but this
+    /// process has no session yet. Like `history`, only a session created or written since the
+    /// process started counts: a resumed one writes nothing until its first prompt, and another
+    /// session active just before the start isn't this process's.
     pub(crate) fn status_in(db: &Path, cwd: &Path, started_secs: u64) -> Option<SessionStatus> {
         let layout = layout(db)?;
-        let Some((session, title)) = session_since(db, &layout, cwd, started_secs.saturating_sub(60))? else {
+        let Some((session, title)) = session_since(db, &layout, cwd, started_secs)? else {
             return Some(SessionStatus { state: Some(State::Idle), ..Default::default() });
         };
         let mut status = SessionStatus { session_id: Some(session.clone()), ..Default::default() };
@@ -753,9 +752,9 @@ pub mod goose {
     /// The session's newest messages; each block keeps its message's id, so a tool call filled in
     /// later is the same entry updated.
     ///
-    /// Only a session this process created or wrote since it started (`started_secs`, without the
-    /// minute of tolerance `status` allows): a recent session of an earlier process in the same
-    /// folder isn't its conversation. A session it resumed shows once it writes to it.
+    /// Only a session this process created or wrote since it started (`started_secs`, the same
+    /// boundary as `status`): a recent session of an earlier process in the same folder isn't its
+    /// conversation. A session it resumed shows once it writes to it.
     /// `None` when the database couldn't be read; a default (no session) when this process has
     /// none yet.
     pub fn history(cwd: &Path, started_secs: u64) -> Option<crate::history::History> {
@@ -816,9 +815,6 @@ pub mod goose {
         let chat = Chat { messages: keep_recent(out), whole: total <= LAST_MESSAGES };
         Some(crate::history::History::of(&format!("goose:{session}"), chat))
     }
-
-    /// How many of a session's newest messages `history` reads.
-    const LAST_MESSAGES: usize = 80;
 }
 
 // ---------------------------------------------------------------------------------------------

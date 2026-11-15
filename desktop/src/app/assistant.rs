@@ -702,8 +702,8 @@ impl Lantern {
     }
 
     /// Stop (Swift `Assistant.stop`): Lantern's answer ends where it is; a working agent gets
-    /// Escape, as in its terminal, and stays open for what you say next. Never a Grok: Escape
-    /// doesn't stop it, so Grok gets no Stop and no "Stopped" claim.
+    /// Escape, as in its terminal, and stays open for what you say next. Never a Grok or Goose:
+    /// Escape doesn't stop them, so they get no Stop and no "Stopped" claim.
     pub(super) fn stop_assistant(&mut self) {
         if self.model.assistant.asking {
             self.asking.generation.fetch_add(1, Ordering::SeqCst);
@@ -1333,13 +1333,15 @@ mod tests {
     }
 
     #[test]
-    fn stop_sends_no_escape_to_a_working_grok() {
-        let mut lantern = lantern(&["claude"]);
-        with_running_task(&mut lantern);
-        lantern.model.agents.iter_mut().find(|a| a.id == "claude:9:9").unwrap().kind = AgentKind::new("grok");
-        lantern.stop_assistant();
-        assert!(lantern.pending.values().all(|p| !matches!(p, Pending::Stop { .. })), "no Escape for Grok");
-        assert!(lantern.model.toast.is_none(), "no Stopped toast for Grok");
+    fn stop_sends_no_escape_to_a_working_grok_or_goose() {
+        for kind in ["grok", "goose"] {
+            let mut lantern = lantern(&["claude"]);
+            with_running_task(&mut lantern);
+            lantern.model.agents.iter_mut().find(|a| a.id == "claude:9:9").unwrap().kind = AgentKind::new(kind);
+            lantern.stop_assistant();
+            assert!(lantern.pending.values().all(|p| !matches!(p, Pending::Stop { .. })), "no Escape for {kind}");
+            assert!(lantern.model.toast.is_none(), "no Stopped toast for {kind}");
+        }
     }
 
     #[test]

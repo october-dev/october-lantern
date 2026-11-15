@@ -392,7 +392,7 @@ final class Assistant: ObservableObject {
     }
 
     /// What Stop would stop: Lantern's own answer while it comes in, else the conversation's agent
-    /// while it works — except Grok, which Escape doesn't stop.
+    /// while it works — except Grok and Goose, which Escape doesn't stop.
     var stoppable: Bool {
         if asking { return true }
         guard let agent = activeAgent, agent.state == .working else { return false }
@@ -400,7 +400,7 @@ final class Assistant: ObservableObject {
     }
 
     /// Stop: Lantern's answer ends where it is; a working agent gets Escape and stays open for
-    /// what you say next. Never a Grok: Escape doesn't stop it, so Lantern won't claim it did.
+    /// what you say next. Never a Grok or Goose: Escape doesn't stop them, so Lantern won't claim it did.
     func stop() {
         if asking {
             task?.cancel()

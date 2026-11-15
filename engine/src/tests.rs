@@ -1991,6 +1991,55 @@ fn goose_matches_only_sessions_active_since_the_process_started() {
     assert_eq!(status.state, Some(State::Idle), "created but nothing written yet");
 }
 
+/// A resumed session writes nothing before its first prompt: another session in the folder that
+/// was active just before the process started isn't this process's (no title, reply or Waiting
+/// borrowed from it), and the resumed one counts once it writes.
+#[test]
+fn goose_does_not_borrow_a_session_active_just_before_the_process_started() {
+    use crate::readers::goose;
+    let dir = temp_dir("goose-resume");
+    let db = dir.join("sessions.db");
+    let cwd = dir.join("work");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let c = rusqlite::Connection::open(&db).unwrap();
+    c.execute_batch(
+        "CREATE TABLE sessions(id TEXT PRIMARY KEY, name TEXT, working_dir TEXT, created_at TIMESTAMP, session_type TEXT);
+         CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT,
+           content_json TEXT, created_timestamp INTEGER);",
+    )
+    .unwrap();
+    let dir_s = cwd.to_string_lossy().into_owned();
+    let started = 1_794_441_600i64;
+    // A, which this process resumed, was last used days ago; B finished 30 seconds before it started.
+    c.execute("INSERT INTO sessions VALUES('a','resumed',?1,'2026-11-01 00:00:00','user')", [&dir_s]).unwrap();
+    c.execute("INSERT INTO sessions VALUES('b','other',?1,'2026-11-11 00:00:00','user')", [&dir_s]).unwrap();
+    let message = |session: &str, role: &str, text: &str, at: i64| {
+        c.execute(
+            "INSERT INTO messages(session_id, role, content_json, created_timestamp) VALUES(?1,?2,?3,?4)",
+            rusqlite::params![session, role, serde_json::json!([{"type": "text", "text": text}]).to_string(), at],
+        )
+        .unwrap();
+    };
+    message("a", "assistant", "a's old reply", started - 3 * 86_400);
+    message("b", "assistant", "b's reply", started - 30);
+
+    let status = goose::status_in(&db, &cwd, started as u64).unwrap();
+    assert_eq!(status.session_id, None, "B was active before this process started: not its session");
+    assert_eq!(status.title, None);
+    assert_eq!(status.last_message, None);
+    assert_eq!(status.state, Some(State::Idle));
+    assert!(goose::history_in(&db, &cwd, started as u64).unwrap().messages.is_empty());
+
+    // Once the resumed session writes, it's this process's.
+    message("a", "user", "carry on", started + 5);
+    let status = goose::status_in(&db, &cwd, started as u64).unwrap();
+    assert_eq!(status.session_id.as_deref(), Some("a"));
+    assert_eq!(status.state, Some(State::Working));
+    let chat = goose::history_in(&db, &cwd, started as u64).unwrap();
+    assert_eq!(chat.messages.last().map(|m| m.text.as_str()), Some("carry on"));
+}
+
 /// A failed turn is your turn, with the error as its last message: a provider error, the
 /// turn-limit error, and exhausted credits. Ordinary notifications stay as they are.
 #[test]
