@@ -26,6 +26,7 @@ pub struct Scanner {
     /// Handle numbers stay with an agent for its whole life; a new agent takes the lowest free one.
     handles: HashMap<u32, (Kind, usize)>,
     opencode_cache: HashMap<u32, ((u64, u64), SessionStatus)>,
+    goose_cache: HashMap<u32, ((u64, u64), SessionStatus)>,
     /// Working directory and start time per agent, for readers that match sessions by them.
     started: HashMap<u32, (PathBuf, u64)>,
     /// When each agent's process started, in milliseconds (where the platform says): a guessed
@@ -44,6 +45,7 @@ pub struct Scanner {
 enum HistoryStamp {
     File(Kind, PathBuf, u64, u64, std::time::SystemTime),
     OpenCode(PathBuf, u64, (u64, u64)),
+    Goose(PathBuf, u64, (u64, u64)),
 }
 
 /// Arguments that mean the process is a helper or a headless run, not an interactive agent.
@@ -190,6 +192,7 @@ impl Scanner {
             codex_paths: HashMap::new(),
             handles: HashMap::new(),
             opencode_cache: HashMap::new(),
+            goose_cache: HashMap::new(),
             started: HashMap::new(),
             started_ms: HashMap::new(),
             app_paths: HashMap::new(),
@@ -237,6 +240,7 @@ impl Scanner {
         self.codex_paths.retain(|pid, _| live.contains(pid));
         self.handles.retain(|pid, (kind, _)| agents.iter().any(|(p, k)| p.pid == *pid && k == kind));
         self.opencode_cache.retain(|pid, _| live.contains(pid));
+        self.goose_cache.retain(|pid, _| live.contains(pid));
         self.children = live.iter().filter_map(|pid| table.child_of(*pid).map(|c| (*pid, c))).collect();
         self.started = agents.iter().filter_map(|(p, _)| p.cwd.clone().map(|c| (p.pid, (c, p.start_time)))).collect();
         self.started_ms = agents.iter().map(|(p, _)| (p.pid, (p.start_time, p.start_ms))).collect();
@@ -513,6 +517,21 @@ impl Scanner {
                     self.remember_history(&agent.id, stamp, &history);
                     return Some(Ok(history));
                 }
+                Kind::Goose => {
+                    let (cwd, start) = self.started.get(&agent.pid)?.clone();
+                    let Some(stamp) = crate::readers::goose::stamp() else { return Some(Ok(Default::default())) };
+                    let stamp = HistoryStamp::Goose(cwd.clone(), start, stamp);
+                    if let Some((old, messages)) = self.history_cache.get(&agent.id)
+                        && *old == stamp
+                    {
+                        return Some(Ok(messages.clone()));
+                    }
+                    let Some(history) = crate::readers::goose::history(&cwd, start) else {
+                        return Some(Err(crate::history::ReadFailed));
+                    };
+                    self.remember_history(&agent.id, stamp, &history);
+                    return Some(Ok(history));
+                }
                 _ => return None,
             }
         };
@@ -695,6 +714,26 @@ impl Scanner {
                 }
                 let status = crate::readers::opencode::status(cwd, p.start_time).unwrap_or_else(idle);
                 self.opencode_cache.insert(p.pid, (stamp, status.clone()));
+                let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
+                (Some(status), m)
+            }
+            Kind::Goose => {
+                // One database for every session: cache per (process, database change).
+                let (Some(stamp), Some(cwd)) = (crate::readers::goose::stamp(), p.cwd.as_deref()) else {
+                    return (None, SessionMatch::None);
+                };
+                if let Some((s, status)) = self.goose_cache.get(&p.pid)
+                    && *s == stamp
+                {
+                    let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
+                    return (Some(status.clone()), m);
+                }
+                // A failed read is no transcript status (shown as Running), and isn't cached:
+                // only a successful lookup — a session, or a clean Idle with none — is.
+                let Some(status) = crate::readers::goose::status(cwd, p.start_time) else {
+                    return (None, SessionMatch::None);
+                };
+                self.goose_cache.insert(p.pid, (stamp, status.clone()));
                 let m = if status.session_id.is_some() { SessionMatch::Guessed } else { SessionMatch::None };
                 (Some(status), m)
             }

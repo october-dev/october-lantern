@@ -2,7 +2,7 @@
 import XCTest
 
 /// Stop ends Lantern's answer while it comes in, else sends the working agent Escape — except
-/// Grok, which Escape doesn't stop: no Stop for a working Grok, and no "Stopped" claim.
+/// Grok and Goose, which Escape doesn't stop: no Stop for them while working, and no "Stopped" claim.
 @MainActor
 final class StopTests: XCTestCase {
     /// Held here: Ask holds its model weakly.
@@ -38,6 +38,14 @@ final class StopTests: XCTestCase {
         let ask = make([agent("grok:9:9", kind: "grok", state: "working")])
         ask.open(chat(on: "grok:9:9"))
         XCTAssertFalse(ask.stoppable, "no Stop for a working Grok")
+        ask.stop()
+        XCTAssertNil(model.toast, "no key sent, no Stopped toast")
+    }
+
+    func testWorkingGooseIsNotStoppableAndStopSendsNothing() {
+        let ask = make([agent("goose:9:9", kind: "goose", state: "working")])
+        ask.open(chat(on: "goose:9:9"))
+        XCTAssertFalse(ask.stoppable, "no Stop for a working Goose")
         ask.stop()
         XCTAssertNil(model.toast, "no key sent, no Stopped toast")
     }
